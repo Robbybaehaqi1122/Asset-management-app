@@ -11,8 +11,8 @@ export default function NotFound({ className }: NotFoundProps) {
   return (
     <>
       <PageMeta
-        title="React.js 404 Page | TailAdmin - React.js Admin Dashboard Template"
-        description="This is React.js 404  page for TailAdmin - React.js Tailwind CSS Admin Dashboard Template"
+        title="React.js 404 Page | Asset Management App"
+        description="This is React.js 404  page for the Asset Management App"
       />
       <div
         className={cn(
@@ -52,7 +52,7 @@ export default function NotFound({ className }: NotFoundProps) {
             "absolute inset-s-1/2 bottom-6 -translate-x-1/2 text-center text-sm text-gray-500 rtl:translate-x-1/2 dark:text-gray-400",
           )}
         >
-          &copy; {new Date().getFullYear()} - TailAdmin
+          &copy; {new Date().getFullYear()} Asset Management App
         </p>
       </div>
     </>
