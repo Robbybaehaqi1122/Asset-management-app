@@ -1,25 +1,11 @@
 {
-  "common": {
-    "filter": "Filter"
-  },
   "sidebar": {
     "groups": {
-      "menu": "Menu",
-      "others": "Others"
-    },
-    "badges": {
-      "new": "new",
-      "pro": "pro"
+      "menu": "Menu"
     },
     "items": {
-      "dashboard": "Dashboard",
       "calendar": "Calendar",
-      "pages": "Pages",
-      "blankPage": "Blank Page",
-      "authentication": "Authentication",
-      "signIn": "Sign In",
-      "signUp": "Sign Up",
-      "overview": "Overview"
+      "assetManagement": "Asset Management"
     }
   },
   "header": {
