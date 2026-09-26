@@ -9,8 +9,6 @@ import {
   HorizontaLDots,
   PageIcon,
   PlugInIcon,
-  TableIcon,
-  UserCircleIcon,
 } from "../icons";
 import { cn } from "../utils";
 
@@ -43,25 +41,6 @@ const navItems: NavItem[] = [
     name: "Calendar",
     key: "calendar",
     path: "/calendar",
-  },
-  {
-    icon: <UserCircleIcon fontSize={24} />,
-    name: "User Profile",
-    key: "userProfile",
-    path: "/profile",
-  },
-  {
-    name: "Tables",
-    key: "tables",
-    icon: <TableIcon fontSize={24} />,
-    subItems: [
-      {
-        name: "Basic Tables",
-        key: "basicTables",
-        path: "/basic-tables",
-        pro: false,
-      },
-    ],
   },
   {
     name: "Pages",

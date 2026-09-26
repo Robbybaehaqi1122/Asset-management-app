@@ -14,9 +14,6 @@
     "items": {
       "dashboard": "Dashboard",
       "calendar": "Calendar",
-      "userProfile": "User Profile",
-      "tables": "Tables",
-      "basicTables": "Basic Tables",
       "pages": "Pages",
       "blankPage": "Blank Page",
       "authentication": "Authentication",
