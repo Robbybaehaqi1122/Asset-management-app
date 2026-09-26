@@ -6,8 +6,6 @@ import SignUp from "./pages/AuthPages/SignUp";
 import Calendar from "./pages/Calendar";
 import Blank from "./pages/OtherPage/Blank";
 import NotFound from "./pages/OtherPage/NotFound";
-import BasicTables from "./pages/Tables/BasicTables";
-import UserProfiles from "./pages/UserProfiles";
 
 export default function App() {
   return (
@@ -20,12 +18,8 @@ export default function App() {
             <Route index path="/" element={<Blank />} />
 
             {/* Others Page */}
-            <Route path="/profile" element={<UserProfiles />} />
             <Route path="/calendar" element={<Calendar />} />
             <Route path="/blank" element={<Blank />} />
-
-            {/* Tables */}
-            <Route path="/basic-tables" element={<BasicTables />} />
           </Route>
 
           {/* Auth Layout */}
