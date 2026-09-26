@@ -23,10 +23,10 @@ export default defineConfig({
   build: {
     rolldownOptions: {
       onwarn(warning, warn) {
-        // Skip eval warnings from react-jvectormap
+        // Skip eval warnings from jsvectormap
         if (
           warning.code === "EVAL" &&
-          warning.id?.includes("@react-jvectormap")
+          warning.id?.includes("jsvectormap")
         ) {
           return;
         }
