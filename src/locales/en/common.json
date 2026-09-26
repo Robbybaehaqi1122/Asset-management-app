@@ -1,14 +1,10 @@
 {
   "common": {
-    "viewMore": "View More",
-    "delete": "Delete",
-    "filter": "Filter",
-    "seeAll": "See all"
+    "filter": "Filter"
   },
   "sidebar": {
     "groups": {
       "menu": "Menu",
-      "support": "Support",
       "others": "Others"
     },
     "badges": {
@@ -17,7 +13,6 @@
     },
     "items": {
       "dashboard": "Dashboard",
-      "ecommerceHome": "Ecommerce",
       "calendar": "Calendar",
       "userProfile": "User Profile",
       "forms": "Forms",
@@ -26,9 +21,6 @@
       "basicTables": "Basic Tables",
       "pages": "Pages",
       "blankPage": "Blank Page",
-      "charts": "Charts",
-      "lineChart": "Line Chart",
-      "barChart": "Bar Chart",
       "uiElements": "UI Elements",
       "alerts": "Alerts",
       "avatar": "Avatar",
@@ -38,7 +30,8 @@
       "videos": "Videos",
       "authentication": "Authentication",
       "signIn": "Sign In",
-      "signUp": "Sign Up"
+      "signUp": "Sign Up",
+      "overview": "Overview"
     }
   },
   "header": {
@@ -51,74 +44,5 @@
     "support": "Support",
     "language": "Language",
     "signOut": "Sign out"
-  },
-  "ecommerce": {
-    "metrics": {
-      "customers": "Customers",
-      "orders": "Orders"
-    },
-    "months": {
-      "jan": "Jan",
-      "feb": "Feb",
-      "mar": "Mar",
-      "apr": "Apr",
-      "may": "May",
-      "jun": "Jun",
-      "jul": "Jul",
-      "aug": "Aug",
-      "sep": "Sep",
-      "oct": "Oct",
-      "nov": "Nov",
-      "dec": "Dec"
-    },
-    "monthlySales": {
-      "title": "Monthly Sales",
-      "series": "Sales"
-    },
-    "monthlyTarget": {
-      "title": "Monthly Target",
-      "subtitle": "Target you’ve set for each month",
-      "earned": "You earn {amount} today, it's higher than last month. Keep up your good work!",
-      "target": "Target",
-      "revenue": "Revenue",
-      "today": "Today"
-    },
-    "statistics": {
-      "title": "Statistics",
-      "subtitle": "Target you've set for each month",
-      "sales": "Sales",
-      "revenue": "Revenue",
-      "monthly": "Monthly",
-      "quarterly": "Quarterly",
-      "annually": "Annually",
-      "selectDateRange": "Select date range"
-    },
-    "recentOrders": {
-      "title": "Recent Orders",
-      "products": "Products",
-      "category": "Category",
-      "price": "Price",
-      "status": "Status",
-      "variants": "{count, plural, one {# Variant} other {# Variants}}",
-      "categories": {
-        "laptop": "Laptop",
-        "watch": "Watch",
-        "smartphone": "SmartPhone",
-        "electronics": "Electronics",
-        "accessories": "Accessories"
-      },
-      "statuses": {
-        "delivered": "Delivered",
-        "pending": "Pending",
-        "canceled": "Canceled"
-      }
-    },
-    "demographic": {
-      "title": "Customers Demographic",
-      "subtitle": "Number of customer based on country",
-      "customers": "{count} Customers",
-      "usa": "USA",
-      "france": "France"
-    }
   }
 }

@@ -10,7 +10,6 @@ import {
   HorizontaLDots,
   ListIcon,
   PageIcon,
-  PieChartIcon,
   PlugInIcon,
   TableIcon,
   UserCircleIcon,
@@ -39,7 +38,7 @@ const navItems: NavItem[] = [
     icon: <GridIcon fontSize={24} />,
     name: "Dashboard",
     key: "dashboard",
-    subItems: [{ name: "Ecommerce", key: "ecommerceHome", path: "/" }],
+    subItems: [{ name: "Overview", key: "overview", path: "/" }],
   },
   {
     icon: <CalenderIcon fontSize={24} />,
@@ -88,15 +87,6 @@ const navItems: NavItem[] = [
 ];
 
 const othersItems: NavItem[] = [
-  {
-    icon: <PieChartIcon fontSize={24} />,
-    name: "Charts",
-    key: "charts",
-    subItems: [
-      { name: "Line Chart", key: "lineChart", path: "/line-chart" },
-      { name: "Bar Chart", key: "barChart", path: "/bar-chart" },
-    ],
-  },
   {
     icon: <BoxCubeIcon fontSize={24} />,
     name: "UI Elements",
