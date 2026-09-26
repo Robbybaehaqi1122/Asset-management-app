@@ -1,4 +1,4 @@
-import ComponentCard from "@/components/common/ComponentCard";
+import ComponentCard from "@/components/ui/ComponentCard";
 import Switch from "@/components/form/switch/Switch";
 import { cn } from "@/utils";
 

@@ -1,4 +1,4 @@
-import ComponentCard from "@/components/common/ComponentCard";
+import ComponentCard from "@/components/ui/ComponentCard";
 import TextArea from "@/components/form/input/TextArea";
 import Label from "@/components/form/Label";
 import { cn } from "@/utils";
