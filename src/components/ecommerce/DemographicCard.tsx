@@ -8,7 +8,9 @@ import { DropdownItem } from "../ui/dropdown/DropdownItem";
 import CountryMap from "./CountryMap";
 
 export default function DemographicCard() {
-  const { t } = useTranslation("ecommerce.demographic");
+  const { t } = useTranslation("common", {
+    keyPrefix: "ecommerce.demographic",
+  });
   const { t: tCommon } = useTranslation("common");
   const [isOpen, setIsOpen] = useState(false);
 

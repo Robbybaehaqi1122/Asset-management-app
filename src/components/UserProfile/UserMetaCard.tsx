@@ -21,7 +21,7 @@ export default function UserMetaCard() {
               <div className="flex w-full flex-col items-start gap-6 sm:flex-row sm:items-center">
                 <div className="border-gray-20 overflow-hidden rounded-full border dark:border-gray-800">
                   <img
-                    src="./images/user/owner.png"
+                    src="/images/user/owner.png"
                     className="size-20"
                     alt="user"
                   />
