@@ -9,8 +9,8 @@ export default function CalendarPage() {
   return (
     <div>
       <PageMeta
-        title="React.js Calendar Dashboard | TailAdmin - React.js Admin Dashboard Template"
-        description="This is React.js Calendar Dashboard page for TailAdmin - React.js Tailwind CSS Admin Dashboard Template"
+        title="React.js Calendar Dashboard | Asset Management App"
+        description="This is React.js Calendar Dashboard page for the Asset Management App"
       />
       <PageBreadcrumb pageTitle="Calendar" />
       <Calendar />
