@@ -29,7 +29,11 @@ export const SidebarProvider: React.FC<{ children: React.ReactNode }> = ({
 }) => {
     const [isExpanded, setIsExpanded] = useState(true);
     const [isMobileOpen, setIsMobileOpen] = useState(false);
-    const [isMobile, setIsMobile] = useState(false);
+    // Baca lebar jendela lewat initializer malas supaya render pertama sudah
+    // tahu apakah ini mobile, tanpa setState sinkron di dalam effect.
+    const [isMobile, setIsMobile] = useState(
+        () => typeof window !== 'undefined' && window.innerWidth < 1280,
+    );
     const [isHovered, setIsHovered] = useState(false);
     const [activeItem, setActiveItem] = useState<string | null>(null);
     const [openSubmenu, setOpenSubmenu] = useState<string | null>(null);
@@ -43,7 +47,6 @@ export const SidebarProvider: React.FC<{ children: React.ReactNode }> = ({
             }
         };
 
-        handleResize();
         window.addEventListener('resize', handleResize);
 
         return () => {
