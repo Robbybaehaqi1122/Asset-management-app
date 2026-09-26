@@ -7,7 +7,6 @@ import {
   ChevronDownIcon,
   GridIcon,
   HorizontaLDots,
-  ListIcon,
   PageIcon,
   PlugInIcon,
   TableIcon,
@@ -50,19 +49,6 @@ const navItems: NavItem[] = [
     name: "User Profile",
     key: "userProfile",
     path: "/profile",
-  },
-  {
-    name: "Forms",
-    key: "forms",
-    icon: <ListIcon fontSize={24} />,
-    subItems: [
-      {
-        name: "Form Elements",
-        key: "formElements",
-        path: "/form-elements",
-        pro: false,
-      },
-    ],
   },
   {
     name: "Tables",
