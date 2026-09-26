@@ -10,7 +10,7 @@ import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 
 const AppHeader: React.FC = () => {
-  const { t } = useTranslation("header");
+  const { t } = useTranslation("common", { keyPrefix: "header" });
   const inputRef = useRef<HTMLInputElement>(null);
   const [isApplicationMenuOpen, setApplicationMenuOpen] = useState(false);
 
