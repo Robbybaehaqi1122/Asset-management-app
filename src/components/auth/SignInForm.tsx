@@ -1,14 +1,47 @@
 import Label from "@/components/form/Label";
 import Checkbox from "@/components/form/input/Checkbox";
 import Input from "@/components/form/input/InputField";
+import Alert from "@/components/ui/alert/Alert";
 import Button from "@/components/ui/button/Button";
+import { useAuth } from "@/context/AuthContext";
 import { ChevronLeftIcon, EyeCloseIcon, EyeIcon } from "@/icons";
+import { authErrorKey } from "@/lib/authErrors";
 import { useState } from "react";
-import { Link } from "react-router";
+import { useTranslation } from "react-i18next";
+import { Link, useLocation, useNavigate } from "react-router";
+
+type LocationState = { from?: string };
 
 export default function SignInForm() {
+  const { t } = useTranslation("common", { keyPrefix: "auth" });
+  const { signIn } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
+
   const [showPassword, setShowPassword] = useState(false);
-  const [isChecked, setIsChecked] = useState(false);
+  const [isChecked, setIsChecked] = useState(true);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorKey, setErrorKey] = useState<string | null>(null);
+
+  const from = (location.state as LocationState | null)?.from ?? "/";
+
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setErrorKey(null);
+    setIsSubmitting(true);
+
+    try {
+      await signIn(email, password, isChecked);
+      navigate(from, { replace: true });
+    } catch (error) {
+      setErrorKey(authErrorKey(error));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   return (
     <div className="flex flex-1 flex-col">
       <div className="mx-auto w-full max-w-md pt-10">
@@ -17,22 +50,27 @@ export default function SignInForm() {
           className="inline-flex items-center text-sm text-gray-500 transition-colors hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300"
         >
           <ChevronLeftIcon className="size-5 rtl:rotate-180" />
-          Back to dashboard
+          {t("backToDashboard")}
         </Link>
       </div>
       <div className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center">
         <div>
           <div className="mb-5 sm:mb-8">
             <h1 className="mb-2 text-title-sm font-semibold text-gray-800 sm:text-title-md dark:text-white/90">
-              Sign In
+              {t("signIn.title")}
             </h1>
             <p className="text-sm text-gray-500 dark:text-gray-400">
-              Enter your email and password to sign in!
+              {t("signIn.subtitle")}
             </p>
           </div>
           <div>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-5">
-              <button className="inline-flex items-center justify-center gap-3 rounded-lg bg-gray-100 px-7 py-3 text-sm font-normal text-gray-700 transition-colors hover:bg-gray-200 hover:text-gray-800 dark:bg-white/5 dark:text-white/90 dark:hover:bg-white/10">
+              <button
+                type="button"
+                disabled
+                title={t("oauthNotReady")}
+                className="inline-flex cursor-not-allowed items-center justify-center gap-3 rounded-lg bg-gray-100 px-7 py-3 text-sm font-normal text-gray-700 opacity-60 dark:bg-white/5 dark:text-white/90"
+              >
                 <svg
                   width="20"
                   height="20"
@@ -41,7 +79,7 @@ export default function SignInForm() {
                   xmlns="http://www.w3.org/2000/svg"
                 >
                   <path
-                    d="M18.7511 10.1944C18.7511 9.47495 18.6915 8.94995 18.5626 8.40552H10.1797V11.6527H15.1003C15.0011 12.4597 14.4654 13.675 13.2749 14.4916L13.2582 14.6003L15.9087 16.6126L16.0924 16.6305C17.7788 15.1041 18.7511 12.8583 18.7511 10.1944Z"
+                    d="M18.7511 10.1944C18.7511 9.47495 18.6915 8.94995 18.5626 8.40552H10.1797V11.6527H15.1003C15.0011 12.4597 14.4654 13.675 13.2749 14.4916L13.2582 14.6003L15.9087 16.6126L16.0924 16.6305C17.7788 15.1041 18.7512 12.8583 18.7511 10.1944Z"
                     fill="#4285F4"
                   />
                   <path
@@ -57,9 +95,14 @@ export default function SignInForm() {
                     fill="#EB4335"
                   />
                 </svg>
-                Sign in with Google
+                Sign in {t("withGoogle")}
               </button>
-              <button className="inline-flex items-center justify-center gap-3 rounded-lg bg-gray-100 px-7 py-3 text-sm font-normal text-gray-700 transition-colors hover:bg-gray-200 hover:text-gray-800 dark:bg-white/5 dark:text-white/90 dark:hover:bg-white/10">
+              <button
+                type="button"
+                disabled
+                title={t("oauthNotReady")}
+                className="inline-flex cursor-not-allowed items-center justify-center gap-3 rounded-lg bg-gray-100 px-7 py-3 text-sm font-normal text-gray-700 opacity-60 dark:bg-white/5 dark:text-white/90"
+              >
                 <svg
                   width="21"
                   className="fill-current"
@@ -70,7 +113,7 @@ export default function SignInForm() {
                 >
                   <path d="M15.6705 1.875H18.4272L12.4047 8.75833L19.4897 18.125H13.9422L9.59717 12.4442L4.62554 18.125H1.86721L8.30887 10.7625L1.51221 1.875H7.20054L11.128 7.0675L15.6705 1.875ZM14.703 16.475H16.2305L6.37054 3.43833H4.73137L14.703 16.475Z" />
                 </svg>
-                Sign in with X
+                Sign in {t("withX")}
               </button>
             </div>
             <div className="relative py-3 sm:py-5">
@@ -79,26 +122,51 @@ export default function SignInForm() {
               </div>
               <div className="relative flex justify-center text-sm">
                 <span className="bg-white p-2 text-gray-400 sm:px-5 sm:py-2 dark:bg-gray-900">
-                  Or
+                  {t("or")}
                 </span>
               </div>
             </div>
-            <form>
+            <form onSubmit={handleSubmit}>
               <div className="space-y-6">
+                {errorKey && (
+                  <Alert
+                    variant="error"
+                    title={t("errors.title")}
+                    message={t(errorKey)}
+                  />
+                )}
                 <div>
-                  <Label>
-                    Email <span className="text-error-500">*</span>{" "}
+                  <Label htmlFor="signin-email">
+                    {t("signIn.email")}{" "}
+                    <span className="text-error-500">*</span>
                   </Label>
-                  <Input placeholder="info@gmail.com" />
+                  <Input
+                    type="email"
+                    id="signin-email"
+                    name="email"
+                    autoComplete="email"
+                    required
+                    placeholder={t("signIn.emailPlaceholder")}
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                  />
                 </div>
                 <div>
-                  <Label>
-                    Password <span className="text-error-500">*</span>{" "}
+                  <Label htmlFor="signin-password">
+                    {t("signIn.password")}{" "}
+                    <span className="text-error-500">*</span>{" "}
                   </Label>
                   <div className="relative">
                     <Input
                       type={showPassword ? "text" : "password"}
-                      placeholder="Enter your password"
+                      id="signin-password"
+                      name="password"
+                      autoComplete="current-password"
+                      required
+                      placeholder={t("signIn.passwordPlaceholder")}
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      className="pe-12"
                     />
                     <span
                       onClick={() => setShowPassword(!showPassword)}
@@ -114,21 +182,25 @@ export default function SignInForm() {
                 </div>
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
-                    <Checkbox checked={isChecked} onChange={setIsChecked} />
+                    <Checkbox
+                      checked={isChecked}
+                      onChange={setIsChecked}
+                      disabled={isSubmitting}
+                    />
                     <span className="block text-theme-sm font-normal text-gray-700 dark:text-gray-400">
-                      Keep me logged in
+                      {t("signIn.keepLoggedIn")}
                     </span>
                   </div>
                   <Link
                     to="/reset-password"
                     className="text-sm text-brand-500 hover:text-brand-600 dark:text-brand-400"
                   >
-                    Forgot password?
+                    {t("signIn.forgotPassword")}
                   </Link>
                 </div>
                 <div>
-                  <Button className="w-full" size="sm">
-                    Sign in
+                  <Button className="w-full" size="sm" disabled={isSubmitting}>
+                    {isSubmitting ? t("signIn.submitting") : t("signIn.submit")}
                   </Button>
                 </div>
               </div>
@@ -136,12 +208,12 @@ export default function SignInForm() {
 
             <div className="mt-5">
               <p className="text-center text-sm font-normal text-gray-700 sm:text-start dark:text-gray-400">
-                Don&apos;t have an account? {""}
+                {t("signIn.noAccount")} {""}
                 <Link
                   to="/signup"
                   className="text-brand-500 hover:text-brand-600 dark:text-brand-400"
                 >
-                  Sign Up
+                  {t("signIn.signUpLink")}
                 </Link>
               </p>
             </div>

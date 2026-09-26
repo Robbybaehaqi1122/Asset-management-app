@@ -59,11 +59,14 @@ const CalendarEventItem: React.FC<CalendarEventItemProps> = ({ eventInfo }) => {
       >
         <div className="flex items-center gap-1 sm:gap-1.5">
           <div
-            className={cn("size-1.5 shrink-0 rounded-full sm:size-2", colors.dot)}
+            className={cn(
+              "size-1.5 shrink-0 rounded-full sm:size-2",
+              colors.dot,
+            )}
           />
           <div
             className={cn(
-              "truncate text-[11px] font-semibold leading-tight sm:text-xs",
+              "truncate text-[11px] leading-tight font-semibold sm:text-xs",
               colors.title,
             )}
           >
@@ -73,7 +76,7 @@ const CalendarEventItem: React.FC<CalendarEventItemProps> = ({ eventInfo }) => {
         {eventInfo.timeText && (
           <div
             className={cn(
-              "mt-0.5 truncate ps-2.5 text-[10px] font-medium leading-tight sm:ps-3.5 sm:text-[11px]",
+              "mt-0.5 truncate ps-2.5 text-[10px] leading-tight font-medium sm:ps-3.5 sm:text-[11px]",
               colors.time,
             )}
           >

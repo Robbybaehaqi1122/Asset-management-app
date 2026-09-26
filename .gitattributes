@@ -1,0 +1,10 @@
+# Normalize line endings: store LF in the repository, check out LF everywhere.
+#
+# Without this file, `core.autocrlf=true` on Windows checks files out as CRLF
+# while Prettier defaults to `endOfLine: "lf"`, so `npx prettier --check` reports
+# every source file as unformatted — including files just written by
+# `prettier --write`. See "Known rough edges" in AGENTS.md.
+#
+# `text=auto` leaves binary files (public/images/*) alone; git detects them by
+# content rather than trusting the extension.
+* text=auto eol=lf

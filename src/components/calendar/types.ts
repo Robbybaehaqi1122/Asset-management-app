@@ -33,4 +33,3 @@ export const CALENDAR_VIEW_OPTIONS: CalendarViewOption[] = [
   { key: "timeGridWeek", label: "Week" },
   { key: "timeGridDay", label: "Day" },
 ];
-

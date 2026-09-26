@@ -1,10 +1,11 @@
+import { useAuth } from "@/context/AuthContext";
 import { useLanguage } from "@/context/LanguageContext";
 import { useClickOutside } from "@/hooks/useClickOutside";
 import { getLanguage, languages, type Locale } from "@/i18n/languages";
 import { cn } from "@/utils";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Link } from "react-router";
+import { useNavigate } from "react-router";
 import { Dropdown } from "../ui/dropdown/Dropdown";
 import { DropdownItem } from "../ui/dropdown/DropdownItem";
 
@@ -14,8 +15,19 @@ export default function UserDropdown() {
   const subDropdownRef = useRef<HTMLLIElement>(null);
   const { t } = useTranslation();
   const { language: locale, setLanguage } = useLanguage();
+  const { user, profile, signOut } = useAuth();
+  const navigate = useNavigate();
   const currentLang = getLanguage(locale as Locale);
   const CurrentFlagIcon = currentLang.FlagIcon;
+
+  // `profiles.full_name` adalah nilai yang dimiliki database. Yang lama,
+  // `user_metadata.full_name`, cuma string yang client kirim saat signup dan
+  // bisa berbeda dari row-nya, jadi tidak dipakai lagi. Email tetap aman
+  // sebagai cadangan karena itu identitas auth-nya sendiri, bukan metadata.
+  const displayName =
+    profile?.full_name || user?.email || t("userDropdown.accountSettings");
+  const avatarUrl = user?.user_metadata.avatar_url;
+  const email = user?.email ?? "";
 
   useClickOutside(subDropdownRef, () => {
     setIsSubDropdownOpen(false);
@@ -24,6 +36,12 @@ export default function UserDropdown() {
   const handleSelectLanguage = (langId: Locale) => {
     setLanguage(langId);
     setIsSubDropdownOpen(false);
+  };
+
+  const handleSignOut = async () => {
+    closeDropdown();
+    await signOut();
+    navigate("/signin", { replace: true });
   };
 
   const toggleDropdown = () => {
@@ -36,24 +54,27 @@ export default function UserDropdown() {
     setIsSubDropdownOpen(false);
   };
 
-  useEffect(() => {
-    return () => {
-      setIsOpen(false);
-      setIsSubDropdownOpen(false);
-    };
-  }, []);
-
   return (
     <div className="relative">
       <button
         onClick={toggleDropdown}
         className="dropdown-toggle flex items-center text-gray-700 dark:text-gray-400"
       >
-        <span className="me-3 h-11 w-11 overflow-hidden rounded-full">
-          <img src="/images/user/owner.png" alt="User" />
+        <span className="me-3 h-11 w-11 shrink-0 overflow-hidden rounded-full">
+          {avatarUrl ? (
+            <img
+              src={avatarUrl}
+              alt={displayName}
+              className="size-full object-cover"
+            />
+          ) : (
+            <img src="/images/user/owner.png" alt={displayName} />
+          )}
         </span>
 
-        <span className="me-1 block text-theme-sm font-medium">Musharof</span>
+        <span className="me-1 block max-w-30 truncate text-theme-sm font-medium">
+          {displayName}
+        </span>
         <svg
           className={`stroke-gray-500 transition-transform duration-200 dark:stroke-gray-400 ${
             isOpen ? "rotate-180" : ""
@@ -80,11 +101,11 @@ export default function UserDropdown() {
         className="absolute inset-e-0 mt-4.25 flex w-65 flex-col rounded-2xl border border-gray-200 bg-white p-3 shadow-theme-lg dark:border-gray-800 dark:bg-gray-dark"
       >
         <div>
-          <span className="block text-theme-sm font-medium text-gray-700 no-underline dark:text-gray-400">
-            Musharof Chowdhury
+          <span className="block truncate text-theme-sm font-medium text-gray-700 no-underline dark:text-gray-400">
+            {displayName}
           </span>
-          <span className="mt-0.5 block text-theme-xs text-gray-500 no-underline dark:text-gray-400">
-            randomuser@pimjo.com
+          <span className="mt-0.5 block truncate text-theme-xs text-gray-500 no-underline dark:text-gray-400">
+            {email}
           </span>
         </div>
 
@@ -251,9 +272,10 @@ export default function UserDropdown() {
             )}
           </li>
         </ul>
-        <Link
-          to="/signin"
-          className="group mt-3 flex items-center gap-3 rounded-lg px-3 py-2 text-theme-sm font-medium text-gray-700 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-white/5 dark:hover:text-gray-300"
+        <button
+          type="button"
+          onClick={handleSignOut}
+          className="group mt-3 flex w-full items-center gap-3 rounded-lg px-3 py-2 text-theme-sm font-medium text-gray-700 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-white/5 dark:hover:text-gray-300"
         >
           <svg
             className="fill-gray-500 group-hover:fill-gray-700 dark:group-hover:fill-gray-300"
@@ -271,7 +293,7 @@ export default function UserDropdown() {
             />
           </svg>
           {t("userDropdown.signOut")}
-        </Link>
+        </button>
       </Dropdown>
     </div>
   );

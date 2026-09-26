@@ -65,7 +65,7 @@ const Calendar: React.FC = () => {
   const [selectedEndDate, setSelectedEndDate] = useState("");
   const [currentView, setCurrentView] = useState("dayGridMonth");
   const [portalNode, setPortalNode] = useState<Element | null>(null);
-  const [isMobile, setIsMobile] = useState(false);
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth < 640);
 
   const calendarRef = useRef<CalendarRef>(null);
   const calendarContainerRef = useRef<HTMLDivElement>(null);
@@ -165,7 +165,6 @@ const Calendar: React.FC = () => {
     const checkMobile = () => {
       setIsMobile(window.innerWidth < 640);
     };
-    checkMobile();
     window.addEventListener("resize", checkMobile);
 
     const frameId = requestAnimationFrame(() => {

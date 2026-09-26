@@ -1,0 +1,49 @@
+name: Isu yang diketahui
+about: Masalah yang sudah diketahui, terbuka, dan butuh keputusan atau perbaikan
+title: "[known] "
+labels: known-issue
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Lihat [ISSUES_KNOWN.md](https://github.com/Robbybaehaqi1122/Asset-management-app/blob/main/.github/ISSUES_KNOWN.md)
+        untuk daftar lengkap. Template ini untuk melacak keputusan atas salah satunya.
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - Tinggi — celah keamanan, atau akan merusak data
+        - Sedang — belum lengkap atau tidak konsisten
+        - Rendah — bersih-bersih
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: Apa masalahnya
+      description: Sebutkan nomor issue terkait di ISSUES_KNOWN.md.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Usulan penyelesaian
+      description: Apa yang sebaiknya diubah, dan kenapa. Sertakan trade-off yang Anda terima.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: verification
+    attributes:
+      label: Bagaimana ini akan diverifikasi
+      options:
+        - label: `npm run build` lolos
+        - label: `npm run lint` bersih
+        - label: `supabase db lint --linked` lolos
+        - label: Diuji terhadap project remote dengan `supabase db query --linked`
+        - label: Diuji di browser
+        - label: Didokumentasikan di AGENTS.md

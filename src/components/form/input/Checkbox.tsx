@@ -21,17 +21,17 @@ const Checkbox: React.FC<CheckboxProps> = ({
   return (
     <label
       className={cn(
-        "flex items-center gap-3 group cursor-pointer",
-        disabled && "cursor-not-allowed opacity-60"
+        "group flex cursor-pointer items-center gap-3",
+        disabled && "cursor-not-allowed opacity-60",
       )}
     >
-      <div className="relative flex items-center justify-center w-5 h-5">
+      <div className="relative flex h-5 w-5 items-center justify-center">
         <input
           id={id}
           type="checkbox"
           className={cn(
-            "w-5 h-5 appearance-none cursor-pointer dark:border-gray-700 border border-gray-300 checked:border-transparent rounded-md checked:bg-brand-500 disabled:opacity-60",
-            className
+            "h-5 w-5 cursor-pointer appearance-none rounded-md border border-gray-300 checked:border-transparent checked:bg-brand-500 disabled:opacity-60 dark:border-gray-700",
+            className,
           )}
           checked={checked}
           onChange={(e) => onChange(e.target.checked)}

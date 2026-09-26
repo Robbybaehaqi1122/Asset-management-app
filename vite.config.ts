@@ -20,18 +20,4 @@ export default defineConfig({
       },
     }),
   ],
-  build: {
-    rolldownOptions: {
-      onwarn(warning, warn) {
-        // Skip eval warnings from jsvectormap
-        if (
-          warning.code === "EVAL" &&
-          warning.id?.includes("jsvectormap")
-        ) {
-          return;
-        }
-        warn(warning);
-      },
-    },
-  },
 });

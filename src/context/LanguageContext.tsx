@@ -26,14 +26,18 @@ type LanguageContextType = {
   availableLanguages: Language[];
 };
 
-const LanguageContext = createContext<LanguageContextType | undefined>(undefined);
+const LanguageContext = createContext<LanguageContextType | undefined>(
+  undefined,
+);
 
 export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
   const { i18n } = useTranslation();
   const [language, setLanguageState] = useState<LanguageCode>(() => {
-    const currentLng = (i18n.resolvedLanguage || i18n.language || "en") as LanguageCode;
+    const currentLng = (i18n.resolvedLanguage ||
+      i18n.language ||
+      "en") as LanguageCode;
     return AVAILABLE_LANGUAGES.some((lang) => lang.code === currentLng)
       ? currentLng
       : "en";
