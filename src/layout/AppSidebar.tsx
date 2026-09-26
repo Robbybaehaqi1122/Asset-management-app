@@ -17,6 +17,10 @@ type NavSubItem = {
   target?: string;
 };
 
+type MenuGroup = "main" | "others";
+
+type OpenSubmenu = { type: MenuGroup; index: number };
+
 type NavItem = {
   name: string;
   key?: string;
@@ -48,13 +52,15 @@ const AppSidebar: React.FC = () => {
     useSidebar();
   const { t } = useTranslation();
   const location = useLocation();
-  const [openSubmenu, setOpenSubmenu] = useState<{
-    type: "main" | "others";
-    index: number;
-  } | null>(null);
   const [subMenuHeight, setSubMenuHeight] = useState<Record<string, number>>(
     {},
   );
+  // index null berarti pengguna menutup submenu yang terbuka secara default.
+  const [manualSubmenu, setManualSubmenu] = useState<{
+    path: string;
+    type: MenuGroup;
+    index: number | null;
+  } | null>(null);
   const subMenuRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   // Auto-close sidebar on mobile after route change
@@ -71,51 +77,59 @@ const AppSidebar: React.FC = () => {
     [location.pathname],
   );
 
-  useEffect(() => {
-    let submenuMatched = false;
-
-    navItems.forEach((nav, index) => {
-      if (nav.subItems) {
-        nav.subItems.forEach((subItem) => {
-          if (isActive(subItem.path)) {
-            setOpenSubmenu({ type: "main", index });
-            submenuMatched = true;
-          }
-        });
-      }
-    });
-
-    if (!submenuMatched) {
-      setOpenSubmenu(null);
+  // Submenu yang memuat route aktif terbuka secara default. Diturunkan saat
+  // render, bukan disimpan, supaya tidak ada setState di dalam effect.
+  let openSubmenu: OpenSubmenu | null = null;
+  for (let index = 0; index < navItems.length; index += 1) {
+    if (navItems[index].subItems?.some((subItem) => isActive(subItem.path))) {
+      openSubmenu = { type: "main", index };
+      break;
     }
-  }, [location, isActive]);
+  }
+
+  // Toggle manual menimpa hasil turunan di atas, tapi hanya selama pathname
+  // tidak berubah. Begitu navigasi, keadaan kembali mengikuti route.
+  if (manualSubmenu?.path === location.pathname) {
+    openSubmenu =
+      manualSubmenu.index === null
+        ? null
+        : { type: manualSubmenu.type, index: manualSubmenu.index };
+  }
+
+  // openSubmenu adalah objek baru tiap render, jadi effect tidak boleh
+  // bergantung padanya langsung: kunci string-nya yang dipakai supaya effect
+  // hanya jalan saat submenu benar-benar berganti. Updater di bawah juga
+  // mengembalikan state lama kalau tinggi tidak berubah, supaya tidak
+  // memicu render berulang.
+  const openSubmenuKey = openSubmenu
+    ? `${openSubmenu.type}-${openSubmenu.index}`
+    : null;
 
   useEffect(() => {
-    if (openSubmenu !== null) {
-      const key = `${openSubmenu.type}-${openSubmenu.index}`;
-      if (subMenuRefs.current[key]) {
-        setSubMenuHeight((prevHeights) => ({
-          ...prevHeights,
-          [key]: subMenuRefs.current[key]?.scrollHeight || 0,
-        }));
-      }
-    }
-  }, [openSubmenu]);
+    if (openSubmenuKey === null) return;
+    const element = subMenuRefs.current[openSubmenuKey];
+    if (!element) return;
+    const height = element.scrollHeight || 0;
+    setSubMenuHeight((prev) =>
+      prev[openSubmenuKey] === height
+        ? prev
+        : { ...prev, [openSubmenuKey]: height },
+    );
+  }, [openSubmenuKey]);
 
-  const handleSubmenuToggle = (index: number, menuType: "main" | "others") => {
-    setOpenSubmenu((prevOpenSubmenu) => {
-      if (
-        prevOpenSubmenu &&
-        prevOpenSubmenu.type === menuType &&
-        prevOpenSubmenu.index === index
-      ) {
-        return null;
-      }
-      return { type: menuType, index };
+  const handleSubmenuToggle = (index: number, menuType: MenuGroup) => {
+    const isClosing =
+      manualSubmenu?.path === location.pathname &&
+      manualSubmenu.type === menuType &&
+      manualSubmenu.index === index;
+    setManualSubmenu({
+      path: location.pathname,
+      type: menuType,
+      index: isClosing ? null : index,
     });
   };
 
-  const renderMenuItems = (items: NavItem[], menuType: "main" | "others") => (
+  const renderMenuItems = (items: NavItem[], menuType: MenuGroup) => (
     <ul className="flex flex-col gap-1">
       {items.map((nav, index) => {
         const isOpen =
@@ -130,7 +144,7 @@ const AppSidebar: React.FC = () => {
             <li key={nav.name}>
               <div
                 aria-disabled="true"
-                className="menu-item menu-item-inactive cursor-not-allowed opacity-60"
+                className="menu-item cursor-not-allowed menu-item-inactive opacity-60"
               >
                 <span className="menu-item-icon-inactive">{nav.icon}</span>
                 {showLabel && <span>{label}</span>}
@@ -175,7 +189,9 @@ const AppSidebar: React.FC = () => {
                   to={nav.path}
                   target={nav.target}
                   className={`group menu-item ${
-                    isActive(nav.path) ? "menu-item-active" : "menu-item-inactive"
+                    isActive(nav.path)
+                      ? "menu-item-active"
+                      : "menu-item-inactive"
                   }`}
                 >
                   <span
@@ -198,7 +214,9 @@ const AppSidebar: React.FC = () => {
                 }}
                 className="overflow-hidden transition-all duration-300"
                 style={{
-                  height: isOpen ? `${subMenuHeight[`${menuType}-${index}`]}px` : "0px",
+                  height: isOpen
+                    ? `${subMenuHeight[`${menuType}-${index}`]}px`
+                    : "0px",
                 }}
               >
                 <ul className="ms-9 mt-2 space-y-1">
