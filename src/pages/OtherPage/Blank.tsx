@@ -1,5 +1,6 @@
 import PageBreadcrumb from "@/components/common/PageBreadCrumb";
 import PageMeta from "@/components/common/PageMeta";
+import ComponentCard from "@/components/ui/ComponentCard";
 
 export default function Blank() {
   return (
@@ -9,18 +10,24 @@ export default function Blank() {
         description="This is React.js Blank Page for the Asset Management App"
       />
       <PageBreadcrumb pageTitle="Blank Page" />
-      <div className="min-h-screen rounded-2xl border border-gray-200 bg-white px-5 py-7 xl:px-10 xl:py-12 dark:border-gray-800 dark:bg-white/3">
-        <div className="mx-auto w-full max-w-157.5 text-center">
-          <h3 className="mb-4 text-theme-xl font-semibold text-gray-800 sm:text-2xl dark:text-white/90">
-            Card Title Here
-          </h3>
 
-          <p className="text-sm text-gray-500 sm:text-base dark:text-gray-400">
-            Start putting content on grids or panels, you can also use different
-            combinations of grids.Please check out the dashboard and other pages
-          </p>
-        </div>
-      </div>
+      <ComponentCard title="Blank Page" desc="A minimal page to copy from.">
+        <p className="text-sm text-gray-500 dark:text-gray-400">
+          This is the smallest useful page:{" "}
+          <code className="rounded bg-gray-100 px-1 py-0.5 text-gray-700 dark:bg-white/10 dark:text-gray-300">
+            PageMeta
+          </code>{" "}
+          for the document title,{" "}
+          <code className="rounded bg-gray-100 px-1 py-0.5 text-gray-700 dark:bg-white/10 dark:text-gray-300">
+            PageBreadcrumb
+          </code>{" "}
+          for the header, and{" "}
+          <code className="rounded bg-gray-100 px-1 py-0.5 text-gray-700 dark:bg-white/10 dark:text-gray-300">
+            ComponentCard
+          </code>{" "}
+          as the content container. Replace this card with your own sections.
+        </p>
+      </ComponentCard>
     </div>
   );
 }
