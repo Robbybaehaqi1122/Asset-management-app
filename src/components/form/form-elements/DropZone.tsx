@@ -3,7 +3,7 @@ import { useModal } from "@/hooks/useModal";
 import { EyeIcon, TrashBinIcon, UploadIcon } from "@/icons";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useDropzone } from "react-dropzone";
-import ComponentCard from "../../common/ComponentCard";
+import ComponentCard from "../../ui/ComponentCard";
 
 interface FileWithPreview extends File {
   preview?: string;
