@@ -171,6 +171,7 @@ supabase/
     ├── 20260927000200_triggers.sql   6 functions, 8 triggers
     └── 20260927000300_rls.sql        grants, RLS, 14 policies
     └── 20260927000400_drop_first_admin_grant.sql  handle_new_user always 'staff'
+    └── 20260927000500_sync_asset_status_with_assignments.sql  status/loan sync
 
 .github/
 ├── ISSUES_KNOWN.md            known problems, grouped by severity
@@ -180,7 +181,7 @@ supabase/
 ## Database
 
 `supabase/migrations/` holds the schema, applied to project
-`dnyszknpinqvcfkmoauz` (Postgres 17.6.1). Four migrations, in order:
+`dnyszknpinqvcfkmoauz` (Postgres 17.6.1). Five migrations, in order:
 
 | File | Contents |
 |---|---|
@@ -188,9 +189,11 @@ supabase/
 | `20260927000200_triggers.sql` | `set_updated_at`, `handle_new_user`, 2 maintenance guards, `is_admin`, `protect_profile_role` |
 | `20260927000300_rls.sql` | grants, `enable`/`force row level security` on all 6 tables, 14 policies |
 | `20260927000400_drop_first_admin_grant.sql` | `handle_new_user` redefined to always insert `staff`; see Promoting the first admin |
+| `20260927000500_sync_asset_status_with_assignments.sql` | 2 triggers keeping `assets.status` honest; see Asset status follows the loans |
 
-**All four are applied to the remote.** `db diff --linked` reports `No schema
-changes found`, so the files and the live database agree.
+**Migrations 001 to 004 are applied to the remote. 005 is not** — written and
+verified against `db reset --local`, waiting on review. So the remote still
+accepts the contradictory `assets.status` values until someone runs `db push`.
 
 Note that `db push` printed `Remote database is up to date.` immediately after
 applying 004, with no "Applying migration" line. That message is not a reliable
@@ -321,9 +324,10 @@ exists`. So the files are not a repair tool.
 
 **`schema_migrations` is the ledger.** `supabase_migrations.schema_migrations`
 holds one row per applied version — `20260927000100` schema, `20260927000200`
-triggers, `20260927000300` rls, `20260927000400` drop first-admin grant. That
-table, not the schema itself, is what the CLI consults to decide what is pending,
-and it is also the only trustworthy way to confirm a push landed.
+triggers, `20260927000300` rls, `20260927000400` drop first-admin grant.
+`20260927000500` is pending. That table, not the schema itself, is what the CLI
+consults to decide what is pending, and it is also the only trustworthy way to
+confirm a push landed.
 
 `db reset --local` is the way to re-apply them from scratch, and it is safe
 because the local database is disposable. **There is no equivalent for the
@@ -530,6 +534,43 @@ arrive via the `on_auth_user_created` trigger, which is `security definer`. A
 self-service insert would let anyone fabricate a profile — including one with
 `role = 'admin'`.
 
+### Asset status follows the loans
+
+`assets.status` has five values and only two of them are derivable from
+`assignments`: `available` and `assigned`. `maintenance`, `damaged` and `retired`
+are judgements a person makes, so the column cannot be replaced by a view — it is
+a real column with a real workflow, and two triggers keep the two derivable values
+honest. `20260927000500` adds both.
+
+**It needs two, and the second is the one that matters.** A trigger on
+`assignments` alone is not enough: `status` is a column a client can also write
+directly, and nothing checked that write. Verified on a local stack before the
+migration was written — inserting a loan and then running
+`update assets set status = 'available'` both succeeded, which is the whole bug
+the issue describes.
+
+1. **`assignments_sync_asset_status`** — after insert/update/delete on
+   `assignments`, moves the asset between `available` and `assigned`. Fires on the
+   *transition* of `returned_at`, not on every update. Invoker rights: whoever can
+   change assignments can already write assets, so no elevation is needed.
+2. **`assets_guard_status`** — before insert/update on `assets`, refuses a `status`
+   that contradicts the actual loans. `security definer`, unlike every other guard
+   in `002`, and deliberately: `assignments_select_own_or_admin` only shows a
+   caller *their own* loans and RLS there is `force`d, so an invoker-rights check
+   would see an empty table and wave the contradiction through. Today that is not
+   exploitable — `assets_write_admin` means only admins write `assets`, and an
+   admin passes the `or public.is_admin()` arm — but that is a coincidence between
+   two policies, not a property of the function.
+
+**No trigger ever overwrites `retired`, `damaged` or `maintenance`.** Every
+transition is conditioned on the status the row is in *now*: a loan only makes an
+`available` asset `assigned`, and a return only makes an `assigned` asset
+`available`. A retired asset stays retired while it is out on loan and after it
+comes back. A blind overwrite would be worse than the inconsistency it replaced.
+
+All three workflow guards reject with `23514` (`check_violation`), so a client sees
+one recognisable code rather than three.
+
 ### Trigger functions and `search_path`
 
 `handle_new_user`, `is_admin`, and `protect_profile_role` are `security definer`
@@ -697,6 +738,7 @@ These were deliberate. Do not "clean them up" without asking.
 
 | Decision | Why |
 |---|---|
+| `assets.status` is kept in step with the loans by triggers, not by client code | The owner chose the complete fix over the cheap one (#40). A trigger on `assignments` alone leaves `assets.status` directly writable and the contradiction one statement away, so the guard on `assets` is the half that makes the column trustworthy. Same reasoning that already put `set_updated_at` and the maintenance guards in the database |
 | No first-signup admin grant; the first admin is promoted by hand | The owner chose to close it (#39) over keeping it for convenience. The remote had 0 users with signup open, so the grant was an unclaimed admin for anyone who found the URL. The cost is a fresh project starts read-only — see Promoting the first admin |
 | `@supabase/supabase-js` is the backend, wired for email/password auth | Requested by the project owner. It costs ~760 kB of extra JavaScript, most of it realtime/PostgREST/storage this app does not use yet, but the owner wants this client |
 | The social sign-in buttons are `disabled` rather than removed | The owner chose to defer OAuth. Keeping the buttons visible preserves the layout; `auth.oauthNotReady` explains them via `title` |
@@ -779,6 +821,12 @@ not go looking for them unprompted.
   admin.
 - Don't leave `profiles_protect_role` disabled. If a promote seems to need it off,
   it is three statements and the third one puts it back.
+- Don't write `assets.status` from the client to mean "available" or "assigned".
+  Those two values follow the loans and `assets_guard_status` will reject a write
+  that disagrees. If you need to retire or damage something, write that — nothing
+  overwrites it. See Asset status follows the loans.
+- Don't add a trigger on `assignments` alone and call the status synced. The
+  guard on `assets` is the half that stops the contradiction being written back.
 - Don't drop `set search_path = public` from a `security definer` function.
 - Don't put a `service_role` key anywhere to "fix" a migration problem. PostgREST
   cannot run DDL; that needs the CLI.
