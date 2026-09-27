@@ -3,6 +3,7 @@ import RequireAuth from "@/components/auth/RequireAuth";
 import { Route, BrowserRouter as Router, Routes } from "react-router";
 import { ScrollToTop } from "./components/common/ScrollToTop";
 import AppLayout from "./layout/AppLayout";
+import DepartmentListPage from "./modules/departments/pages/DepartmentListPage";
 import UserListPage from "./modules/users/pages/UserListPage";
 import SignIn from "./pages/AuthPages/SignIn";
 import Calendar from "./pages/Calendar";
@@ -24,11 +25,12 @@ export default function App() {
               <Route index path="/" element={<Dashboard />} />
               <Route path="/calendar" element={<Calendar />} />
               <Route path="/profile" element={<Profile />} />
-              {/* Hanya `RequireAuth`, bukan admin guard: halamannya sendiri yang
-                  menolak non-admin. RLS sudah membatasi baris mana yang terlihat,
-                  dan menambah route guard kedua hanya akan jadi lapisan UI yang
-                  tidak menambah keamanan. */}
+              {/* Hanya `RequireAuth`, bukan admin guard: halaman mereka sendiri
+                  yang menolak non-admin. RLS sudah membatasi baris mana yang
+                  terlihat, dan menambah route guard kedua hanya akan jadi lapisan
+                  UI yang tidak menambah keamanan. */}
               <Route path="/users" element={<UserListPage />} />
+              <Route path="/departments" element={<DepartmentListPage />} />
               <Route path="/blank" element={<Blank />} />
             </Route>
           </Route>

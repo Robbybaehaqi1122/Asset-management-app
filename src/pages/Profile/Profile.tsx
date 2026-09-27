@@ -108,7 +108,7 @@ export default function Profile() {
                 {t("department")}
               </dt>
               <dd className="mt-1 truncate text-sm text-gray-800 dark:text-white/90">
-                {profile?.department ?? t("notSet")}
+                {profile?.departmentName ?? t("notSet")}
               </dd>
             </div>
 

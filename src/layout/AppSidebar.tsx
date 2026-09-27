@@ -61,8 +61,15 @@ const navItems: NavItem[] = [
     icon: <GroupIcon fontSize={24} />,
     name: "User Management",
     key: "userManagement",
-    path: "/users",
     adminOnly: true,
+    // A submenu rather than two separate top-level rows, because these are two
+    // screens of one thing: the people, and the departments they belong to. The
+    // one with an open submenu is derived from the active route, so navigating
+    // into either screen opens this group on its own.
+    subItems: [
+      { name: "User List", key: "userList", path: "/users" },
+      { name: "Departement", key: "department", path: "/departments" },
+    ],
   },
 ];
 

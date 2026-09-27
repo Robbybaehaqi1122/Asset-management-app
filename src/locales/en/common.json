@@ -6,7 +6,9 @@
     "items": {
       "calendar": "Calendar",
       "assetManagement": "Asset Management",
-      "userManagement": "User Management"
+      "userManagement": "User Management",
+      "userList": "User List",
+      "department": "Departement"
     }
   },
   "header": {
@@ -113,6 +115,44 @@
       "mismatch": "Passwords do not match."
     }
   },
+  "departments": {
+    "pageTitle": "Departement",
+    "pageDescription": "The departments a profile can belong to",
+    "subtitle": "The people screen offers these as a dropdown, so a department added here is available immediately when adding or editing an account.",
+    "checkingAccess": "Checking your access…",
+    "noAccess": "This page is only available to administrators.",
+    "loading": "Loading departments…",
+    "empty": "No departments yet. Add one to be able to place people in it.",
+    "dismiss": "Dismiss",
+    "addDepartment": "Add department",
+    "createTitle": "Add department",
+    "deleteTitle": "Delete this department?",
+    "deleteBody": "{name} will be removed from the list of departments.",
+    "deleteInUse": "Move everyone out of this department first — deleting it would leave them without one.",
+    "deleteLabel": "Delete {name}",
+    "deleteConfirm": "Delete",
+    "deleting": "Deleting…",
+    "deleted": "{name} was deleted.",
+    "noMembers": "Empty",
+    "members": "{count} member(s)",
+    "optional": "optional",
+    "cancel": "Cancel",
+    "saving": "Saving…",
+    "fields": {
+      "name": "Name",
+      "namePlaceholder": "e.g. Finance",
+      "description": "Description",
+      "descriptionPlaceholder": "What this department is for"
+    },
+    "errors": {
+      "load": "The department list could not be loaded.",
+      "nameRequired": "A name is required.",
+      "duplicate": "A department with that name already exists. Names are case-sensitive, so check the spelling.",
+      "create": "The department could not be created. Please try again.",
+      "delete": "The department could not be deleted. Please try again.",
+      "inUse": "{name} still has {count} person/people in it. Move them to another department first."
+    }
+  },
   "users": {
     "pageTitle": "User Management",
     "pageDescription": "Review the accounts in this workspace, and add or edit them",
@@ -175,11 +215,13 @@
       "fullName": "Full name",
       "email": "Email address",
       "department": "Department",
+      "departmentPlaceholder": "Not set",
       "role": "Role",
       "password": "Password",
       "showPassword": "Show password",
       "hidePassword": "Hide password"
     },
+    "noDepartmentsYet": "No departments yet — add one from the Departement page first.",
     "errors": {
       "load": "The user list could not be loaded.",
       "save": "The role could not be changed. Please try again.",

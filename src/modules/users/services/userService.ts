@@ -1,4 +1,5 @@
 import type { Profile, ProfileRole } from "@/lib/profiles";
+import { toProfile } from "@/lib/profiles";
 import { supabase } from "@/lib/supabase";
 
 /**
@@ -14,9 +15,15 @@ import { supabase } from "@/lib/supabase";
  *
  * Daftar ini adalah daftar *select*. Jaminan "hanya dua kolom" milik `updateUserDetails`
  * ada di payload `.update()`-nya, bukan di sini.
+ *
+ * `department:departments(id, name)` adalah embed, bukan kolom. Yang menjadi
+ * foreign key adalah `department_id`, dan hasilnya diletakkan di alias
+ * `department` supaya `Profile.department` tetap berupa `DepartmentRef | null`
+ * dan penampilannya tetap `row.department?.name`.
  */
 const USER_COLUMNS =
-  "id, email, full_name, role, department, created_at, must_change_password";
+  "id, email, full_name, role, created_at, must_change_password, " +
+  "department:departments(id, name)";
 
 /**
  * Teks persis yang dilempar `profiles_guard_last_admin`. Dicocokkan
@@ -60,7 +67,14 @@ export async function getAllUsers(): Promise<Profile[]> {
     .order("created_at", { ascending: true });
 
   if (error) throw error;
-  return (data ?? []) as Profile[];
+
+  // Mapped rather than cast, because the department arrives as an embedded
+  // object and `departmentName` does not exist in the response at all. Casting
+  // here would hand the caller a `Profile` whose `departmentName` is
+  // `undefined` while the type promises `string | null` — the same type lie
+  // that made `must_change_password` a problem before it was added to the
+  // select list.
+  return (data ?? []).map(toProfile);
 }
 
 /**
@@ -89,7 +103,14 @@ export async function updateUserRole(
 /** Dua kolom yang boleh diubah layar ini. */
 export type ProfileDetails = {
   full_name: string;
-  department: string | null;
+  /**
+   * A `departments` id, or `null` for "not set".
+   *
+   * An id and not a name, so the write cannot introduce a department that does
+   * not exist — the foreign key refuses it, and the picker is only ever
+   * populated from rows that do.
+   */
+  department_id: string | null;
 };
 
 /**
@@ -134,7 +155,7 @@ export async function updateUserDetails(
     .from("profiles")
     .update({
       full_name: details.full_name,
-      department: details.department,
+      department_id: details.department_id,
     })
     .eq("id", userId)
     .select(USER_COLUMNS)
@@ -147,7 +168,7 @@ export async function updateUserDetails(
   // akan menampilkan "tersimpan" untuk tulisan yang tidak pernah terjadi.
   if (!data) throw new NoRowsUpdatedError();
 
-  return data as Profile;
+  return toProfile(data);
 }
 
 /** Yang dikirim ke `create-user`. Satu-satunya tempat password masuk repo. */

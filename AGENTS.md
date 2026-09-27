@@ -164,9 +164,10 @@ src/
 │   │                          MustChangePassword (the 00800 gate)
 │   └── calendar/              the calendar feature: Calendar CalendarEventModal
 │                              CalendarEventItem CalendarViewSelect icons types
-│   └── modules/               self-contained features; currently just users/
-│       └── users/             the user-management feature: pages/ services/
+│   └── modules/               self-contained features: users/ and departments/
+│       ├── users/             the user-management feature: pages/ services/
 │                              see User management
+│       └── departments/       the department feature: list + create, feeds the pickers
 ├── layout/                    AppLayout AppSidebar AppHeader Backdrop
 ├── context/                   AuthContext ThemeContext SidebarContext LanguageContext
 ├── hooks/                     useModal useClickOutside useIsAdmin
@@ -214,8 +215,9 @@ vercel.json                    SPA rewrite only — no framework, no buildComman
 | `20260927000600_profiles_email.sql` | `profiles.email`, `handle_new_user` copies it, backfill, unique index |
 | `20260927000700_user_management_guards.sql` | `guard_last_admin` and `protect_profile_email`; see User management |
 | `20260927000800_must_change_password.sql` | `profiles.must_change_password boolean not null default false`; one column, no trigger; see The temporary password is a prompt, not a boundary |
+| `20260927000900_departments.sql` | `departments` table, `profiles.department` text -> `department_id` uuid, backfill, rewritten `handle_new_user`; see Departments are reference data |
 
-**All eight are applied to the remote.** `db diff --linked` reports `No schema
+**Seven are applied to the remote; 00900 is verified locally and not yet pushed.** `db diff --linked` reports `No schema
 changes found`, so the files and the live database agree.
 
 Note that `db push` printed `Remote database is up to date.` immediately after
@@ -757,6 +759,74 @@ comes back. A blind overwrite would be worse than the inconsistency it replaced.
 
 All three workflow guards reject with `23514` (`check_violation`), so a client sees
 one recognisable code rather than three.
+
+### Departments are reference data
+
+`profiles.department` was free text, and free text stops being workable the
+moment it becomes a list: the Add-user form offered a text box, so "IT", "it"
+and "IT " were three different values and nothing in the database could tell.
+`20260927000900_departments.sql` makes it a `departments` table with a uuid and a
+`department_id` foreign key, in the same shape `categories` and `locations`
+already had.
+
+**The foreign key rather than a validated text column is the point.** A list the
+database does not reference is a list it cannot enforce, and it drifts the first
+time anything writes the column from outside the form. `assets.category_id` and
+`assets.location_id` are uuid references for the same reason.
+
+The backfill is verified on the local stack against realistic pre-migration data,
+including the sloppiness a text column permits: 5 profiles holding `IT`, `IT`,
+`  Finance  `, `""` and a hand-typed `Ops ` became **3** departments — the
+duplicate collapsed, the whitespace was trimmed, the empty string stayed NULL
+without creating a row, and the trailing space was cleaned up. A distinct-value
+insert alone is not enough for the last case, because `Ops ` and `Ops` are two
+distinct values and the join has to trim too.
+
+### An unknown department at signup becomes NULL, on purpose
+
+`handle_new_user` resolves the metadata `department` to a row if one matches and
+drops it if none does. Creating the row instead would let **any anonymous
+signup** invent entries in a table only admins may write — the function is
+`security definer`, so a row it inserted would carry no policy decision at all.
+The app has no signup route, but the GoTrue endpoint is still open, and the
+sign-in form says so.
+
+### The delete guard is load-bearing, and the database will not do it
+
+`profiles.department_id` is `on delete set null`, deliberately, so a department
+removed by some future path degrades into "not set" rather than breaking an
+unrelated write. The cost is that **the database will happily delete a department
+that still has people in it** and silently un-assign every one of them. Verified:
+an admin deleting an in-use department got `DELETE 1` and the member became
+NULL, with no error and no warning.
+
+So `deleteDepartment` asks first and throws `DepartmentInUseError` with the
+count. A cross-table check is not something a foreign key can express, which is
+why the check is in the application rather than in the schema.
+
+### Every write here needs `.select()`, for the usual reason
+
+`departments_write_admin` is one `for all` policy, so for UPDATE and DELETE a
+staff member's statement matches nothing and PostgREST still reports success —
+verified: a staff `DELETE` returned no error and deleted 0 rows. `INSERT` is the
+one operation that raises, because a row-level violation on the check is an
+error rather than a filtered result. `createDepartment` and `deleteDepartment`
+both use `.select()` and throw `NoRowsWrittenError` on zero rows, so "saved" on
+the screen cannot mean "nothing happened".
+
+### The module is `src/modules/departments/`
+
+`pages/DepartmentListPage.tsx` and `services/departmentService.ts`, following
+`src/modules/users/`. Its read is **not** gated on `isAdmin`, unlike the user
+list's, and that difference is deliberate: `profiles_select_own_or_admin` hides
+rows from a staff member, so that read has to be gated or a staff member is
+handed a one-row list that looks broken. `departments_select_authenticated` is
+`using (true)`, so the department read returns the same rows for everyone and
+gating it would only make the page slower.
+
+`UserListPage` reads `getDepartmentOptions()` for its two pickers, so the list
+refills whenever the users list reloads and a department added in another tab is
+available without a full page reload.
 
 ## User management
 

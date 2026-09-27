@@ -29,8 +29,9 @@ import {
   HorizontaLDots,
   PlusIcon,
 } from "@/icons";
-import type { Profile, ProfileRole } from "@/lib/profiles";
+import type { DepartmentRef, Profile, ProfileRole } from "@/lib/profiles";
 import { generatePassword } from "@/lib/password";
+import { getDepartmentOptions } from "@/modules/departments/services/departmentService";
 
 import {
   getAllUsers,
@@ -55,14 +56,19 @@ type PendingChange = {
 type EditingDetails = {
   row: Profile;
   fullName: string;
-  department: string;
+  /**
+   * A `departments` id, or `""` for "not set". An id rather than a name
+   * because that is what the column is, and because the picker is only ever
+   * populated from rows that exist.
+   */
+  departmentId: string;
 };
 
 /** The add-user form. Never kept in state after the modal closes. */
 type NewUserForm = {
   email: string;
   fullName: string;
-  department: string;
+  departmentId: string;
   role: ProfileRole;
   password: string;
 };
@@ -70,7 +76,7 @@ type NewUserForm = {
 const EMPTY_NEW_USER: NewUserForm = {
   email: "",
   fullName: "",
-  department: "",
+  departmentId: "",
   // `admin`, not `staff`, and the two must not drift apart again: the comment
   // inside the modal already argues for admin, and the Select is seeded from
   // this value, so a mismatch here is a mismatch the admin sees on screen. An
@@ -141,6 +147,20 @@ export default function UserListPage() {
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
 
+  /**
+   * The departments the pickers draw from.
+   *
+   * Read once for the screen and re-read whenever the list is reloaded, so a
+   * department added in another tab — or on the `/departments` page and
+   * navigated back from — is available without a full page reload. Read without
+   * an admin gate on purpose: `departments_select_authenticated` is
+   * `using (true)`, so this returns the same rows for a staff member, and
+   * gating it would only delay the screen.
+   */
+  const [departmentOptions, setDepartmentOptions] = useState<DepartmentRef[]>(
+    [],
+  );
+
   const reload = useCallback(() => setReloadToken((prev) => prev + 1), []);
 
   useEffect(() => {
@@ -174,6 +194,30 @@ export default function UserListPage() {
     };
   }, [isAdmin, reloadToken]);
 
+  // Keyed on `reloadToken` rather than on `isAdmin`, so the picker list is
+  // refreshed by the same tick that refreshes the users. Separate from the read
+  // above because that one is admin-gated and this one is not.
+  useEffect(() => {
+    let cancelled = false;
+
+    void getDepartmentOptions().then(
+      (rows) => {
+        if (cancelled) return;
+        setDepartmentOptions(rows);
+      },
+      // A failed read of the picker list leaves the pickers empty rather than
+      // breaking the screen. The department column itself is unaffected: it is
+      // embedded in the profiles read, not joined from here.
+      () => {
+        if (!cancelled) setDepartmentOptions([]);
+      },
+    );
+
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadToken]);
+
   const adminCount = useMemo(
     () => users.filter((row) => row.role === "admin").length,
     [users],
@@ -183,7 +227,7 @@ export default function UserListPage() {
     const needle = query.trim().toLowerCase();
     if (needle === "") return users;
     return users.filter((row) =>
-      [row.full_name, row.email, row.department].some((value) =>
+      [row.full_name, row.email, row.departmentName].some((value) =>
         value?.toLowerCase().includes(needle),
       ),
     );
@@ -207,7 +251,7 @@ export default function UserListPage() {
   const handleCreate = async () => {
     const email = newUser.email.trim().toLowerCase();
     const fullName = newUser.fullName.trim();
-    const department = newUser.department.trim();
+    const departmentId = newUser.departmentId;
     const password = newUser.password;
 
     // Checked here for an immediate message, and again by the Edge Function,
@@ -255,7 +299,7 @@ export default function UserListPage() {
       // by exactly the dropped request that makes people reach for retry.
       await updateUserDetails(created.id, {
         full_name: fullName,
-        department: department === "" ? null : department,
+        department_id: departmentId === "" ? null : departmentId,
       });
       await updateUserRole(created.id, newUser.role);
 
@@ -302,7 +346,10 @@ export default function UserListPage() {
     setEditing({
       row,
       fullName: row.full_name ?? "",
-      department: row.department ?? "",
+      // The id, not the name: this is what the column holds, and the picker
+      // matches on id. `""` when the person has no department, which the Select
+      // shows as the "not set" placeholder.
+      departmentId: row.department?.id ?? "",
     });
     editModal.openModal();
   };
@@ -311,10 +358,10 @@ export default function UserListPage() {
     if (!editing) return;
 
     // Trimmed before validating, so a name of spaces is a missing name rather
-    // than a name the user cannot see. `department` is allowed to be empty and
+    // than a name the user cannot see. The department is allowed to be unset and
     // becomes NULL, which is how the column reads "not set" everywhere else.
     const fullName = editing.fullName.trim();
-    const department = editing.department.trim();
+    const departmentId = editing.departmentId;
 
     if (fullName === "") {
       setDetailsError(t("errors.nameRequired"));
@@ -326,7 +373,7 @@ export default function UserListPage() {
     try {
       await updateUserDetails(editing.row.id, {
         full_name: fullName,
-        department: department === "" ? null : department,
+        department_id: departmentId === "" ? null : departmentId,
       });
       editModal.closeModal();
 
@@ -630,7 +677,7 @@ export default function UserListPage() {
 
                         <TableCell className="px-6 py-4">
                           <span className="block truncate text-sm text-gray-500 dark:text-gray-400">
-                            {row.department || t("notSet")}
+                            {row.departmentName || t("notSet")}
                           </span>
                         </TableCell>
 
@@ -790,18 +837,27 @@ export default function UserListPage() {
                   ({t("optional")})
                 </span>
               </Label>
-              <Input
+              {/* A picker, not a text box, because the column is a foreign key
+                  and a typed value that no row matches would be refused by the
+                  database with an error the form cannot explain. The empty
+                  option is "not set", which is a real value the column holds. */}
+              <Select
                 id="new-department"
-                name="department"
-                value={newUser.department}
-                onChange={(event) =>
-                  setNewUser((prev) => ({
-                    ...prev,
-                    department: event.target.value,
-                  }))
+                options={departmentOptions.map((option) => ({
+                  value: option.id,
+                  label: option.name,
+                }))}
+                defaultValue={newUser.departmentId}
+                placeholder={t("fields.departmentPlaceholder")}
+                onChange={(value) =>
+                  setNewUser((prev) => ({ ...prev, departmentId: value }))
                 }
-                placeholder={t("fields.department")}
               />
+              {departmentOptions.length === 0 && (
+                <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                  {t("noDepartmentsYet")}
+                </p>
+              )}
             </div>
 
             <div>
@@ -881,16 +937,19 @@ export default function UserListPage() {
                   ({t("optional")})
                 </span>
               </Label>
-              <Input
+              <Select
                 id="edit-department"
-                name="department"
-                value={editing?.department ?? ""}
-                onChange={(event) =>
+                options={departmentOptions.map((option) => ({
+                  value: option.id,
+                  label: option.name,
+                }))}
+                defaultValue={editing?.departmentId ?? ""}
+                placeholder={t("fields.departmentPlaceholder")}
+                onChange={(value) =>
                   setEditing((prev) =>
-                    prev ? { ...prev, department: event.target.value } : prev,
+                    prev ? { ...prev, departmentId: value } : prev,
                   )
                 }
-                placeholder={t("fields.department")}
               />
             </div>
           </div>
