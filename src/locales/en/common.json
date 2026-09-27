@@ -110,10 +110,19 @@
       "admin": "Administrator",
       "staff": "Staff"
     },
-    "notSet": "Not set",
-    "you": "You",
-    "changeRole": "Change role",
-    "addUser": "Add user",
+  "notSet": "Not set",
+  "you": "You",
+  "changeRole": "Change role",
+  "edit": "Edit",
+  "editTitle": "Edit user",
+  "fields": {
+    "fullName": "Full name",
+    "department": "Department"
+  },
+  "optional": "optional",
+  "saveDetails": "Save changes",
+  "emailManagedElsewhere": "The email address is changed in Supabase, not here.",
+  "addUser": "Add user",
     "createNotReady": "Creating an account needs a server-side Admin API call, which this app does not have yet. Create the user from the Supabase Dashboard instead.",
     "lastAdmin": "This is the only administrator. Promote somebody else first.",
     "confirmTitle": "Change role?",
@@ -126,10 +135,13 @@
     "empty": "No accounts yet.",
     "noResults": "No accounts match your search.",
     "showing": "Showing {{shown}} of {{total}} accounts",
-    "errors": {
-      "load": "The user list could not be loaded.",
-      "save": "The role could not be changed. Please try again.",
-      "lastAdmin": "The last administrator cannot be demoted. Promote somebody else first."
-    }
+  "errors": {
+    "load": "The user list could not be loaded.",
+    "save": "The role could not be changed. Please try again.",
+    "saveDetails": "The changes could not be saved. Please try again.",
+    "nameRequired": "A name is required.",
+    "notFound": "That account no longer exists, or you do not have access to it.",
+    "lastAdmin": "The last administrator cannot be demoted. Promote somebody else first."
+  }
   }
 }

@@ -74,23 +74,26 @@ terpasang — bukan hanya bahwa schema `public` cocok. **Issue #37.**
 
 ## Sedang
 
-### 4. `profiles` masih belum bisa diedit dari UI
+### 4. `profiles` masih read-only untuk non-admin
 
-Tercakup sebagian. `AuthContext` sekarang membaca baris profil dan
-`useIsAdmin()` bercabang darinya, `/profile` menampilkannya, dan `/users`
-membaca serta mengubah `role`.
+Tercakup sebagian. Admin bisa mengubah `full_name` dan `department` siapa saja dari
+`/users`, dan `updateUserDetails` sudah terbukti aman terhadap ketiga trigger yang
+ada di `profiles` — dua di antaranya `UPDATE OF` pada kolom yang tidak dikirim, dan
+ketiganya hanya melempar kalau `role` benar-benar berubah. Nol migration.
 
-Yang masih belum ada: **tidak ada tempat mengubah `full_name` atau
-`department` dari UI**. Keduanya hanya diisi trigger dari metadata signup, jadi
-nilainya adalah apa yang diketik orang saat pertama kali masuk — dan metadata itu
-bisa dibuat oleh client. `UserDropdown` masih membaca
-`user_metadata.full_name`, yang berarti dua sumber kebenaran untuk satu nama.
-Halaman `/profile` sengaja read-only, jadi "Edit profile" di dropdown
-menjanjikan sesuatu yang belum ada.
+Yang masih belum ada: **staff tidak punya UI untuk mengubah namanya sendiri.**
+RLS dan ketiga trigger sama-sama mengizinkan itu — sudah diuji lokal, dan berhasil —
+tapi `/profile` sengaja read-only, jadi satu-satunya jalan masuk adalah `/users`
+yang hanya untuk admin. Artinya seorang staff bisa mengubah namanya di level
+database, dan tidak bisa sama sekali di level aplikasi.
 
-Sisa masalah lain yang asli: tombol "Hapus asset" **belum pernah ada** untuk
-diuji, jadi belum ada contoh UI yang menyamarkan aksi tulis versi RLS.
-**Issue #38.**
+Ffaktor yang memperparah: `UserDropdown` sudah membaca `profile.full_name` lebih
+dulu, jadi begitu nama diedit di `/users` header ikut berubah — sementara
+`user_metadata.full_name`, yang dulu jadi sumber nama di situ, kini tidak dibaca
+siapa pun. `profiles.full_name` sekarang satu-satunya sumber nama di shell.
+
+Halaman `/profile` sengaja read-only, jadi "Edit profile" di dropdown masih
+menjanjikan sesuatu yang belum ada. **Issue #38.**
 
 ### 5. Signup pertama otomatis mendapat `admin`
 

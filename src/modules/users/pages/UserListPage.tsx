@@ -4,7 +4,9 @@ import { useTranslation } from "react-i18next";
 
 import PageBreadcrumb from "@/components/common/PageBreadCrumb";
 import PageMeta from "@/components/common/PageMeta";
+import Label from "@/components/form/Label";
 import Select from "@/components/form/Select";
+import Input from "@/components/form/input/InputField";
 import Badge from "@/components/ui/badge/Badge";
 import Button from "@/components/ui/button/Button";
 import { Modal } from "@/components/ui/modal";
@@ -24,6 +26,8 @@ import type { Profile, ProfileRole } from "@/lib/profiles";
 import {
   getAllUsers,
   isLastAdminError,
+  NoRowsUpdatedError,
+  updateUserDetails,
   updateUserRole,
 } from "../services/userService";
 
@@ -32,6 +36,13 @@ type PendingChange = {
   userId: string;
   name: string;
   nextRole: ProfileRole;
+};
+
+/** The two harmless columns, held in local state while the form is open. */
+type EditingDetails = {
+  row: Profile;
+  fullName: string;
+  department: string;
 };
 
 /**
@@ -50,6 +61,17 @@ type PendingChange = {
  * migration: `profiles_select_own_or_admin` already lets an admin read every
  * row, `profiles_update_own` already lets one write any row, and
  * `profiles_protect_role` already restricts the change to admins.
+ *
+ * Editing the name and department needs no migration either, and not because
+ * nothing guards them. Three triggers sit on `profiles`; the reason this works
+ * is that only the two harmless columns are sent, so the two `UPDATE OF`
+ * triggers never fire and the third returns early on an unchanged role. See
+ * `updateUserDetails`.
+ *
+ * Role and name are separate controls rather than one combined form, because
+ * they are separate concerns: role is protected, name is not, and folding them
+ * together would either weaken the role guard or make the last-admin hint
+ * depend on which field the cursor is in.
  */
 export default function UserListPage() {
   const { t } = useTranslation("common", { keyPrefix: "users" });
@@ -62,10 +84,15 @@ export default function UserListPage() {
   const [query, setQuery] = useState("");
   const [reloadToken, setReloadToken] = useState(0);
 
-  const { isOpen, openModal, closeModal } = useModal();
+  // Two independent modals. `useModal` is one `useState`, so calling it twice
+  // is cheaper than adding instance identity to the hook for two callers.
+  const roleModal = useModal();
+  const editModal = useModal();
   const [pending, setPending] = useState<PendingChange | null>(null);
+  const [editing, setEditing] = useState<EditingDetails | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [detailsError, setDetailsError] = useState<string | null>(null);
 
   const reload = useCallback(() => setReloadToken((prev) => prev + 1), []);
 
@@ -125,7 +152,59 @@ export default function UserListPage() {
       name: row.full_name || row.email || t("notSet"),
       nextRole,
     });
-    openModal();
+    roleModal.openModal();
+  };
+
+  const handleOpenEdit = (row: Profile) => {
+    setDetailsError(null);
+    setEditing({
+      row,
+      fullName: row.full_name ?? "",
+      department: row.department ?? "",
+    });
+    editModal.openModal();
+  };
+
+  const handleSaveDetails = async () => {
+    if (!editing) return;
+
+    // Trimmed before validating, so a name of spaces is a missing name rather
+    // than a name the user cannot see. `department` is allowed to be empty and
+    // becomes NULL, which is how the column reads "not set" everywhere else.
+    const fullName = editing.fullName.trim();
+    const department = editing.department.trim();
+
+    if (fullName === "") {
+      setDetailsError(t("errors.nameRequired"));
+      return;
+    }
+
+    setIsSaving(true);
+    setDetailsError(null);
+    try {
+      await updateUserDetails(editing.row.id, {
+        full_name: fullName,
+        department: department === "" ? null : department,
+      });
+      editModal.closeModal();
+
+      // Same reason as the role change: the cached profile still holds the old
+      // name, and `UserDropdown` reads it. `userId` has not changed, so the
+      // fetch effect will not run on its own.
+      if (editing.row.id === user?.id) {
+        await refreshProfile();
+      } else {
+        reload();
+      }
+    } catch (error) {
+      setDetailsError(
+        error instanceof NoRowsUpdatedError
+          ? t("errors.notFound")
+          : t("errors.saveDetails"),
+      );
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handleConfirm = async () => {
@@ -134,7 +213,7 @@ export default function UserListPage() {
     setSaveError(null);
     try {
       await updateUserRole(pending.userId, pending.nextRole);
-      closeModal();
+      roleModal.closeModal();
 
       // Changing your own role leaves the cached profile claiming the old one,
       // so `useIsAdmin()` would keep reporting admin until a reload. This is
@@ -333,7 +412,18 @@ export default function UserListPage() {
                         </TableCell>
 
                         <TableCell className="px-6 py-4">
-                          <div className="flex justify-end">
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleOpenEdit(row)}
+                            >
+                              {t("edit")}
+                            </Button>
+                            {/* Kept as its own control rather than folded into
+                                the edit form. This one is the only place the
+                                last-admin rule is visible, and a disabled
+                                button is the clearest way to say it. */}
                             <span
                               title={
                                 isLastAdmin ? t("lastAdmin") : t("changeRole")
@@ -373,7 +463,85 @@ export default function UserListPage() {
         )}
       </div>
 
-      <Modal isOpen={isOpen} onClose={closeModal} className="max-w-md">
+      <Modal isOpen={editModal.isOpen} onClose={editModal.closeModal}>
+        <div className="p-6">
+          <h3 className="text-lg font-semibold text-gray-800 dark:text-white/90">
+            {t("editTitle")}
+          </h3>
+
+          <div className="mt-5 space-y-4">
+            <div>
+              <Label htmlFor="edit-full-name">
+                {t("fields.fullName")} <span className="text-error-500">*</span>
+              </Label>
+              <Input
+                id="edit-full-name"
+                name="full_name"
+                value={editing?.fullName ?? ""}
+                onChange={(event) =>
+                  setEditing((prev) =>
+                    prev ? { ...prev, fullName: event.target.value } : prev,
+                  )
+                }
+                placeholder={t("fields.fullName")}
+                autoFocus
+              />
+            </div>
+
+            <div>
+              <Label htmlFor="edit-department">
+                {t("fields.department")}{" "}
+                <span className="text-sm font-normal text-gray-400 dark:text-gray-500">
+                  ({t("optional")})
+                </span>
+              </Label>
+              <Input
+                id="edit-department"
+                name="department"
+                value={editing?.department ?? ""}
+                onChange={(event) =>
+                  setEditing((prev) =>
+                    prev ? { ...prev, department: event.target.value } : prev,
+                  )
+                }
+                placeholder={t("fields.department")}
+              />
+            </div>
+          </div>
+
+          {/* Email and role are not here on purpose. Email lives in
+              `auth.users` and `protect_profile_email` refuses writes from the
+              browser; role has its own control because it is guarded. */}
+          <p className="mt-4 text-sm text-gray-500 dark:text-gray-400">
+            {t("emailManagedElsewhere")}
+          </p>
+
+          {detailsError && (
+            <p className="mt-3 text-sm text-error-600 dark:text-error-500">
+              {detailsError}
+            </p>
+          )}
+
+          <div className="mt-6 flex justify-end gap-3">
+            <Button
+              variant="outline"
+              onClick={editModal.closeModal}
+              disabled={isSaving}
+            >
+              {t("cancel")}
+            </Button>
+            <Button onClick={handleSaveDetails} disabled={isSaving}>
+              {isSaving ? t("saving") : t("saveDetails")}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={roleModal.isOpen}
+        onClose={roleModal.closeModal}
+        className="max-w-md"
+      >
         <div className="p-6">
           <h3 className="text-lg font-semibold text-gray-800 dark:text-white/90">
             {t("confirmTitle")}
@@ -420,7 +588,11 @@ export default function UserListPage() {
           )}
 
           <div className="mt-6 flex justify-end gap-3">
-            <Button variant="outline" onClick={closeModal} disabled={isSaving}>
+            <Button
+              variant="outline"
+              onClick={roleModal.closeModal}
+              disabled={isSaving}
+            >
               {t("cancel")}
             </Button>
             <Button onClick={handleConfirm} disabled={isSaving}>

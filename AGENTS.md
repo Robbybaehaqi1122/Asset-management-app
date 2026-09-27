@@ -755,9 +755,38 @@ one recognisable code rather than three.
 
 ## User management
 
-`src/modules/users/` is the one feature module. It is a **read and role-change**
-screen: list every account, search, change a role. It cannot create or delete
-accounts, and that is a deliberate limit rather than a missing piece.
+`src/modules/users/` is the one feature module. It is a **read, edit, and
+role-change** screen: list every account, search, edit a name and a department,
+change a role. It cannot create or delete accounts, and that is a deliberate
+limit rather than a missing piece.
+
+### Editing the name and department, and why it needs no migration
+
+`full_name` and `department` are editable by any signed-in user on their own
+row, and by an admin on any row — `profiles_update_own` already says so. What
+makes the question worth answering is that **`profiles` has three triggers, and
+none of them can be tripped by this write**.
+
+`updateUserDetails` sends exactly two columns, and that is load-bearing:
+
+| Trigger | Fires on | Why it is inert here |
+|---|---|---|
+| `profiles_protect_email` | `before update **of email**` | An `UPDATE OF` trigger only runs when the column appears in the statement's SET list. `email` is not sent. |
+| `profiles_guard_last_admin` | `before update **of role**` | Same mechanism. `role` is not sent. |
+| `profiles_protect_role` | `before update` (no `OF`) | This one *does* fire, and it is the reason the write is not simply "unprotected". It raises only when `new.role is distinct from old.role`, and the function never touches `role`, so it returns early. |
+
+So the guarantee is not that the columns are unguarded — it is that the guards
+are all column-scoped and this write is scoped away from them. Adding `role` to
+the payload would change that immediately, which is why role is a **separate
+control with its own modal** rather than a third field in the details form.
+Verified locally in 9 assertions, including that a details-only write leaves
+`email` and `role` byte-identical and that an admin editing their own name keeps
+their admin role.
+
+The one honest gap: `.select()` rather than a bare `.update()`, because RLS
+answers a non-permitted write with **zero rows and no error**. A resolved
+promise is not proof, so `NoRowsUpdatedError` is thrown when no row comes back
+and the screen says so.
 
 ### Why there is no create or delete button
 
@@ -780,9 +809,9 @@ flag would need a new column and a decision about live sessions.
 
 `profiles_select_own_or_admin` already gives an admin every row, and
 `profiles_update_own` already lets an admin write any row. `protect_profile_role`
-already restricts the change to admins. So `getAllUsers` and `updateUserRole` in
-`src/modules/users/services/userService.ts` work on the existing policies — the
-role switcher is the whole feature, and it adds no migration.
+already restricts the change to admins. So `getAllUsers`, `updateUserRole` and
+`updateUserDetails` in `src/modules/users/services/userService.ts` work on the
+existing policies — the whole module adds no migration.
 
 ### Two guards the screen depends on
 
@@ -1036,6 +1065,7 @@ These were deliberate. Do not "clean them up" without asking.
 | User management has no create or delete | Both need `supabase.auth.admin` and therefore a `service_role` key in the browser, which is in Don'ts. Delete is worse than absent — it cascades through `assignments` and erases loan history. The disabled "Add user" button states the reason instead of looking unfinished |
 | The last-admin rule is a trigger, not a button's `disabled` | The one-statement lockout was demonstrated locally before the fix, and hiding a control does not stop anyone with a session from sending the request. Same reasoning as `protect_profile_role` and `assets_guard_status` |
 | `profiles.email` is a copy of `auth.users.email` | The user list has to show and search by email, and `auth.users` is not reachable from PostgREST. A `service_role` key is the only alternative and it is forbidden. Sign-in and password reset still read `auth.users`, so the copy is display data only |
+| Name and role are separate controls, not one form | The details write is safe precisely because it sends only two columns, and `role` in the payload would stop being safe. Two modals keeps the "only two columns" property in the code instead of relying on the form to be careful |
 
 ## Known rough edges
 
