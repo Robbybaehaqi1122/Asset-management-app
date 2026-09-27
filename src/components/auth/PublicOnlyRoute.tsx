@@ -4,8 +4,8 @@ import type React from "react";
 import { Navigate, Outlet } from "react-router";
 
 /**
- * Kebalikan dari `RequireAuth` — untuk `/signin` dan `/signup`. Sudah login
- * tidak ada gunanya menampilkan form lagi, langsung lempar ke dashboard.
+ * Kebalikan dari `RequireAuth` — untuk `/signin`. Sudah login tidak ada
+ * gunanya menampilkan form lagi, langsung lempar ke dashboard.
  */
 const PublicOnlyRoute: React.FC = () => {
   const { session, isLoading } = useAuth();

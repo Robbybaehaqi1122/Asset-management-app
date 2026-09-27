@@ -179,18 +179,6 @@ export default function SignInForm() {
                 </div>
               </div>
             </form>
-
-            <div className="mt-5">
-              <p className="text-center text-sm font-normal text-gray-700 sm:text-start dark:text-gray-400">
-                {t("signIn.noAccount")} {""}
-                <Link
-                  to="/signup"
-                  className="text-brand-500 hover:text-brand-600 dark:text-brand-400"
-                >
-                  {t("signIn.signUpLink")}
-                </Link>
-              </p>
-            </div>
           </div>
         </div>
       </div>

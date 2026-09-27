@@ -4,7 +4,6 @@ import { Route, BrowserRouter as Router, Routes } from "react-router";
 import { ScrollToTop } from "./components/common/ScrollToTop";
 import AppLayout from "./layout/AppLayout";
 import SignIn from "./pages/AuthPages/SignIn";
-import SignUp from "./pages/AuthPages/SignUp";
 import Calendar from "./pages/Calendar";
 import Dashboard from "./pages/Dashboard/Dashboard";
 import Blank from "./pages/OtherPage/Blank";
@@ -28,10 +27,10 @@ export default function App() {
             </Route>
           </Route>
 
-          {/* Hanya untuk yang belum login */}
+          {/* Hanya untuk yang belum login. Tidak ada `/signup`: user dibuat
+              oleh admin, bukan mendaftar sendiri. */}
           <Route element={<PublicOnlyRoute />}>
             <Route path="/signin" element={<SignIn />} />
-            <Route path="/signup" element={<SignUp />} />
           </Route>
 
           {/* Sengaja di luar kedua guard: link recovery Supabase membuat session

@@ -5,11 +5,6 @@ import type { Profile } from "@/lib/profiles";
 import { fetchProfile } from "@/lib/profiles";
 import { setSessionPersistence, supabase } from "@/lib/supabase";
 
-export type SignUpResult = {
-  /** `false` bila Supabase mengirim email konfirmasi dan session belum dibuat. */
-  sessionCreated: boolean;
-};
-
 /**
  * Baris profil beserta user id yang memintanya. `userId` disimpan bersama
  * row-nya supaya baris milik user sebelumnya tidak pernah terekspos:
@@ -45,12 +40,6 @@ type AuthContextType = {
     password: string,
     keepSignedIn: boolean,
   ) => Promise<void>;
-  signUp: (
-    fullName: string,
-    department: string,
-    email: string,
-    password: string,
-  ) => Promise<SignUpResult>;
   signOut: () => Promise<void>;
   requestPasswordReset: (email: string) => Promise<void>;
   updatePassword: (password: string) => Promise<void>;
@@ -131,25 +120,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     if (error) throw error;
   };
 
-  const signUp = async (
-    fullName: string,
-    department: string,
-    email: string,
-    password: string,
-  ) => {
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-      // These become raw_user_meta_data, which the on_auth_user_created trigger
-      // reads to fill profiles.full_name and profiles.department. Adding a key
-      // here does nothing until a migration copies it, and the role column is
-      // deliberately not among them.
-      options: { data: { full_name: fullName, department } },
-    });
-    if (error) throw error;
-    return { sessionCreated: data.session !== null };
-  };
-
   const signOut = async () => {
     const { error } = await supabase.auth.signOut();
     if (error) throw error;
@@ -176,7 +146,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         isLoading,
         isProfileLoading,
         signIn,
-        signUp,
         signOut,
         requestPasswordReset,
         updatePassword,

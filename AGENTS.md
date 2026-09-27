@@ -146,7 +146,7 @@ src/
 │                              profiles query), authErrors.ts (code -> i18n key)
 ├── pages/
 │   ├── Dashboard/Dashboard    the blank "/" page
-│   ├── AuthPages/             SignIn, SignUp, ResetPassword, AuthPageLayout (shell, not a route)
+│   ├── AuthPages/             SignIn, ResetPassword, AuthPageLayout (shell, not a route)
 │   ├── Profile/Profile        the "/profile" page — own `profiles` row, read-only
 │   ├── Calendar.tsx
 │   └── OtherPage/             NotFound, Blank
@@ -158,7 +158,7 @@ src/
 │   ├── common/                PageMeta PageBreadCrumb ScrollToTop
 │   │                          ThemeToggleButton ThemeTogglerTwo GridShape
 │   ├── header/                NotificationDropdown UserDropdown
-│   ├── auth/                  SignInForm SignUpForm ResetPasswordForm
+│   ├── auth/                  SignInForm ResetPasswordForm
 │   │                          RequireAuth PublicOnlyRoute AuthLoading
 │   └── calendar/              the calendar feature: Calendar CalendarEventModal
 │                              CalendarEventItem CalendarViewSelect icons types
@@ -430,8 +430,8 @@ name is a type error instead of `undefined` at runtime.
 - Every route is registered in `src/App.tsx`. Add new pages there, nowhere else.
 - Three groups, nested in this order:
   1. `<RequireAuth>` wraps `<AppLayout>` — sidebar + header for signed-in users.
-  2. `<PublicOnlyRoute>` wraps `/signin` and `/signup` — redirects a signed-in
-     user to `/`.
+  2. `<PublicOnlyRoute>` wraps `/signin` only — redirects a signed-in user to `/`.
+     `/signup` no longer exists; see There is no signup route.
   3. `/reset-password` is a bare route, deliberately **outside both guards**.
      Supabase's recovery link creates a session on arrival, so `PublicOnlyRoute`
      would bounce the user straight back to `/` and the reset could never
@@ -442,6 +442,33 @@ name is a type error instead of `undefined` at runtime.
 - `/profile` is inside the `RequireAuth` group, not beside it. It reads the
   signed-in user's own row, so there is nothing for an anonymous visitor to see
   and `PublicOnlyRoute` would only bounce a signed-in user away from it.
+
+## There is no signup route
+
+`/signup` was removed, along with `SignUp.tsx`, `SignUpForm.tsx`, the
+`signUp` method on `AuthContext`, and the 27 i18n keys that only that form
+used. Users are created by an admin instead. The remaining i18n keys
+`auth.backToDashboard`, `auth.or` and `auth.oauthNotReady` are still used by
+`SignInForm` and must not be removed with them.
+
+**Removing the form does not close signup.** The GoTrue endpoint at
+`/auth/v1/signup` is still open, so anyone can still create a `staff` account
+with a direct request even though the UI is gone. The control that actually
+enforces invite-only is the dashboard setting, **Authentication → Sign In /
+Providers → Email → "Allow new users to sign up"**, off. That is a dashboard
+action, not a repo change, so nothing in this repo shows whether it is on.
+
+With the grant in `20260927000400` removed, an open endpoint is not a
+privilege-escalation hole — every new account is `staff`, and the role column
+is protected by `profiles_protect_role`. It means an unbounded supply of
+`staff` rows, not admin.
+
+Creating a user from the dashboard is the supported path today, and it needs
+no `service_role` in this repo. `on_auth_user_created` fires on `auth.users`
+INSERT regardless of how the row got there, so a dashboard-created user still
+gets a `profiles` row automatically. That is what makes invite-only work with
+no create-user code at all. A create-user button inside the app would need the
+Admin API, which means a `service_role` key in the browser — see Don'ts.
 
 ## Supabase
 
@@ -698,7 +725,9 @@ even if they put `"role": "admin"` in their signup metadata.
 That used to be the other way round, and it was a real exposure rather than a
 theoretical one. As of this writing the remote project had **0 users and email
 signup enabled**, so the grant was sitting there unclaimed and the first person to
-reach `/signup` would have owned the database. `20260927000400` removed it.
+reach the signup endpoint would have owned the database.
+`20260927000400` removed it. The app's `/signup` route is gone as well — see
+There is no signup route.
 
 `role` is **never** read from `raw_user_meta_data` in any case. Signup accepts an
 arbitrary `options.data` object from an anonymous caller, so trusting it would be
@@ -854,7 +883,8 @@ These were deliberate. Do not "clean them up" without asking.
 | Auth pages stay | The form markup and validation shape were sound. The submit handlers were replaced with real Supabase calls; the surrounding markup is unchanged |
 | `/reset-password` is outside both route guards | A recovery link creates a session on arrival, so any redirect guard fights the flow. See Routing |
 | The 13 primitives stay | They are the component library. Deleting them for lack of consumers throws away working UI |
-| `/signin` and `/signup` are not in the sidebar | Intentional. The auth shell is reachable by URL so it stays out of the way of domain navigation |
+| `/signin` is not in the sidebar | Intentional. The auth shell is reachable by URL so it stays out of the way of domain navigation |
+| The signup form is removed rather than hidden | The owner chose invite-only: an admin creates users, nobody self-registers. The form's route, component, context method and 27 i18n keys all went with it — see There is no signup route |
 | The "Asset Management" sidebar row is non-clickable | It marks where domain navigation will go. A `disabled` row cannot dead-link to a 404 |
 
 ## Known rough edges
