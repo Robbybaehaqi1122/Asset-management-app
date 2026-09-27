@@ -40,8 +40,21 @@ export default function UserDropdown() {
 
   const handleSignOut = async () => {
     closeDropdown();
-    await signOut();
-    navigate("/signin", { replace: true });
+    try {
+      await signOut();
+      navigate("/signin", { replace: true });
+    } catch (error) {
+      // Sign-out rejected, so the session survives and `navigate` is skipped:
+      // the user stays signed in on the page they were already on, which is
+      // the safe direction to fail in. Swallowing it here stops it becoming an
+      // unhandled rejection inside an event handler.
+      //
+      // There is no toast primitive in this repo, so the failure is still only
+      // visible in the console. That gap is recorded in AGENTS.md rather than
+      // solved by inventing a notification system as a side effect of a
+      // one-line fix.
+      console.error("Sign-out failed", error);
+    }
   };
 
   const toggleDropdown = () => {

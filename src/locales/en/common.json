@@ -46,8 +46,8 @@
       "firstNamePlaceholder": "Enter your first name",
       "lastName": "Last Name",
       "lastNamePlaceholder": "Enter your last name",
-    "department": "Department",
-    "departmentPlaceholder": "e.g. Finance",
+      "department": "Department",
+      "departmentPlaceholder": "e.g. Finance",
       "email": "Email",
       "emailPlaceholder": "Enter your email",
       "password": "Password",
@@ -102,6 +102,19 @@
       "userAlreadyRegistered": "An account with that email already exists.",
       "rateLimited": "Too many attempts. Wait a moment and try again.",
       "samePassword": "New password must be different from the current one."
+    }
+  },
+  "profile": {
+    "pageTitle": "Profile",
+    "fullName": "Full name",
+    "email": "Email",
+    "department": "Department",
+    "memberSince": "Member since",
+    "notSet": "Not set",
+    "loading": "Loading your profile…",
+    "roles": {
+      "admin": "Administrator",
+      "staff": "Staff"
     }
   }
 }

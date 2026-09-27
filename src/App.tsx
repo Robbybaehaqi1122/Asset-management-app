@@ -9,6 +9,7 @@ import Calendar from "./pages/Calendar";
 import Dashboard from "./pages/Dashboard/Dashboard";
 import Blank from "./pages/OtherPage/Blank";
 import NotFound from "./pages/OtherPage/NotFound";
+import Profile from "./pages/Profile/Profile";
 import ResetPassword from "./pages/AuthPages/ResetPassword";
 
 export default function App() {
@@ -22,6 +23,7 @@ export default function App() {
             <Route element={<AppLayout />}>
               <Route index path="/" element={<Dashboard />} />
               <Route path="/calendar" element={<Calendar />} />
+              <Route path="/profile" element={<Profile />} />
               <Route path="/blank" element={<Blank />} />
             </Route>
           </Route>

@@ -138,6 +138,7 @@ src/
 ├── pages/
 │   ├── Dashboard/Dashboard    the blank "/" page
 │   ├── AuthPages/             SignIn, SignUp, ResetPassword, AuthPageLayout (shell, not a route)
+│   ├── Profile/Profile        the "/profile" page — own `profiles` row, read-only
 │   ├── Calendar.tsx
 │   └── OtherPage/             NotFound, Blank
 ├── components/
@@ -429,6 +430,9 @@ name is a type error instead of `undefined` at runtime.
 - `path="*"` is the 404 fallback.
 - New page → create `src/pages/<Category>/MyPage.tsx` with a default export, then
   add its `<Route>` inside the right group.
+- `/profile` is inside the `RequireAuth` group, not beside it. It reads the
+  signed-in user's own row, so there is nothing for an anonymous visitor to see
+  and `PublicOnlyRoute` would only bounce a signed-in user away from it.
 
 ## Supabase
 
@@ -697,8 +701,8 @@ something local, which is itself the bug.
 - i18next is bootstrapped once in `src/i18n/index.ts`, imported by `src/main.tsx`.
   Never re-initialise it.
 - One namespace, `"common"`. One locale, `en`. The file is
-  `src/locales/en/common.json` — add new keys there. It holds 83 leaf keys
-  today, under `sidebar`, `header`, `userDropdown`, and `auth`.
+  `src/locales/en/common.json` — add new keys there. It holds 94 leaf keys
+  today, under `sidebar`, `header`, `userDropdown`, `auth`, and `profile`.
 - Read keys with `useTranslation()`. Scope to a subtree with `keyPrefix`:
 
   ```tsx
@@ -767,20 +771,24 @@ not go looking for them unprompted.
   `CalendarEventModal` remounts its form on `selectedEvent.id`, and every event
   does carry an `id`. `AppSidebar` scopes its manual submenu toggle to
   `location.pathname`. Both would misbehave if a caller passed unstable identity.
-- The three `DropdownItem`s in `UserDropdown` point at `/profile`, which is not
-  a route, so they 404. Pre-existing template behaviour. #30 was closed as *not
-  planned*, so this is now a standing dead link rather than a pending page — the
-  open options are to build `/profile` or to retarget those three items.
-- `useIsAdmin()` has no caller yet. Nothing in the shell is role-gated, because
-  the asset screens that would need it do not exist yet. It is not dead code, but
-  do not read that as the RLS layer being exercised end to end.
+- The three `DropdownItem`s in `UserDropdown` all point at `/profile`, and they
+  now land on a real page, but they are three labels for one destination:
+  "Edit profile", "Account settings" and "Support" are the same read-only view.
+  The page is read-only, so "Edit profile" overpromises. Either build the edit
+  capability or collapse the three into one item.
+- `useIsAdmin()` has exactly one caller, the role badge on `/profile`. That is
+  enough to keep it honest but not enough to demonstrate the RLS layer end to
+  end: no screen yet hides a write action, because the asset screens that would
+  need it do not exist. Do not read the badge as that proof.
 - `AuthContext` sets `isLoading` to `false` from inside the `onAuthStateChange`
   callback rather than from a separate `getSession()` call. That is deliberate —
   see Supabase. It does mean `isLoading` is `true` for one extra microtask.
-- `AuthContext.signOut` can reject, and `UserDropdown.handleSignOut` awaits it
-  without a `try` / `catch`, so a failed sign-out throws inside an event handler
-  and only surfaces in the console. The dropdown is already closed and the user
-  stays on the page, which is the safe failure mode.
+- `AuthContext.signOut` can reject, and `UserDropdown.handleSignOut` catches it so
+  it cannot become an unhandled rejection, but the failure still only reaches
+  `console.error`. The dropdown is already closed, `navigate` is skipped, and the
+  user stays signed in, so the direction is safe — but nothing *tells* them the
+  sign-out did not happen. There is no toast primitive in the repo, so closing
+  that gap means adding one, which is a larger decision than this catch.
 
 ## Don'ts
 
