@@ -191,9 +191,8 @@ supabase/
 | `20260927000400_drop_first_admin_grant.sql` | `handle_new_user` redefined to always insert `staff`; see Promoting the first admin |
 | `20260927000500_sync_asset_status_with_assignments.sql` | 2 triggers keeping `assets.status` honest; see Asset status follows the loans |
 
-**Migrations 001 to 004 are applied to the remote. 005 is not** — written and
-verified against `db reset --local`, waiting on review. So the remote still
-accepts the contradictory `assets.status` values until someone runs `db push`.
+**All five are applied to the remote.** `db diff --linked` reports `No schema
+changes found`, so the files and the live database agree.
 
 Note that `db push` printed `Remote database is up to date.` immediately after
 applying 004, with no "Applying migration" line. That message is not a reliable
@@ -324,10 +323,16 @@ exists`. So the files are not a repair tool.
 
 **`schema_migrations` is the ledger.** `supabase_migrations.schema_migrations`
 holds one row per applied version — `20260927000100` schema, `20260927000200`
-triggers, `20260927000300` rls, `20260927000400` drop first-admin grant.
-`20260927000500` is pending. That table, not the schema itself, is what the CLI
-consults to decide what is pending, and it is also the only trustworthy way to
+triggers, `20260927000300` rls, `20260927000400` drop first-admin grant,
+`20260927000500` status/loan sync. That table, not the schema itself, is what the
+CLI consults to decide what is pending, and it is also the only trustworthy way to
 confirm a push landed.
+
+`migration list --linked` is the exception that proves the rule: it failed once
+with `password authentication failed for user "cli_login_postgres"` while
+`db query --linked` and `db diff --linked`, which authenticate differently, both
+succeeded against the same project. A failure from that one command is not
+evidence about the database.
 
 `db reset --local` is the way to re-apply them from scratch, and it is safe
 because the local database is disposable. **There is no equivalent for the
