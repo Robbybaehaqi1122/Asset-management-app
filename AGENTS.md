@@ -507,6 +507,43 @@ link strips the URL hash, Supabase recovers the session from storage instead, an
 the event never fires again — an event-driven check would strand the user on the
 "request a link" form with no way forward.
 
+### `redirectTo` is silently ignored when the origin is not allow-listed
+
+`AuthContext.requestPasswordReset` sends
+`redirectTo: \`${window.location.origin}/reset-password\``. Supabase GoTrue
+honours that only if the **origin** appears in the project's allow list —
+Authentication → URL Configuration on the hosted project,
+`site_url` / `additional_redirect_urls` in `supabase/config.toml` locally.
+
+Measured against the local stack, the fallbacks are not a detail:
+
+| `redirectTo` asked for | origin in the link that arrives | `error` returned |
+|---|---|---|
+| `http://127.0.0.1:3000/reset-password` | as asked | `null` |
+| `http://127.0.0.1:3000` | as asked | `null` |
+| `http://localhost:5173/reset-password` | `http://127.0.0.1:3000` | `null` |
+| `https://contoh-palsu.example/reset-password` | `http://127.0.0.1:3000` | `null` |
+
+**Every rejected case returns `null`.** A reset request that is about to be
+delivered to the wrong place looks exactly like one that succeeded, so
+`ResetPasswordForm` cannot tell the difference and the user only finds out after
+waiting for an email that arrives at a page which is not this app.
+
+Two consequences worth knowing before touching this area:
+
+- Matching is on **origin, not path**, so the trailing `/reset-password` is free
+  and only the scheme, host and port have to be listed. `localhost` and
+  `127.0.0.1` are **different origins** even at the same port.
+- On the local stack, `npm run dev` serves `http://localhost:5173`, which is
+  **not** in `supabase/config.toml` (`site_url` is `http://127.0.0.1:3000`). So
+  password reset is broken in local dev out of the box and fails quietly. Add
+  `http://localhost:5173` to `additional_redirect_urls` before testing it there.
+
+The recovery link itself is a `303` to the app carrying `access_token` and
+`type=recovery` **in the URL fragment**, with no `code`. That is what
+`flowType: "implicit"` and `detectSessionInUrl: true` exist to consume, and it is
+why the fragment — not a query parameter — is the thing that must survive.
+
 ### Access model
 
 Two roles, `admin` and `staff`, held in `profiles.role` as text with a `check`

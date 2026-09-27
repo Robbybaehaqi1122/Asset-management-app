@@ -176,24 +176,40 @@ kontributor di Node 18 mendapat kegagalan yang membingungkan. **Issue #44.**
 
 ## Belum terverifikasi
 
-Ini tidak bisa dicek di environment ini. Dinyatakan terbuka, bukan diasumsikan
-berjalan. **Issue #43.**
+Tiga butir yang tadinya terbuka sudah dijalankan terhadap **stack lokal**,
+bukan project remote — jadi blokir rate limit email hilang tanpa perlu
+menyentuh data produksi. Semua yang bisa diuji tanpa browser sudah diuji.
+**Issue #43.**
 
-- **Signup end-to-end lewat browser.** Jalur `auth.users` → trigger sudah
-  diverifikasi dengan menyisipkan langsung ke `auth.users`. Tapi putaran
-  sebenarnya `SignUpForm` → `signUp` → HTTP → database tidak pernah dijalankan,
-  karena rate limit email Supabase sedang habis. Field `department` yang baru
-  ditambahkan ke form belum pernah benar-benar diuji.
-- **Pengiriman email reset password.** Jalur request memanggil API dan
-  mengembalikan bentuk yang benar, tapi tidak ada email yang dikonfirmasi benar
-  terkirim, dan putaran link pemulihan → session → update password belum pernah
-  diuji. Stack lokal sekarang punya mail catcher di
-  `http://127.0.0.1:54324`, jadi ini bisa diuji tanpa mengirim email sungguhan.
-- **Development lokal dengan stack lokal.** Stack lokal sudah jalan dan keenam
-  perintah verifikasi sudah dicoba, tapi tidak ada frontend yang pernah
-  diarahkan ke `.env.local` versi lokal. `supabase/.env` berisi key lokal yang
-  otomatis dipakai CLI, sedangkan `VITE_*` di `.env.local` masih menunjuk ke
-  project remote.
+Yang **masih** belum terverifikasi, dan hanya bisa ditutup dengan browser
+manusia sungguhan:
+
+- **Klik lewat di UI.** Yang terbukti adalah HTTP-nya: `signUp` →
+  `confirm-email`, email konfirmasi sampai ke mail catcher, link-nya `303` ke
+  app dengan token di hash, `setSession` dari hash itu berhasil,
+  `updatePassword` berhasil, lalu login dengan password baru berhasil dan
+  password lama ditolak `invalid_credentials`. Yang belum ada seseorang yang
+  benar-benar mengetik di `/signin` dan `/signup` dan melihat hasilnya di
+  layar, termasuk `Profile.tsx` membaca baris `profiles` yang sama.
+
+**Dua hal yang berubah sifatnya, bukan cuma statusnya:**
+
+- **`redirectTo` bisa diabaikan diam-diam.** Ditemukan dan sekarang
+  terdokumentasi di `AGENTS.md` → "redirectTo is silently ignored when the
+  origin is not allow-listed". `http://localhost:5173/reset-password` — yang
+  justru address dari `npm run dev` — **tidak** di-hormati stack lokal, dan
+  API mengembalikan `error: null`. Jadi password reset di dev lokal rusak
+  tanpa error yang terlihat. Perlu `http://localhost:5173` di
+  `supabase/config.toml` → `additional_redirect_urls`. **Belum diubah** —
+  `config.toml` sengaja tidak saya sentuh.
+- **Stack lokal auto-confirm email.** `supabase/config.toml` punya
+  `enable_confirmations = false`, jadi signup di lokal selalu mengembalikan
+  session dan cabang `confirm-email` di `SignUpForm` tidak pernah tersentuh.
+  Cabang itu diverifikasi dengan mematikan flag itu sementara, lalu
+  `config.toml` dikembalikan persis (hash blob tidak berubah). Di project
+  remote, email confirmation aktif, jadi **`sessionCreated === false` adalah
+  cabang yang paling sering dipakai di produksi** dan sekarang barulah
+  terbukti.
 
 ---
 
@@ -201,6 +217,39 @@ berjalan. **Issue #43.**
 
 Dicatat supaya tidak diinvestigasi ulang. **Issue #45.**
 
+- **Signup end-to-end lewat HTTP** (`SignUpForm` → `auth.signUp` → DB), dengan
+  bentuk `options.data` yang sama persis dengan yang dikirim form. Yang jadi
+  kunci: `full_name` = "Verify One" (first + last digabung), `department`
+  = "Operations" tersimpan, `id` profil = `auth.users.id`. Kekhawatiran utama
+  issue #43 justru "kalau bentuknya salah, trigger akan menyimpan NULL dan
+  tidak akan ada yang protes" — sekarang terbukti bentuknya benar.
+- **Kedua cabang signup.** `sessionCreated === true` (auto-confirm) dan
+  `sessionCreated === false` (email confirmation) keduanya dijalankan. Yang
+  kedua: login ditolak `email_not_confirmed` sebelum konfirmasi, email sampai,
+  link `303` dengan `type=signup`, lalu login berhasil.
+- **Putaran reset password penuh.** Request → email sampai di mail catcher
+  `http://127.0.0.1:54324` → link `verify` → `303` ke
+  `/reset-password#access_token=…&type=recovery` → `setSession` → ganti
+  password → login dengan yang baru berhasil, yang lama ditolak.
+- **Hash, bukan query parameter, dan tanpa `code`.** Link pemulihan membawa
+  `access_token` + `type=recovery` di **fragment**. Tidak ada `code`, jadi
+  `flowType: "implicit"` + `detectSessionInUrl: true` memang satu-satunya
+  konfigurasi yang cocok, dan `BrowserRouter` tidak melewati fragment itu.
+- **`fetchProfile` gagal tertutup, bukan terbuka.** Meminta id milik user lain
+  mengembalikan `null`, **bukan error** — RLS menyaring baris, bukan menolak
+  pernyataan. `AuthContext` bisa menganggapnya "belum tahu" dan aman.
+- **Role tidak ada di JWT.** `user.app_metadata.role` kosong pada user sungguhan,
+  yang memang alasan seluruh desain `AuthContext` + `useIsAdmin` ada.
+- **Eskalasi lewat metadata diabaikan.** `options.data: { …, role: "admin" }`
+  pada signup kedua tetap menghasilkan `staff`.
+- **Dev server terhadap stack lokal.** `vite --mode` dengan file env terpisah
+  menyajikan `/`, `/src/main.tsx`, `/src/App.tsx`, `/src/index.css` (semua
+  200). Modul `src/lib/supabase.ts` yang ditransformasi memuat
+  `"VITE_SUPABASE_URL": "http://127.0.0.1:54321"` dan **nol** kemunculan
+  domain remote. `anon` ke PostgREST lokal tetap ditolak `42501`.
+- **Rantai migration masih bisa di-apply dari nol.** `db reset --local`
+  menerapkan kelima file berurutan tanpa error, dan trigger `on_auth_user_created`
+  masih menempel setelah reset.
 - Rantai tiga migration ter-apply bersih; `supabase db lint --linked` melaporkan
   `No schema errors found`; Postgres 17.6.1 cocok dengan `major_version = 17`.
 - `anon` tidak bisa membaca satu pun dari 6 tabel (`42501`).
