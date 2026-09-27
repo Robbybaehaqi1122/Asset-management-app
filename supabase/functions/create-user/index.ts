@@ -8,11 +8,13 @@
 // a default secret — so nothing has to be pasted into this file, and nothing
 // has to be added to the repository.
 //
-// The scope is deliberately one operation. The role and the department are set
+// The scope is deliberately one account. The role and the department are set
 // by the browser afterwards, over the normal RLS path, because writing those
 // columns with the service role would attribute the change to nobody and
 // `protect_profile_role` would refuse it anyway: `is_admin()` reads
-// `auth.uid()`, which is NULL for a service-role request.
+// `auth.uid()`, which is NULL for a service-role request. The
+// `must_change_password` flag is the one exception, and it is set here because
+// no trigger guards that column — see the comment at the write itself.
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 
@@ -116,7 +118,39 @@ Deno.serve(async (req) => {
     });
   }
 
+  // Raise the "must change this" flag, here rather than in the browser, and the
+  // reason is worth stating because the rest of the create flow deliberately
+  // does the opposite.
+  //
+  // Role and department are written by the browser because `protect_profile_role`
+  // refuses them from a service-role request: `is_admin()` reads `auth.uid()`,
+  // which is NULL without a JWT. This column has no such guard — 00800 says so
+  // explicitly, and that is the right answer for a prompt rather than a
+  // privilege decision — so the service role can write it, and the column-scoped
+  // triggers stay quiet: `role` and `email` are not in the SET list, and
+  // `protect_profile_role` returns early because the role did not move.
+  //
+  // The browser is the wrong place for it regardless. This is the one write that
+  // must not be skippable, and a client-side step is skippable by exactly the
+  // failure that makes people reach for a retry: a dropped request. Here it is
+  // one transaction away from the account it belongs to.
+  const { error: flagError } = await service
+    .from("profiles")
+    .update({ must_change_password: true })
+    .eq("id", data.user.id);
+
   // Only the id and the address go back. The rest of the user object is not
   // the caller's business and is not needed to finish the job.
-  return json(200, { id: data.user.id, email: data.user.email });
+  //
+  // `mustChangeFlagSet` is reported rather than thrown. The account exists by
+  // this point, so an error status would be a lie about it, and a client that
+  // retried would only meet `already_exists`. The honest outcome is success plus
+  // a warning: the admin knows the first password and the user is not being
+  // asked to change it. That is an advisory failure, not a security one, which
+  // is the same category migration 00800 puts this column in.
+  return json(200, {
+    id: data.user.id,
+    email: data.user.email,
+    mustChangeFlagSet: flagError === null,
+  });
 });

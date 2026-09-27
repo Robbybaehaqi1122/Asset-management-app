@@ -20,8 +20,9 @@ import {
 import { useAuth } from "@/context/AuthContext";
 import { useIsAdmin } from "@/hooks/useIsAdmin";
 import { useModal } from "@/hooks/useModal";
-import { EyeCloseIcon, EyeIcon, PlusIcon } from "@/icons";
+import { CloseIcon, EyeCloseIcon, EyeIcon, PlusIcon } from "@/icons";
 import type { Profile, ProfileRole } from "@/lib/profiles";
+import { generatePassword } from "@/lib/password";
 
 import {
   getAllUsers,
@@ -121,6 +122,7 @@ export default function UserListPage() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [detailsError, setDetailsError] = useState<string | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [createWarning, setCreateWarning] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
 
   const reload = useCallback(() => setReloadToken((prev) => prev + 1), []);
@@ -173,9 +175,17 @@ export default function UserListPage() {
 
   const handleOpenCreate = () => {
     setCreateError(null);
+    setCreateWarning(null);
     setShowPassword(false);
     setNewUser(EMPTY_NEW_USER);
     createModal.openModal();
+  };
+
+  const handleGeneratePassword = () => {
+    setNewUser((prev) => ({ ...prev, password: generatePassword() }));
+    // Revealing it is the point. An admin who cannot read the value cannot
+    // pass it on, and a hidden generated password is a password nobody has.
+    setShowPassword(true);
   };
 
   const handleCreate = async () => {
@@ -197,6 +207,7 @@ export default function UserListPage() {
 
     setIsCreating(true);
     setCreateError(null);
+    setCreateWarning(null);
 
     // Tracks whether the auth account came into existence, because that
     // changes what the failure below means. Once created, it cannot be undone
@@ -221,6 +232,11 @@ export default function UserListPage() {
       // role change from a service-role request, because `auth.uid()` is empty
       // without a JWT. Attributing it to the admin is both the only way it
       // succeeds and the correct reason it succeeds.
+      //
+      // The `must_change_password` flag is not in this list, and that is not an
+      // oversight. The function raised it next to the account it belongs to,
+      // because nothing guards that column, and a client-side step is skippable
+      // by exactly the dropped request that makes people reach for retry.
       await updateUserDetails(created.id, {
         full_name: fullName,
         department: department === "" ? null : department,
@@ -229,6 +245,14 @@ export default function UserListPage() {
 
       createModal.closeModal();
       reload();
+
+      // The account exists and is fully configured, so this is not a failure —
+      // but the one thing that stops the admin's password from staying known
+      // forever is missing, and nothing in this screen can put it back. Said
+      // out loud, which is the only thing left to do with it.
+      if (!created.mustChangeFlagSet) {
+        setCreateWarning(t("errors.passwordFlagFailed"));
+      }
     } catch (error) {
       if (createdId !== null) {
         // Partial success, and the only kind that cannot simply be retried.
@@ -372,6 +396,30 @@ export default function UserListPage() {
       />
       <PageBreadcrumb pageTitle={t("pageTitle")} />
 
+      {/* Deliberately outside the create modal, and not inside it. The flag
+          failure is raised after `closeModal()`, because the account *was*
+          created and the operator has to be shown that much; `Modal` returns
+          null while closed, so a message rendered in there would be written and
+          never seen. Dismissed by hand rather than on a timer, because there
+          is no toast primitive in the repo and a `setState` in an effect is
+          banned outright. */}
+      {createWarning && (
+        <div
+          role="status"
+          className="mt-4 flex items-start justify-between gap-4 rounded-2xl border border-warning-200 bg-warning-50 p-4 text-sm text-warning-700 dark:border-warning-800/60 dark:bg-warning-500/10 dark:text-orange-300"
+        >
+          <p>{createWarning}</p>
+          <button
+            type="button"
+            onClick={() => setCreateWarning(null)}
+            aria-label={t("dismiss")}
+            className="shrink-0 text-warning-600 hover:text-warning-800 dark:text-orange-400 dark:hover:text-orange-200"
+          >
+            <CloseIcon className="size-4" />
+          </button>
+        </div>
+      )}
+
       <div className="rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/3">
         <div className="flex flex-col gap-4 border-b border-gray-200 p-6 sm:flex-row sm:items-center sm:justify-between dark:border-gray-800">
           <div>
@@ -480,6 +528,18 @@ export default function UserListPage() {
                             {isSelf && (
                               <Badge color="light" size="sm">
                                 {t("you")}
+                              </Badge>
+                            )}
+                            {/* Read, not a control. This column has no trigger
+                                guarding it — 00800 says so on purpose — so an
+                                admin *could* clear it from here, and the only
+                                reason not to offer that button is that it would
+                                look like it does something security-shaped
+                                while actually just writing a boolean. Clearing it
+                                belongs to the account holder. */}
+                            {row.must_change_password && (
+                              <Badge color="warning" size="sm">
+                                {t("temporaryPassword")}
                               </Badge>
                             )}
                           </div>
@@ -635,12 +695,30 @@ export default function UserListPage() {
                   autoComplete="new-password"
                   hint={t("passwordHint")}
                   error={createError !== null && newUser.password.length < 8}
-                  className="pe-11"
+                  // Room for two controls on the trailing edge, so neither
+                  // overlaps the text being typed.
+                  className="pe-24"
                 />
+                {/* Two trailing controls rather than one stacked pair: the
+                    reveal toggle is for reading what the admin typed, and this
+                    one is for producing something to read. Folding them into a
+                    single button would make "show" mean "replace". */}
+                <button
+                  type="button"
+                  onClick={handleGeneratePassword}
+                  title={t("generatePassword")}
+                  className="absolute end-11 top-1/2 -translate-y-1/2 rounded px-1 py-0.5 text-xs font-medium text-brand-600 hover:bg-brand-50 hover:text-brand-700 dark:text-brand-400 dark:hover:bg-brand-500/10"
+                >
+                  {t("generatePassword")}
+                </button>
                 <button
                   type="button"
                   onClick={() => setShowPassword((prev) => !prev)}
-                  aria-label={t("fields.password")}
+                  aria-label={
+                    showPassword
+                      ? t("fields.hidePassword")
+                      : t("fields.showPassword")
+                  }
                   className="absolute end-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
                 >
                   {showPassword ? (

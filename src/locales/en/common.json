@@ -92,10 +92,31 @@
       "staff": "Staff"
     }
   },
+  "mustChangePassword": {
+    "pageTitle": "Choose a new password",
+    "pageDescription": "Your account still uses the password an administrator set when it was created. Choose your own to continue.",
+    "title": "Choose your own password",
+    "subtitle": "Your account still uses the password an administrator set. Choose your own to continue.",
+    "subtitleNamed": "{{name}}, your account still uses the password an administrator set. Choose your own to continue.",
+    "loading": "Checking your account…",
+    "newPassword": "New password",
+    "newPasswordPlaceholder": "Enter your new password",
+    "confirmPassword": "Confirm new password",
+    "confirmPasswordPlaceholder": "Repeat your new password",
+    "showPassword": "Show password",
+    "hidePassword": "Hide password",
+    "submit": "Save and continue",
+    "submitting": "Saving…",
+    "signOut": "Sign out instead",
+    "errors": {
+      "tooShort": "Password must be at least 8 characters.",
+      "mismatch": "Passwords do not match."
+    }
+  },
   "users": {
     "pageTitle": "User Management",
-    "pageDescription": "Review the accounts in this workspace and change their role",
-    "subtitle": "Accounts are created from the Supabase Dashboard, and their profile is created automatically.",
+    "pageDescription": "Review the accounts in this workspace, and add or edit them",
+    "subtitle": "Adding an account sets a first password here, so tell it to the person directly. They will be asked to choose their own the first time they sign in.",
     "checkingAccess": "Checking your access…",
     "noAccess": "This page is only available to administrators.",
     "searchPlaceholder": "Search by name, email, or department",
@@ -110,32 +131,22 @@
       "admin": "Administrator",
       "staff": "Staff"
     },
-  "notSet": "Not set",
-  "you": "You",
-  "changeRole": "Change role",
-  "edit": "Edit",
-  "editTitle": "Edit user",
-  "fields": {
-    "fullName": "Full name",
-    "department": "Department"
-  },
-  "optional": "optional",
-  "saveDetails": "Save changes",
-  "emailManagedElsewhere": "The email address is changed in Supabase, not here.",
-  "addUser": "Add user",
-  "createTitle": "Add user",
-  "fields": {
-    "fullName": "Full name",
-    "email": "Email address",
-    "department": "Department",
-    "role": "Role",
-    "password": "Password"
-  },
-  "passwordHint": "At least 8 characters. The person signs in with this, so tell it to them.",
-  "emailManagedElsewhere": "The email address is changed in Supabase, not here.",
-  "lastAdminOnlyAccount": "You are the only account here. Add another administrator first — that is the only way to hand over, and it is the reason this is disabled.",
+    "notSet": "Not set",
+    "you": "You",
+    "changeRole": "Change role",
+    "edit": "Edit",
+    "editTitle": "Edit user",
+    "addUser": "Add user",
+    "createTitle": "Add user",
+    "generatePassword": "Generate",
+    "passwordHint": "At least 8 characters. The person signs in with this, so tell it to them.",
+    "temporaryPassword": "Temporary password",
+    "emailManagedElsewhere": "The email address is changed in Supabase, not here.",
+    "dismiss": "Dismiss",
+    "optional": "optional",
+    "saveDetails": "Save changes",
+    "lastAdminOnlyAccount": "You are the only account here. Add another administrator first — that is the only way to hand over, and it is the reason this is disabled.",
     "lastAdmin": "This is the only administrator. Promote somebody else first.",
-  "lastAdminOnly": "This is the only administrator.",
     "confirmTitle": "Change role?",
     "confirmBody": "{{name}} will become {{role}}.",
     "selfWarning": "This is your own account. You will lose access to this page as soon as the change is saved.",
@@ -146,25 +157,35 @@
     "empty": "No accounts yet.",
     "noResults": "No accounts match your search.",
     "showing": "Showing {{shown}} of {{total}} accounts",
-  "errors": {
-    "load": "The user list could not be loaded.",
-    "save": "The role could not be changed. Please try again.",
-    "saveDetails": "The changes could not be saved. Please try again.",
-    "nameRequired": "A name is required.",
-    "notFound": "That account no longer exists, or you do not have access to it.",
-    "lastAdmin": "The last administrator cannot be demoted. Promote somebody else first.",
-    "partial": "The account was created, but its department and role did not save. Close this and edit them from the list.",
-    "create": {
-      "unauthenticated": "Your session has expired. Sign in again and retry.",
-      "forbidden": "Only an administrator can add an account.",
-      "invalid_email": "That does not look like an email address.",
-      "name_required": "A name is required.",
-      "weak_password": "The password needs to be at least 8 characters.",
-      "already_exists": "An account with that email address already exists.",
-      "not_configured": "The server function is not deployed yet. An administrator has to deploy it.",
-      "network": "The server could not be reached. Check the connection and retry.",
-      "unknown": "The account could not be created. Please try again."
+    "fields": {
+      "fullName": "Full name",
+      "email": "Email address",
+      "department": "Department",
+      "role": "Role",
+      "password": "Password",
+      "showPassword": "Show password",
+      "hidePassword": "Hide password"
+    },
+    "errors": {
+      "load": "The user list could not be loaded.",
+      "save": "The role could not be changed. Please try again.",
+      "saveDetails": "The changes could not be saved. Please try again.",
+      "nameRequired": "A name is required.",
+      "notFound": "That account no longer exists, or you do not have access to it.",
+      "lastAdmin": "The last administrator cannot be demoted. Promote somebody else first.",
+      "partial": "The account was created, but its department and role did not save. Close this and edit them from the list.",
+      "passwordFlagFailed": "The account was created, but it was not marked as needing a new password. That person will not be asked to change it — so pass on the password you set, and expect them to keep it.",
+      "create": {
+        "unauthenticated": "Your session has expired. Sign in again and retry.",
+        "forbidden": "Only an administrator can add an account.",
+        "invalid_email": "That does not look like an email address.",
+        "name_required": "A name is required.",
+        "weak_password": "The password needs to be at least 8 characters.",
+        "already_exists": "An account with that email address already exists.",
+        "not_configured": "The server function is not deployed yet. An administrator has to deploy it.",
+        "network": "The server could not be reached. Check the connection and retry.",
+        "unknown": "The account could not be created. Please try again."
+      }
     }
-  }
   }
 }

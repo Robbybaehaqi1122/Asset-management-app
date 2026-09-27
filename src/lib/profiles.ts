@@ -21,7 +21,9 @@ export interface Profile {
 export async function fetchProfile(userId: string): Promise<Profile | null> {
   const { data, error } = await supabase
     .from("profiles")
-    .select("id, email, full_name, role, department, created_at, must_change_password")
+    .select(
+      "id, email, full_name, role, department, created_at, must_change_password",
+    )
     .eq("id", userId)
     .maybeSingle();
 

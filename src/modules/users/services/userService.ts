@@ -5,8 +5,18 @@ import { supabase } from "@/lib/supabase";
  * Kolom yang dibaca modul ini. `auth.users` tidak bisa dijangkau dari browser,
  * jadi email diambil dari salinannya di `profiles`; lihat
  * `supabase/migrations/20260927000600_profiles_email.sql`.
+ *
+ * `must_change_password` wajib ikut, bukan opsional. `Profile` mendeklarasikannya
+ * `boolean` dan kolomnya `not null default false`, jadi setiap baris yang
+ * dikembalikan `SELECT` di sini punya nilainya. Melewatkan kolom ini bukan
+ * sekadar tidak menampilkan badge — `data as Profile[]` akan tetap compiles,
+ * sementara field-nya `undefined` saat runtime.
+ *
+ * Daftar ini adalah daftar *select*. Jaminan "hanya dua kolom" milik `updateUserDetails`
+ * ada di payload `.update()`-nya, bukan di sini.
  */
-const USER_COLUMNS = "id, email, full_name, role, department, created_at";
+const USER_COLUMNS =
+  "id, email, full_name, role, department, created_at, must_change_password";
 
 /**
  * Teks persis yang dilempar `profiles_guard_last_admin`. Dicocokkan
@@ -182,20 +192,34 @@ export class CreateUserError extends Error {
 }
 
 /**
+ * Hasil pemanggilan `create-user`.
+ *
+ * `mustChangeFlagSet` diteruskan dan tidak ditelan, karena `false` di sini
+ * berarti akun ada dengan password milik admin sementara akun itu tidak akan
+ * pernah diminta menggantinya. Itu bukan kegagalan yang bisa di-rollback dari
+ * layar ini, jadi UI harus mengatakannya alih-alih diam.
+ */
+export type CreatedUser = {
+  id: string;
+  email: string;
+  mustChangeFlagSet: boolean;
+};
+
+/**
  * Buat satu akun lewat Edge Function `create-user`.
  *
  * Function ini satu-satunya tempat di project yang memakai Admin API. Lekukan
  * karena `auth.admin.createUser` butuh `service_role`, dan key itu tidak boleh
- * masuk browser. Yang dikembalikan cuma `id` dan `email` — role dan
- * departemen sengaja tidak, dan itu bukan kelupaan: kolom `role` dilindungi
- * `protect_profile_role`, yang menolak tulisan yang tidak dilakukan admin, dan
- * penulisan lewat service role akan ditolak trigger itu karena `auth.uid()`
- * kosong untuk permintaan tanpa JWT.
+ * masuk browser.
+ *
+ * Yang dikembalikan cuma `id`, `email`, dan apakah flag "wajib ganti" berhasil
+ * dipasang. Role dan departemen sengaja tidak, dan itu bukan kelupaan: kolom
+ * `role` dilindungi `protect_profile_role`, yang menolak tulisan yang tidak
+ * dilakukan admin, dan penulisan lewat service role akan ditolak trigger itu
+ * karena `auth.uid()` kosong untuk permintaan tanpa JWT. Keduanya ditulis
+ * browser sesudahnya, lewat `updateUserDetails` dan `updateUserRole`.
  */
-export async function createUser(input: NewUser): Promise<{
-  id: string;
-  email: string;
-}> {
+export async function createUser(input: NewUser): Promise<CreatedUser> {
   const { data, error } = await supabase.functions.invoke("create-user", {
     body: input,
   });
@@ -220,10 +244,22 @@ export async function createUser(input: NewUser): Promise<{
     throw new CreateUserError(code);
   }
 
-  const created = data as { id?: string; email?: string } | null;
+  const created = data as {
+    id?: string;
+    email?: string;
+    mustChangeFlagSet?: boolean;
+  } | null;
   if (typeof created?.id !== "string") {
     throw new CreateUserError("unknown");
   }
 
-  return { id: created.id, email: created.email ?? input.email };
+  return {
+    id: created.id,
+    email: created.email ?? input.email,
+    // An older deployment of the function returns neither field, and defaults
+    // the flag to false. That is the right default on purpose: the alternative
+    // would have the screen claim the user will be asked to change a password
+    // that nothing is going to ask them for.
+    mustChangeFlagSet: created.mustChangeFlagSet === true,
+  };
 }

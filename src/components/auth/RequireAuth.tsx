@@ -1,4 +1,5 @@
 import AuthLoading from "@/components/auth/AuthLoading";
+import MustChangePassword from "@/components/auth/MustChangePassword";
 import { useAuth } from "@/context/AuthContext";
 import type React from "react";
 import { Navigate, Outlet, useLocation } from "react-router";
@@ -19,7 +20,14 @@ const RequireAuth: React.FC = () => {
     );
   }
 
-  return <Outlet />;
+  // The advisory password gate wraps the outlet rather than being a route, so
+  // it covers every protected screen at once and cannot be navigated around by
+  // typing a path. See `MustChangePassword` for why it fails open.
+  return (
+    <MustChangePassword>
+      <Outlet />
+    </MustChangePassword>
+  );
 };
 
 export default RequireAuth;
