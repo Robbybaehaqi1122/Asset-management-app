@@ -194,14 +194,20 @@ manusia sungguhan:
 
 **Dua hal yang berubah sifatnya, bukan cuma statusnya:**
 
-- **`redirectTo` bisa diabaikan diam-diam.** Ditemukan dan sekarang
-  terdokumentasi di `AGENTS.md` → "redirectTo is silently ignored when the
-  origin is not allow-listed". `http://localhost:5173/reset-password` — yang
-  justru address dari `npm run dev` — **tidak** di-hormati stack lokal, dan
-  API mengembalikan `error: null`. Jadi password reset di dev lokal rusak
-  tanpa error yang terlihat. Perlu `http://localhost:5173` di
-  `supabase/config.toml` → `additional_redirect_urls`. **Belum diubah** —
-  `config.toml` sengaja tidak saya sentuh.
+- **`redirectTo` bisa diabaikan diam-diam.** Ditemukan, diperbaiki, dan sekarang
+  terdokumentasi di `AGENTS.md` → "`redirectTo` is silently ignored when the exact
+  URL is not allow-listed". Aturannya asimetrik, dan itu bagian yang Hour One
+  dari menggarapnya: **`site_url` dicocokkan sebagai prefix** sehingga path bebas,
+  tapi entri `additional_redirect_urls` harus **persis** termasuk path. Dulu
+  hanya `http://localhost:5173` yang thinking allows — yang justru address dari
+  `npm run dev` — tetap ditolak, dan API mengembalikan `error: null`, jadi reset
+  password di dev lokal rusak tanpa error yang terlihat. `supabase/config.toml`
+  sekarang memuat kedua URL dev secara penuh, terverifikasi sampai ke email yang
+  benar-benar sampai.
+  **Yang tidak bisa dikerjakan dari repo:** allow-list project remote masih harus
+  dicek manual di **Authentication → URL Configuration → Redirect URLs**. Kalau
+  origin produksi belum terdaftar, password reset produksi diam-diam rusak juga,
+  dengan bentuk yang persis sama.
 - **Stack lokal auto-confirm email.** `supabase/config.toml` punya
   `enable_confirmations = false`, jadi signup di lokal selalu mengembalikan
   session dan cabang `confirm-email` di `SignUpForm` tidak pernah tersentuh.

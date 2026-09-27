@@ -507,37 +507,56 @@ link strips the URL hash, Supabase recovers the session from storage instead, an
 the event never fires again — an event-driven check would strand the user on the
 "request a link" form with no way forward.
 
-### `redirectTo` is silently ignored when the origin is not allow-listed
+### `redirectTo` is silently ignored when the exact URL is not allow-listed
 
 `AuthContext.requestPasswordReset` sends
-`redirectTo: \`${window.location.origin}/reset-password\``. Supabase GoTrue
-honours that only if the **origin** appears in the project's allow list —
-Authentication → URL Configuration on the hosted project,
-`site_url` / `additional_redirect_urls` in `supabase/config.toml` locally.
+`redirectTo: \`${window.location.origin}/reset-password\``. GoTrue honours that
+only if the URL is allow-listed — Authentication → URL Configuration on the
+hosted project, `site_url` / `additional_redirect_urls` in
+`supabase/config.toml` locally. When it is not, GoTrue **silently substitutes
+`site_url`** and still reports success.
 
-Measured against the local stack, the fallbacks are not a detail:
+Measured against the local stack, with `redirect_to` read back out of the
+delivered email rather than inferred from the API response:
 
-| `redirectTo` asked for | origin in the link that arrives | `error` returned |
+| `redirectTo` asked for | link that arrives | `error` |
 |---|---|---|
 | `http://127.0.0.1:3000/reset-password` | as asked | `null` |
-| `http://127.0.0.1:3000` | as asked | `null` |
-| `http://localhost:5173/reset-password` | `http://127.0.0.1:3000` | `null` |
-| `https://contoh-palsu.example/reset-password` | `http://127.0.0.1:3000` | `null` |
+| `http://127.0.0.1:3000/a/b/c?q=1` | as asked | `null` |
+| `http://localhost:5173/reset-password` | as asked, once listed | `null` |
+| `http://localhost:5173/reset-password/x` | `http://127.0.0.1:3000` | `null` |
+| `https://localhost:5173/reset-password` | `http://127.0.0.1:3000` | `null` |
+| `http://127.0.0.1:3000.palsu.example` | `http://127.0.0.1:3000` | `null` |
 
 **Every rejected case returns `null`.** A reset request that is about to be
 delivered to the wrong place looks exactly like one that succeeded, so
 `ResetPasswordForm` cannot tell the difference and the user only finds out after
-waiting for an email that arrives at a page which is not this app.
+waiting for an email that arrives at a page which is not this app. The API
+response is not evidence either way — read the link out of the email.
 
-Two consequences worth knowing before touching this area:
+The matching rule is **asymmetric**, which is the part that costs an hour:
 
-- Matching is on **origin, not path**, so the trailing `/reset-password` is free
-  and only the scheme, host and port have to be listed. `localhost` and
-  `127.0.0.1` are **different origins** even at the same port.
-- On the local stack, `npm run dev` serves `http://localhost:5173`, which is
-  **not** in `supabase/config.toml` (`site_url` is `http://127.0.0.1:3000`). So
-  password reset is broken in local dev out of the box and fails quietly. Add
-  `http://localhost:5173` to `additional_redirect_urls` before testing it there.
+- **`site_url` matches as a prefix.** Any path beneath it is honoured, including
+  deep paths and query strings. `http://127.0.0.1:3000/a/b/c?q=1` works without
+  ever being listed.
+- **Entries in `additional_redirect_urls` must match exactly**, path included. A
+  bare origin is not enough: with only `http://localhost:5173` listed,
+  `http://localhost:5173/reset-password` is still rejected. List the whole URL,
+  because the path comes from `window.location.pathname` and you cannot leave it
+  out.
+- **It is a parsed comparison, not string prefix matching.**
+  `http://127.0.0.1:3000.palsu.example` is rejected, so a host that merely starts
+  with the `site_url` host cannot smuggle a redirect out. **Scheme counts**:
+  `https://localhost:5173/...` is rejected even with the `http` form listed.
+- `localhost` and `127.0.0.1` are different origins at the same port, and Vite
+  may serve either, so local entries list both.
+
+`supabase/config.toml` now lists the two dev URLs in full. Before that,
+`npm run dev` on `http://localhost:5173` had a **silently broken** password
+reset: the form submitted, the API returned `error: null`, the email went out,
+and the link landed on `127.0.0.1:3000` — a port nothing was listening on.
+The hosted project needs the equivalent under Authentication → URL
+Configuration, which cannot be changed from the repo.
 
 The recovery link itself is a `303` to the app carrying `access_token` and
 `type=recovery` **in the URL fragment**, with no `code`. That is what
