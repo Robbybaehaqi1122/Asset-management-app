@@ -147,7 +147,7 @@ src/
 ├── hooks/                     useModal, useClickOutside
 ├── i18n/                      index.ts bootstrap, languages.ts registry
 ├── locales/en/common.json     the only locale file
-├── icons/                     29 .svg + index.ts barrel (SVGR named exports)
+├── icons/                     31 .svg + index.ts barrel (SVGR named exports)
 └── utils/index.ts             cn()
 ```
 

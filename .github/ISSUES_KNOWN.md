@@ -117,12 +117,30 @@ mendarat di 404. Perilaku bawaan template, tapi `/profile` adalah tempat yang
 wajar untuk menampilkan `profiles` dan `role`, jadi ini akan tersentuh oleh #38
 juga. **Issue #41.**
 
-### 8. Inline SVG di form auth
+### 8. ~~Inline SVG di form auth~~ — **sudah selesai**
 
 `SignInForm` dan `SignUpForm` masing-masing memuat logo Google dan X yang
 di-inline langsung, melanggar aturan "never inline SVG" milik project sendiri.
 Datang dari template dan convertnya di luar lingkup pekerjaan auth.
 **Issue #42.**
+
+Kedua logo sekarang tinggal di `src/icons/google.svg` dan `src/icons/x.svg`
+dan dipakai lewat `<GoogleIcon />` dan `<XIcon />` dari barrel, jadi blok SVG
+yang terduplikasi di dua form itu tidak ada lagi. Label tombolnya ikut
+disederhanakan: `auth.withGoogle` / `auth.withX` yang semula top-level sudah
+pindah ke `auth.signIn.*` dan `auth.signUp.*`, supaya "Sign in" / "Sign up"
+pun ikut diterjemahkan dan bukan lagi string Inggris yang ditulis mati.
+
+Satu hal sengaja **tidak** dibersihkan: `google.svg` masih memakai hex merek
+(`#4285F4`, `#34A853`, `#FBBC05`, `#EB4335`) di dalam file, bukan di
+`className`. Logo Google memang multi-warna dan itulah yang membuatnya logo
+Google — mewarnakannya dengan theme token akan membuatnya berhenti menjadi logo
+itu sendiri, jadi pengecualiannya didokumentasikan di tabel "Decisions to
+preserve" di `AGENTS.md`. `x.svg` monokrom memakai `currentColor`, jadi
+ikut warna teks tombol di kedua tema tanpa tambahan apa pun.
+
+Inline SVG masih ada di `Alert.tsx`, `Modal`, `PageBreadCrumb`, `Select`, dan
+`MultiSelect`. Itu di luar lingkup issue #42 dan belum punya nomornya sendiri.
 
 ---
 

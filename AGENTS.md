@@ -158,7 +158,7 @@ src/
 ├── hooks/                     useModal useClickOutside useIsAdmin
 ├── i18n/                      index.ts bootstrap, languages.ts registry
 ├── locales/en/common.json     the only locale file
-├── icons/                     29 .svg + index.ts barrel (SVGR named exports)
+├── icons/                     31 .svg + index.ts barrel (SVGR named exports)
 ├── utils/index.ts             cn()
 ├── svg.d.ts                   ambient types for the SVGR `?react` import
 └── vite-env.d.ts              ImportMetaEnv for the two VITE_SUPABASE_* keys
@@ -751,7 +751,7 @@ These were deliberate. Do not "clean them up" without asking.
 | No first-signup admin grant; the first admin is promoted by hand | The owner chose to close it (#39) over keeping it for convenience. The remote had 0 users with signup open, so the grant was an unclaimed admin for anyone who found the URL. The cost is a fresh project starts read-only — see Promoting the first admin |
 | `@supabase/supabase-js` is the backend, wired for email/password auth | Requested by the project owner. It costs ~760 kB of extra JavaScript, most of it realtime/PostgREST/storage this app does not use yet, but the owner wants this client |
 | The social sign-in buttons are `disabled` rather than removed | The owner chose to defer OAuth. Keeping the buttons visible preserves the layout; `auth.oauthNotReady` explains them via `title` |
-| The Google and X inline SVGs were kept even though the rule says never inline SVG | They came with the template. Replacing them with `src/icons/*.svg` entries was out of scope for the auth wiring. Converting them is a fair cleanup |
+| `google.svg` keeps its brand hexes instead of theme tokens | The Google logo is genuinely multi-colour — `#4285F4`, `#34A853`, `#FBBC05`, `#EB4335` are what makes it the Google logo. Recolouring it with a token would stop it being the logo at all, so the "no hardcoded hex" rule has a documented exception here and only here. `x.svg` is monochrome and uses `currentColor`, so it follows the button's text colour in both themes on its own |
 | `src/components/calendar/*` stays | The one genuinely original feature, not template code. Not asset-management related, but it proves the repo has its own work in it |
 | i18n stays | The sidebar, header, and user dropdown are already translated |
 | Auth pages stay | The form markup and validation shape were sound. The submit handlers were replaced with real Supabase calls; the surrounding markup is unchanged |
@@ -805,7 +805,9 @@ not go looking for them unprompted.
   `Dashboard.tsx` and `Blank.tsx` is currently hardcoded English, so the rule is
   inconsistently applied; be consistent within the file you touch.
 - Don't pass a key path as the i18next namespace argument.
-- Don't hardcode hex colors in `className`.
+- Don't hardcode hex colors in `className`. The one exception is
+  `src/icons/google.svg`, which is a multi-colour brand logo; see the Decisions
+  table.
 - Don't use physical directional utilities (see Styling).
 - Don't inline SVG markup.
 - Don't use CSS-in-JS or CSS Modules.

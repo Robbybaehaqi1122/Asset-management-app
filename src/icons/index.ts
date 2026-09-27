@@ -27,6 +27,8 @@ import { ReactComponent as MoreDotIcon } from "./moredot.svg?react";
 import { ReactComponent as UploadIcon } from "./upload.svg?react";
 import { ReactComponent as SliderHorizontalIcon } from "./slider-horizontal.svg?react";
 import { ReactComponent as UsFlagIcon } from "./flag-us.svg?react";
+import { ReactComponent as GoogleIcon } from "./google.svg?react";
+import { ReactComponent as XIcon } from "./x.svg?react";
 
 export {
   PlusIcon,
@@ -58,4 +60,6 @@ export {
   UploadIcon,
   SliderHorizontalIcon,
   UsFlagIcon,
+  GoogleIcon,
+  XIcon,
 };
