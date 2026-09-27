@@ -186,6 +186,8 @@ supabase/
 .github/
 ├── ISSUES_KNOWN.md            known problems, grouped by severity
 └── ISSUE_TEMPLATE/            known-issue.yml
+
+vercel.json                    SPA rewrite only — no framework, no buildCommand
 ```
 
 ## Database
@@ -443,6 +445,34 @@ name is a type error instead of `undefined` at runtime.
   signed-in user's own row, so there is nothing for an anonymous visitor to see
   and `PublicOnlyRoute` would only bounce a signed-in user away from it.
 
+### Deep links 404 without the SPA rewrite
+
+Every route in `App.tsx` is client-side. Vercel serves static files, and it has
+no file to serve for `/signin`, so a hard request for any path except `/`
+returns its own 404 — **not** the app's. The app looks fine when you arrive at
+`/` and then let the router navigate, which is exactly why this survives casual
+testing and only shows up on refresh, on a bookmark, on a shared link, or on
+sending someone a link to `/profile`.
+
+`vercel.json` fixes it with a catch-all rewrite to `index.html`:
+
+```json
+{ "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }] }
+```
+
+This is safe for assets **because Vercel checks the filesystem before it
+applies rewrites**. `/assets/index-*.js` and `/images/**` exist on disk, so
+they are served directly and never reach the rewrite. Verified: every
+`src`/`href` in the built `dist/index.html` resolves to a real file.
+
+Adding a route does not need a matching entry here. The rewrite is
+deliberately `/(.*)`, so a new page works on a hard load as soon as it is
+registered in `App.tsx`.
+
+Do not add a `framework`, `buildCommand` or `outputDirectory` to this file
+without being asked. Those are detected on Vercel today, and naming them here
+would let the two drift apart silently.
+
 ## There is no signup route
 
 `/signup` was removed, along with `SignUp.tsx`, `SignUpForm.tsx`, the
@@ -604,8 +634,12 @@ working end to end against production on 2026-09-27:
 | `http://localhost:5173/reset-password` | **unconfirmed** — see below |
 
 `pgt-asset.vercel.app` is the deployed app. It is **not** described anywhere in
-this repo, and there is no deploy config checked in — the connection lives in the
-hosting provider's settings, so nothing here will tell you it exists.
+this repo beyond this line — the connection to the project lives in the hosting
+provider's settings, so nothing here will tell you it exists.
+
+`vercel.json` is checked in, but it holds **only** the SPA rewrite. It does not
+name the project, the framework or the output directory; those are still
+detected or configured on Vercel. See Deep links 404 without the SPA rewrite.
 
 **One gap is still open.** `npm run dev` serves `http://localhost:5173`, and the
 committed `.env.local` points that dev server at the **remote** project. So a
@@ -885,6 +919,7 @@ These were deliberate. Do not "clean them up" without asking.
 | The 13 primitives stay | They are the component library. Deleting them for lack of consumers throws away working UI |
 | `/signin` is not in the sidebar | Intentional. The auth shell is reachable by URL so it stays out of the way of domain navigation |
 | The signup form is removed rather than hidden | The owner chose invite-only: an admin creates users, nobody self-registers. The form's route, component, context method and 27 i18n keys all went with it — see There is no signup route |
+| `vercel.json` holds only the SPA rewrite | Deep links 404 on a hard load without it, and that only shows up on refresh and bookmarks. Framework, build command and output directory stay on Vercel so the two cannot drift apart |
 | The "Asset Management" sidebar row is non-clickable | It marks where domain navigation will go. A `disabled` row cannot dead-link to a 404 |
 
 ## Known rough edges
