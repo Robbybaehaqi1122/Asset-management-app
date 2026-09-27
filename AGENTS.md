@@ -210,7 +210,7 @@ vercel.json                    SPA rewrite only — no framework, no buildComman
 | `20260927000600_profiles_email.sql` | `profiles.email`, `handle_new_user` copies it, backfill, unique index |
 | `20260927000700_user_management_guards.sql` | `guard_last_admin` and `protect_profile_email`; see User management |
 
-**All five are applied to the remote.** `db diff --linked` reports `No schema
+**All seven are applied to the remote.** `db diff --linked` reports `No schema
 changes found`, so the files and the live database agree.
 
 Note that `db push` printed `Remote database is up to date.` immediately after
@@ -343,9 +343,10 @@ exists`. So the files are not a repair tool.
 **`schema_migrations` is the ledger.** `supabase_migrations.schema_migrations`
 holds one row per applied version — `20260927000100` schema, `20260927000200`
 triggers, `20260927000300` rls, `20260927000400` drop first-admin grant,
-`20260927000500` status/loan sync. That table, not the schema itself, is what the
-CLI consults to decide what is pending, and it is also the only trustworthy way to
-confirm a push landed.
+`20260927000500` status/loan sync, `20260927000600` profiles.email,
+`20260927000700` user-management guards. That table, not the schema itself, is what
+the CLI consults to decide what is pending, and it is also the only trustworthy way
+to confirm a push landed.
 
 `migration list --linked` is the exception that proves the rule: it failed once
 with `password authentication failed for user "cli_login_postgres"` while
@@ -1030,6 +1031,11 @@ These were deliberate. Do not "clean them up" without asking.
 | The signup form is removed rather than hidden | The owner chose invite-only: an admin creates users, nobody self-registers. The form's route, component, context method and 27 i18n keys all went with it — see There is no signup route |
 | `vercel.json` holds only the SPA rewrite | Deep links 404 on a hard load without it, and that only shows up on refresh and bookmarks. Framework, build command and output directory stay on Vercel so the two cannot drift apart |
 | The "Asset Management" sidebar row is non-clickable | It marks where domain navigation will go. A `disabled` row cannot dead-link to a 404 |
+| `src/modules/<feature>/` for features that bring a page plus a service layer | A standalone page under `src/pages/` has nowhere to put its own service code. The route still lives in `App.tsx`; the module owns only the files below it. `src/modules/users/` is the precedent |
+| Modules are `.ts` / `.tsx`, never `.js` / `.jsx` | The spec for user management asked for `.js`/`.jsx`. `allowJs` is absent (so false) and `include` is `["src", "**/*.ts"]`, so a `.jsx` never enters the TypeScript program and a `.tsx` importing one fails `tsc -b`. Same files, correct extension |
+| User management has no create or delete | Both need `supabase.auth.admin` and therefore a `service_role` key in the browser, which is in Don'ts. Delete is worse than absent — it cascades through `assignments` and erases loan history. The disabled "Add user" button states the reason instead of looking unfinished |
+| The last-admin rule is a trigger, not a button's `disabled` | The one-statement lockout was demonstrated locally before the fix, and hiding a control does not stop anyone with a session from sending the request. Same reasoning as `protect_profile_role` and `assets_guard_status` |
+| `profiles.email` is a copy of `auth.users.email` | The user list has to show and search by email, and `auth.users` is not reachable from PostgREST. A `service_role` key is the only alternative and it is forbidden. Sign-in and password reset still read `auth.users`, so the copy is display data only |
 
 ## Known rough edges
 
@@ -1107,6 +1113,18 @@ not go looking for them unprompted.
   admin.
 - Don't leave `profiles_protect_role` disabled. If a promote seems to need it off,
   it is three statements and the third one puts it back.
+- Don't re-run the backfill `update` in `20260927000600_profiles_email.sql` as
+  written. `profiles_protect_email` refuses it, because `is_admin()` reads
+  `auth.uid()` and there is no JWT. Toggle the trigger off and back on, the same
+  way the role column works.
+- Don't leave `profiles_protect_email` or `profiles_guard_last_admin` disabled.
+  The first is the only thing stopping a signed-in user from rewriting the
+  address the admin list shows; the second is the only thing between a
+  one-statement admin lockout and the documented manual recovery.
+- Don't call `getAllUsers` before checking `useIsAdmin()`. RLS will not error; it
+  will quietly hand a staff member a single row, which reads like a broken list.
+- Don't treat a resolved `updateUserRole` as proof the role changed. A non-admin's
+  write matches zero rows and PostgREST still reports success.
 - Don't write `assets.status` from the client to mean "available" or "assigned".
   Those two values follow the loans and `assets_guard_status` will reject a write
   that disagrees. If you need to retire or damage something, write that — nothing

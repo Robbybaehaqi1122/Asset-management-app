@@ -74,18 +74,23 @@ terpasang — bukan hanya bahwa schema `public` cocok. **Issue #37.**
 
 ## Sedang
 
-### 4. `profiles` tidak terhubung ke UI sama sekali
+### 4. `profiles` masih belum bisa diedit dari UI
 
-Tabelnya ada, RLS-nya benar, trigger signup-nya mengisi. Tapi tidak ada apa pun
-di `src/` yang membacanya. `AuthContext` menyimpan session dan tidak lebih, jadi
-frontend tidak punya cara tahu apakah user ini `admin` atau `staff`.
+Tercakup sebagian. `AuthContext` sekarang membaca baris profil dan
+`useIsAdmin()` bercabang darinya, `/profile` menampilkannya, dan `/users`
+membaca serta mengubah `role`.
 
-Konsekuensi paling nyata: staff akan **melihat** tombol "Hapus asset", mengklik
-nya, dan mendapat `42501` tanpa penjelasan apa pun, karena UI tidak bisa
-menyembunyikan aksi tulis yang tidak berhak dia jalankan. `department` juga
-dikumpulkan lalu dibuang, dan `UserDropdown` menampilkan
-`user_metadata.full_name` yang dikirim client, bukan `profiles.full_name` yang
-dipiliki database. **Issue #38.**
+Yang masih belum ada: **tidak ada tempat mengubah `full_name` atau
+`department` dari UI**. Keduanya hanya diisi trigger dari metadata signup, jadi
+nilainya adalah apa yang diketik orang saat pertama kali masuk — dan metadata itu
+bisa dibuat oleh client. `UserDropdown` masih membaca
+`user_metadata.full_name`, yang berarti dua sumber kebenaran untuk satu nama.
+Halaman `/profile` sengaja read-only, jadi "Edit profile" di dropdown
+menjanjikan sesuatu yang belum ada.
+
+Sisa masalah lain yang asli: tombol "Hapus asset" **belum pernah ada** untuk
+diuji, jadi belum ada contoh UI yang menyamarkan aksi tulis versi RLS.
+**Issue #38.**
 
 ### 5. Signup pertama otomatis mendapat `admin`
 
@@ -143,6 +148,25 @@ Inline SVG masih ada di `Alert.tsx`, `Modal`, `PageBreadCrumb`, `Select`, dan
 `MultiSelect`. Itu di luar lingkup issue #42 dan belum punya nomornya sendiri.
 
 ---
+
+### 13. User management tidak bisa membuat atau menghapus akun
+
+Layar `/users` hanya membaca dan mengubah `role`. Membuat akun butuh
+`supabase.auth.admin`, yang butuh `service_role`, dan meletakkannya di browser
+melanggar aturan repo. Menghapus lebih buruk daripada tidak ada: `assignments`
+adalah `on delete cascade` dari `profiles`, jadi menghapus profil menghapus
+riwayat peminjaman orang itu **dan** mengembalikan asetnya ke `available` tanpa
+jejak, karena `assignments_sync_asset_status` ikut menyala.
+
+Jalur yang benar adalah Supabase Edge Function; `supabase/functions/` belum ada.
+Tombol "Add user" sengaja `disabled` dengan alasannya di `title`.
+
+### 14. `profiles.email` bisa basi
+
+Salinan dari `auth.users.email` yang ditulis trigger. Alamat yang diganti manual
+di Auth tidak muncul di daftar admin sampai backfill dijalankan ulang — dan
+backfill itu sendiri diblokir `profiles_protect_email` kecuali pemanggilnya
+admin. Admin bisa memperbaikinya lewat aplikasi. **Issue #48.**
 
 ## Rendah
 
