@@ -5,7 +5,8 @@
     },
     "items": {
       "calendar": "Calendar",
-      "assetManagement": "Asset Management"
+      "assetManagement": "Asset Management",
+      "userManagement": "User Management"
     }
   },
   "header": {
@@ -89,6 +90,46 @@
     "roles": {
       "admin": "Administrator",
       "staff": "Staff"
+    }
+  },
+  "users": {
+    "pageTitle": "User Management",
+    "pageDescription": "Review the accounts in this workspace and change their role",
+    "subtitle": "Accounts are created from the Supabase Dashboard, and their profile is created automatically.",
+    "checkingAccess": "Checking your access…",
+    "noAccess": "This page is only available to administrators.",
+    "searchPlaceholder": "Search by name, email, or department",
+    "columns": {
+      "name": "Name",
+      "email": "Email",
+      "department": "Department",
+      "role": "Role",
+      "actions": "Actions"
+    },
+    "roles": {
+      "admin": "Administrator",
+      "staff": "Staff"
+    },
+    "notSet": "Not set",
+    "you": "You",
+    "changeRole": "Change role",
+    "addUser": "Add user",
+    "createNotReady": "Creating an account needs a server-side Admin API call, which this app does not have yet. Create the user from the Supabase Dashboard instead.",
+    "lastAdmin": "This is the only administrator. Promote somebody else first.",
+    "confirmTitle": "Change role?",
+    "confirmBody": "{{name}} will become {{role}}.",
+    "selfWarning": "This is your own account. You will lose access to this page as soon as the change is saved.",
+    "cancel": "Cancel",
+    "save": "Save",
+    "saving": "Saving…",
+    "loading": "Loading users…",
+    "empty": "No accounts yet.",
+    "noResults": "No accounts match your search.",
+    "showing": "Showing {{shown}} of {{total}} accounts",
+    "errors": {
+      "load": "The user list could not be loaded.",
+      "save": "The role could not be changed. Please try again.",
+      "lastAdmin": "The last administrator cannot be demoted. Promote somebody else first."
     }
   }
 }

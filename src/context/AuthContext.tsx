@@ -1,6 +1,12 @@
 import type { AuthSession, AuthUser } from "@supabase/supabase-js";
 import type React from "react";
-import { createContext, useContext, useEffect, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+} from "react";
 import type { Profile } from "@/lib/profiles";
 import { fetchProfile } from "@/lib/profiles";
 import { setSessionPersistence, supabase } from "@/lib/supabase";
@@ -43,6 +49,16 @@ type AuthContextType = {
   signOut: () => Promise<void>;
   requestPasswordReset: (email: string) => Promise<void>;
   updatePassword: (password: string) => Promise<void>;
+  /**
+   * Baca ulang baris `profiles` milik user yang sedang login.
+   *
+   * Ada karena satu layar bisa mengubah role milik user itu sendiri: setelah
+   * `updateUserRole` sukses, row yang di-cache di state masih memakai role
+   * lama, jadi `useIsAdmin()` akan terus mengembalikan `true` sampai halaman
+   * di-reload. Menjalankan ulang efek `fetchProfile` tidak membantu, karena
+   * dependensinya `userId` tidak berubah.
+   */
+  refreshProfile: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -137,6 +153,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     if (error) throw error;
   };
 
+  const refreshProfile = useCallback(async () => {
+    if (!userId) return;
+    const row = await fetchProfile(userId);
+    setProfileState({ userId, row });
+  }, [userId]);
+
   return (
     <AuthContext.Provider
       value={{
@@ -149,6 +171,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         signOut,
         requestPasswordReset,
         updatePassword,
+        refreshProfile,
       }}
     >
       {children}

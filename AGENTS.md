@@ -162,6 +162,9 @@ src/
 │   │                          RequireAuth PublicOnlyRoute AuthLoading
 │   └── calendar/              the calendar feature: Calendar CalendarEventModal
 │                              CalendarEventItem CalendarViewSelect icons types
+│   └── modules/               self-contained features; currently just users/
+│       └── users/             the user-management feature: pages/ services/
+│                              see User management
 ├── layout/                    AppLayout AppSidebar AppHeader Backdrop
 ├── context/                   AuthContext ThemeContext SidebarContext LanguageContext
 ├── hooks/                     useModal useClickOutside useIsAdmin
@@ -182,6 +185,8 @@ supabase/
     └── 20260927000300_rls.sql        grants, RLS, 14 policies
     └── 20260927000400_drop_first_admin_grant.sql  handle_new_user always 'staff'
     └── 20260927000500_sync_asset_status_with_assignments.sql  status/loan sync
+    └── 20260927000600_profiles_email.sql  profiles.email + backfill
+    └── 20260927000700_user_management_guards.sql  last-admin + email guards
 
 .github/
 ├── ISSUES_KNOWN.md            known problems, grouped by severity
@@ -193,7 +198,7 @@ vercel.json                    SPA rewrite only — no framework, no buildComman
 ## Database
 
 `supabase/migrations/` holds the schema, applied to project
-`dnyszknpinqvcfkmoauz` (Postgres 17.6.1). Five migrations, in order:
+`dnyszknpinqvcfkmoauz` (Postgres 17.6.1). Seven migrations, in order:
 
 | File | Contents |
 |---|---|
@@ -202,6 +207,8 @@ vercel.json                    SPA rewrite only — no framework, no buildComman
 | `20260927000300_rls.sql` | grants, `enable`/`force row level security` on all 6 tables, 14 policies |
 | `20260927000400_drop_first_admin_grant.sql` | `handle_new_user` redefined to always insert `staff`; see Promoting the first admin |
 | `20260927000500_sync_asset_status_with_assignments.sql` | 2 triggers keeping `assets.status` honest; see Asset status follows the loans |
+| `20260927000600_profiles_email.sql` | `profiles.email`, `handle_new_user` copies it, backfill, unique index |
+| `20260927000700_user_management_guards.sql` | `guard_last_admin` and `protect_profile_email`; see User management |
 
 **All five are applied to the remote.** `db diff --linked` reports `No schema
 changes found`, so the files and the live database agree.
@@ -440,10 +447,17 @@ name is a type error instead of `undefined` at runtime.
      complete.
 - `path="*"` is the 404 fallback.
 - New page → create `src/pages/<Category>/MyPage.tsx` with a default export, then
-  add its `<Route>` inside the right group.
+  add its `<Route>` inside the right group. A **feature** that brings its own
+  page plus service layer goes in `src/modules/<feature>/` instead — that is
+  what `src/modules/users/` is. The route is still registered in `App.tsx`; the
+  module directory only owns the files below it.
 - `/profile` is inside the `RequireAuth` group, not beside it. It reads the
   signed-in user's own row, so there is nothing for an anonymous visitor to see
   and `PublicOnlyRoute` would only bounce a signed-in user away from it.
+- `/users` is inside `RequireAuth` and has **no route-level admin guard**. The
+  page checks `useIsAdmin()` and renders a refusal; RLS already limits the rows
+  either way. A second guard would be a second place to keep in sync without
+  adding a single row of enforcement.
 
 ### Deep links 404 without the SPA rewrite
 
@@ -738,6 +752,101 @@ comes back. A blind overwrite would be worse than the inconsistency it replaced.
 All three workflow guards reject with `23514` (`check_violation`), so a client sees
 one recognisable code rather than three.
 
+## User management
+
+`src/modules/users/` is the one feature module. It is a **read and role-change**
+screen: list every account, search, change a role. It cannot create or delete
+accounts, and that is a deliberate limit rather than a missing piece.
+
+### Why there is no create or delete button
+
+Both need `supabase.auth.admin`, which needs a `service_role` key, and putting
+one in the browser is in Don'ts. So accounts are still created from the Supabase
+Dashboard — `on_auth_user_created` builds the profile either way, which is what
+makes invite-only work with no create-user code at all. The disabled "Add user"
+button on the screen carries that reason in its `title` rather than pretending to
+work. Wiring it properly means a Supabase Edge Function; `supabase/functions/`
+does not exist yet.
+
+Delete is not merely absent, it would be **wrong**. `assignments.user_id` is
+`references public.profiles(id) on delete cascade`, so deleting a profile also
+deletes that person's loan history, and `assignments_sync_asset_status` then
+flips their assets back to `available` with no trace. `assigned_by` is
+`on delete set null`, so the record of who lent them is gone too. A deactivation
+flag would need a new column and a decision about live sessions.
+
+### Changing a role needs no new policy
+
+`profiles_select_own_or_admin` already gives an admin every row, and
+`profiles_update_own` already lets an admin write any row. `protect_profile_role`
+already restricts the change to admins. So `getAllUsers` and `updateUserRole` in
+`src/modules/users/services/userService.ts` work on the existing policies — the
+role switcher is the whole feature, and it adds no migration.
+
+### Two guards the screen depends on
+
+Both are in `20260927000700_user_management_guards.sql`, both triggers rather
+than client checks, because hiding a control does not stop anyone with a session
+from sending the request.
+
+1. **`guard_last_admin`** — `before update of role`, refuses a demote that would
+   leave no admin, with `23514` and the message `Cannot remove the last admin`.
+   Without it an admin removes their own admin role in one statement and the
+   project is locked; recovery is the manual three-statement procedure in
+   Promoting the first admin. The screen also disables the control when it
+   counts one admin, and `isLastAdminError` in the service layer handles the race
+   where a second admin demoted themselves in between — but the trigger is what
+   actually holds.
+
+   It takes `pg_advisory_xact_lock` before checking, and that is load-bearing.
+   A plain `not exists` reads a snapshot taken before the other transaction
+   committed, so two admins demoting each other at the same moment would each
+   see the other still an admin and both would pass. The lock serialises them.
+   It is an advisory lock rather than `lock table` because the `update` already
+   holds a ROW EXCLUSIVE lock on `profiles`, and a `before update` trigger asking
+   for a conflicting table lock deadlocks its own transaction.
+
+2. **`protect_profile_email`** — `before update of email`, refuses the write with
+   `42501` unless the caller is an admin. `profiles_update_own` lets a user
+   write their own row, and a policy cannot restrict *which* columns get written,
+   so the same reasoning as `protect_profile_role` applies. Without it the new
+   `profiles.email` would be free for any signed-in user to overwrite on their
+   own row and the address in the admin list would be whatever they typed.
+
+### `profiles.email` is a denormalisation
+
+The email lives in `auth.users`, which PostgREST does not expose, so
+`20260927000600_profiles_email.sql` copies it onto `profiles` and the unique
+index asserts what `auth.users` already guarantees. Sign-in and the password
+reset still read `auth.users`; the column is display data for the list and its
+search, and nothing else.
+
+It can go stale: an address changed by hand in Auth will not appear here until
+the backfill `update` is re-run, and that re-run is **blocked** by
+`profiles_protect_email` unless the caller is an admin, for the same reason
+`profiles_protect_role` is — `is_admin()` reads `auth.uid()`, which is NULL for
+`postgres`. The repair is the same three-statement dance, with
+`profiles_protect_email` instead of `profiles_protect_role`. This is the one
+place where `00600` is not safe to re-run as written.
+
+An admin can still correct the column through the app, which is why
+`protect_profile_email` tests `is_admin()` rather than refusing everyone.
+
+### The self-demotion trap, and `refreshProfile`
+
+`AuthContext` fetches the profile once per `userId` and caches it. Change your
+own role on the screen and that row is stale, so `useIsAdmin()` keeps reporting
+admin and the admin-only page keeps rendering until a reload. `refreshProfile`
+on the context exists for exactly this; the effect alone cannot help, because
+`userId` does not change. The screen calls it when the changed row is the
+signed-in user's own.
+
+The related trap is quieter: a **non**-admin's rejected write is not an error.
+`profiles_update_own` filters the rows a caller may touch, so a staff member
+promoting somebody else matches **zero rows** and PostgREST reports success.
+Verified locally. Do not treat a resolved `updateUserRole` as proof it
+happened — a `.select()` would return an empty array instead.
+
 ### Trigger functions and `search_path`
 
 `handle_new_user`, `is_admin`, and `protect_profile_role` are `security definer`
@@ -936,10 +1045,12 @@ not go looking for them unprompted.
   "Edit profile", "Account settings" and "Support" are the same read-only view.
   The page is read-only, so "Edit profile" overpromises. Either build the edit
   capability or collapse the three into one item.
-- `useIsAdmin()` has exactly one caller, the role badge on `/profile`. That is
-  enough to keep it honest but not enough to demonstrate the RLS layer end to
-  end: no screen yet hides a write action, because the asset screens that would
-  need it do not exist. Do not read the badge as that proof.
+- `useIsAdmin()` now has two kinds of caller: the role badge on `/profile`, and
+  `/users`, which refuses to render at all for a non-admin and hides its
+  admin-only row actions behind the same hook. That is the end-to-end
+  demonstration the badge never was — but the *enforcement* still lives in
+  `profiles_select_own_or_admin`, `profiles_update_own` and
+  `profiles_guard_last_admin`, not in either caller.
 - `AuthContext` sets `isLoading` to `false` from inside the `onAuthStateChange`
   callback rather than from a separate `getSession()` call. That is deliberate —
   see Supabase. It does mean `isLoading` is `true` for one extra microtask.

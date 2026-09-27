@@ -1,13 +1,15 @@
 import { useSidebar } from "@/context/SidebarContext";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useLocation } from "react-router";
 import {
   BoxCubeIcon,
   CalenderIcon,
   ChevronDownIcon,
+  GroupIcon,
   HorizontaLDots,
 } from "../icons";
+import { useIsAdmin } from "@/hooks/useIsAdmin";
 import { cn } from "../utils";
 
 type NavSubItem = {
@@ -30,6 +32,16 @@ type NavItem = {
   subItems?: NavSubItem[];
   /** Renders as a non-interactive placeholder instead of a link or submenu. */
   disabled?: boolean;
+  /**
+   * Hidden entirely from users who are not admins.
+   *
+   * `useIsAdmin()` rather than `profile?.role`, so the fail-closed default
+   * lives in one place: until the profile has arrived the entry is absent,
+   * which is the safe direction for an admin-only screen. Not an access
+   * control — the screen and the RLS policies both refuse a non-admin on
+   * their own.
+   */
+  adminOnly?: boolean;
 };
 
 const navItems: NavItem[] = [
@@ -45,6 +57,13 @@ const navItems: NavItem[] = [
     key: "assetManagement",
     disabled: true,
   },
+  {
+    icon: <GroupIcon fontSize={24} />,
+    name: "User Management",
+    key: "userManagement",
+    path: "/users",
+    adminOnly: true,
+  },
 ];
 
 const AppSidebar: React.FC = () => {
@@ -52,6 +71,7 @@ const AppSidebar: React.FC = () => {
     useSidebar();
   const { t } = useTranslation();
   const location = useLocation();
+  const isAdmin = useIsAdmin();
   const [subMenuHeight, setSubMenuHeight] = useState<Record<string, number>>(
     {},
   );
@@ -62,6 +82,15 @@ const AppSidebar: React.FC = () => {
     index: number | null;
   } | null>(null);
   const subMenuRefs = useRef<Record<string, HTMLDivElement | null>>({});
+
+  // Disembunyikan sekali di sini, bukan saat render, supaya indeks yang dipakai
+  // untuk melacak submenu sama antara turunannya dan pemetaan di bawah. Kalau
+  // di-filter di dalam `map`, indeks item setelahnya bergeser dan state submenu
+  // akan menunjuk item yang salah.
+  const visibleNavItems = useMemo(
+    () => navItems.filter((nav) => !nav.adminOnly || isAdmin),
+    [isAdmin],
+  );
 
   // Auto-close sidebar on mobile after route change
   useEffect(() => {
@@ -80,8 +109,10 @@ const AppSidebar: React.FC = () => {
   // Submenu yang memuat route aktif terbuka secara default. Diturunkan saat
   // render, bukan disimpan, supaya tidak ada setState di dalam effect.
   let openSubmenu: OpenSubmenu | null = null;
-  for (let index = 0; index < navItems.length; index += 1) {
-    if (navItems[index].subItems?.some((subItem) => isActive(subItem.path))) {
+  for (let index = 0; index < visibleNavItems.length; index += 1) {
+    if (
+      visibleNavItems[index].subItems?.some((subItem) => isActive(subItem.path))
+    ) {
       openSubmenu = { type: "main", index };
       break;
     }
@@ -310,7 +341,7 @@ const AppSidebar: React.FC = () => {
                   <HorizontaLDots className="size-6" />
                 )}
               </h2>
-              {renderMenuItems(navItems, "main")}
+              {renderMenuItems(visibleNavItems, "main")}
             </div>
           </div>
         </nav>
