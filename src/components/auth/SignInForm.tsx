@@ -4,13 +4,7 @@ import Input from "@/components/form/input/InputField";
 import Alert from "@/components/ui/alert/Alert";
 import Button from "@/components/ui/button/Button";
 import { useAuth } from "@/context/AuthContext";
-import {
-  ChevronLeftIcon,
-  EyeCloseIcon,
-  EyeIcon,
-  GoogleIcon,
-  XIcon,
-} from "@/icons";
+import { EyeCloseIcon, EyeIcon } from "@/icons";
 import { authErrorKey } from "@/lib/authErrors";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -50,15 +44,13 @@ export default function SignInForm() {
 
   return (
     <div className="flex flex-1 flex-col">
-      <div className="mx-auto w-full max-w-md pt-10">
-        <Link
-          to="/"
-          className="inline-flex items-center text-sm text-gray-500 transition-colors hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300"
-        >
-          <ChevronLeftIcon className="size-5 rtl:rotate-180" />
-          {t("backToDashboard")}
-        </Link>
-      </div>
+      {/* The social sign-in buttons, the "or" divider that separated them from
+          this form, and the "back to dashboard" link are all gone. The two
+          buttons were permanently `disabled` placeholders, and the divider
+          existed only to separate them from the form below — with no second way
+          to sign in, a divider reading "or" had nothing on the other side of it.
+          Keeping them visible was a layout decision that outlived its reason;
+          the sign-in form now starts at the heading. */}
       <div className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center">
         <div>
           <div className="mb-5 sm:mb-8">
@@ -70,36 +62,6 @@ export default function SignInForm() {
             </p>
           </div>
           <div>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-5">
-              <button
-                type="button"
-                disabled
-                title={t("oauthNotReady")}
-                className="inline-flex cursor-not-allowed items-center justify-center gap-3 rounded-lg bg-gray-100 px-7 py-3 text-sm font-normal text-gray-700 opacity-60 dark:bg-white/5 dark:text-white/90"
-              >
-                <GoogleIcon className="size-5" />
-                {t("signIn.withGoogle")}
-              </button>
-              <button
-                type="button"
-                disabled
-                title={t("oauthNotReady")}
-                className="inline-flex cursor-not-allowed items-center justify-center gap-3 rounded-lg bg-gray-100 px-7 py-3 text-sm font-normal text-gray-700 opacity-60 dark:bg-white/5 dark:text-white/90"
-              >
-                <XIcon className="size-5" />
-                {t("signIn.withX")}
-              </button>
-            </div>
-            <div className="relative py-3 sm:py-5">
-              <div className="absolute inset-0 flex items-center">
-                <div className="w-full border-t border-gray-200 dark:border-gray-800"></div>
-              </div>
-              <div className="relative flex justify-center text-sm">
-                <span className="bg-white p-2 text-gray-400 sm:px-5 sm:py-2 dark:bg-gray-900">
-                  {t("or")}
-                </span>
-              </div>
-            </div>
             <form onSubmit={handleSubmit}>
               <div className="space-y-6">
                 {errorKey && (

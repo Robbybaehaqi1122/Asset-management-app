@@ -17,8 +17,11 @@ schema for those tables is defined in `supabase/migrations/` and applied, but
 nothing reads or writes them yet, and nothing in `src/` knows the schema exists.
 See Database.
 
-The "Sign in with Google" and "Sign in with X" buttons on both auth forms are
-rendered but permanently `disabled`. They are placeholders, not a bug.
+The "Sign in with Google" and "Sign in with X" buttons, the "or" divider that
+separated them from the form, and the "back to dashboard" link are all gone
+from `SignInForm`. They were `disabled` placeholders, and the divider existed
+only to separate two ways to sign in — with no second way, "or" had nothing on
+the other side of it.
 
 ## Stack
 
@@ -499,9 +502,10 @@ would let the two drift apart silently.
 
 `/signup` was removed, along with `SignUp.tsx`, `SignUpForm.tsx`, the
 `signUp` method on `AuthContext`, and the 27 i18n keys that only that form
-used. Users are created by an admin instead. The remaining i18n keys
-`auth.backToDashboard`, `auth.or` and `auth.oauthNotReady` are still used by
-`SignInForm` and must not be removed with them.
+used. Users are created by an admin instead. A later change removed the social
+sign-in buttons from `SignInForm` and took `auth.backToDashboard`, `auth.or`,
+`auth.oauthNotReady`, `auth.signIn.withGoogle` and `auth.signIn.withX` with them,
+so `auth` is now just `signIn`, `resetPassword` and `errors`.
 
 **Removing the form does not close signup.** The GoTrue endpoint at
 `/auth/v1/signup` is still open, so anyone can still create a `staff` account
@@ -1382,7 +1386,7 @@ something local, which is itself the bug.
 - i18next is bootstrapped once in `src/i18n/index.ts`, imported by `src/main.tsx`.
   Never re-initialise it.
 - One namespace, `"common"`. One locale, `en`. The file is
-  `src/locales/en/common.json` — add new keys there. It holds 151 leaf keys
+  `src/locales/en/common.json` — add new keys there. It holds 205 leaf keys
   today, under `sidebar`, `header`, `userDropdown`, `auth`, `profile`,
   `mustChangePassword`, and `users`.
 - **Do not repeat a key inside one object.** JSON resolves a duplicate by taking
@@ -1443,8 +1447,8 @@ These were deliberate. Do not "clean them up" without asking.
 | `assets.status` is kept in step with the loans by triggers, not by client code | The owner chose the complete fix over the cheap one (#40). A trigger on `assignments` alone leaves `assets.status` directly writable and the contradiction one statement away, so the guard on `assets` is the half that makes the column trustworthy. Same reasoning that already put `set_updated_at` and the maintenance guards in the database |
 | No first-signup admin grant; the first admin is promoted by hand | The owner chose to close it (#39) over keeping it for convenience. The remote had 0 users with signup open, so the grant was an unclaimed admin for anyone who found the URL. The cost is a fresh project starts read-only — see Promoting the first admin |
 | `@supabase/supabase-js` is the backend, wired for email/password auth | Requested by the project owner. It costs ~760 kB of extra JavaScript, most of it realtime/PostgREST/storage this app does not use yet, but the owner wants this client |
-| The social sign-in buttons are `disabled` rather than removed | The owner chose to defer OAuth. Keeping the buttons visible preserves the layout; `auth.oauthNotReady` explains them via `title` |
-| `google.svg` keeps its brand hexes instead of theme tokens | The Google logo is genuinely multi-colour — `#4285F4`, `#34A853`, `#FBBC05`, `#EB4335` are what makes it the Google logo. Recolouring it with a token would stop it being the logo at all, so the "no hardcoded hex" rule has a documented exception here and only here. `x.svg` is monochrome and uses `currentColor`, so it follows the button's text colour in both themes on its own |
+| The social sign-in buttons are removed, not `disabled` | They were `disabled` placeholders and the owner reversed the earlier decision to keep them visible. The "or" divider went with them, because its only purpose was to separate two ways in — leaving it above a form with no alternative reads as a bug. `google.svg` and `x.svg` are still in `src/icons/` and still exported, unreferenced, in case OAuth is picked up again |
+| `google.svg` keeps its brand hexes instead of theme tokens | The Google logo is genuinely multi-colour — `#4285F4`, `#34A853`, `#FBBC05`, `#EB4335` are what makes it the Google logo. Recolouring it with a token would stop it being the logo at all, so the "no hardcoded hex" rule has a documented exception here and only here. Unreferenced since the social buttons were removed, but kept for the same reason. `x.svg` is monochrome and uses `currentColor` |
 | `src/components/calendar/*` stays | The one genuinely original feature, not template code. Not asset-management related, but it proves the repo has its own work in it |
 | i18n stays | The sidebar, header, and user dropdown are already translated |
 | Auth pages stay | The form markup and validation shape were sound. The submit handlers were replaced with real Supabase calls; the surrounding markup is unchanged |
@@ -1507,7 +1511,12 @@ not go looking for them unprompted.
 - Don't create a `tailwind.config` file.
 - Don't add routes outside `src/App.tsx` or pages outside `src/pages/`.
 - Don't add demo or example pages. They were removed on purpose.
-- Don't add demo image assets. `public/images/` holds 13 files, all referenced.
+- Don't add demo image assets. `public/images/` holds 13 files and exactly one of
+  them, `logo/auth-logo.svg`, is no longer referenced — the login page now uses
+  `logo/logo-pgt.png`. The template's white AdminTail mark was designed for the
+  `bg-brand-950` auth panel, and the PGT wordmark is dark navy, so it needed a
+  white plate behind it to be legible in light mode. `auth-logo.svg` is kept
+  rather than deleted for the same reason `google.svg` is.
 - Don't delete a primitive because reachability tooling reports it as an orphan.
   See the 13-primitives section.
 - Don't hardcode user-facing text in the shell — add a key to

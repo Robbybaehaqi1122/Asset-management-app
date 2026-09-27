@@ -23,14 +23,9 @@
     "signOut": "Sign out"
   },
   "auth": {
-    "backToDashboard": "Back to dashboard",
-    "or": "Or",
-    "oauthNotReady": "Social sign-in is not wired up yet. Use email and password.",
     "signIn": {
       "title": "Sign In",
       "subtitle": "Enter your email and password to sign in!",
-      "withGoogle": "Sign in with Google",
-      "withX": "Sign in with X",
       "email": "Email",
       "emailPlaceholder": "info@gmail.com",
       "password": "Password",
