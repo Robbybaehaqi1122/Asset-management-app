@@ -34,6 +34,10 @@ rendered but permanently `disabled`. They are placeholders, not a bug.
 - **react-helmet-async** via `<PageMeta>` for per-page `<title>`.
 - **SVGR** turns `src/icons/*.svg` into React components at build time.
 - Path alias `@/*` → `src/*`, set in both `tsconfig.app.json` and `vite.config.ts`.
+- **Node `^20.19.0 || >=22.12.0`**, declared in `engines`. Vite 8 and
+  `@vitejs/plugin-react` both require it, and the failure on older Node is a
+  cryptic bundler crash rather than a clear version error, so the field is
+  there to make `npm` say so up front instead.
 - **No CI.** `npm run build` and `npm run lint` are the only automated gates.
 
 ## Commands
@@ -82,7 +86,7 @@ string literal at build time, so with an empty `.env.local` rolldown folds
 unreachable, and **tree-shakes the whole Supabase client out of the bundle**.
 
 The result still builds, still passes `tsc`, and still passes `eslint`. The
-bundle is 199 kB instead of 961 kB, and contains no auth code at all. The app is
+bundle is 199 kB instead of 965 kB, and contains no auth code at all. The app is
 unusable and nothing tells you.
 
 So **a suspiciously small production bundle is the symptom, not the goal.** If
@@ -90,13 +94,18 @@ So **a suspiciously small production bundle is the symptom, not the goal.** If
 time. In dev the Vite error overlay shows the real message; in production you get
 a white screen. Check the credentials before trusting a build.
 
-Real sizes, for reference: 961.59 kB / 272.69 kB gzipped with Supabase wired
+Real sizes, for reference: 965.65 kB / 273.94 kB gzipped with Supabase wired
 in, against 199.17 kB / 63.26 kB gzipped before it. Adding Supabase roughly
 quadruples shipped JavaScript, because `@supabase/supabase-js` bundles
 realtime/websocket, PostgREST, and the storage client that this app does not use
 yet. There is no official auth-only subpackage for v2; `@supabase/auth-js` would
 be the only lever, and it is a transitive dependency, so switching would mean
 adding it explicitly. Not done. Revisit if bundle size becomes a real problem.
+
+Vite warns about chunks over 500 kB, and this one clears that bar by a wide
+margin. **The warning is not the argument** — the owner accepted this cost
+deliberately, and nothing here is broken. Do not open a bundle-size thread
+because the warning is loud.
 
 ## The 13 retained primitives
 
@@ -853,8 +862,6 @@ These were deliberate. Do not "clean them up" without asking.
 Real, verified, and left alone on purpose. Fix them if you touch the area, but do
 not go looking for them unprompted.
 
-- `package.json` has no `engines` field, so the Node `^20.19.0 || >=22.12.0`
-  requirement from Vite 8 is unenforced.
 - Identity-based resets assume a stable key from the caller.
   `CalendarEventModal` remounts its form on `selectedEvent.id`, and every event
   does carry an `id`. `AppSidebar` scopes its manual submenu toggle to
