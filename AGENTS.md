@@ -555,13 +555,45 @@ The matching rule is **asymmetric**, which is the part that costs an hour:
 `npm run dev` on `http://localhost:5173` had a **silently broken** password
 reset: the form submitted, the API returned `error: null`, the email went out,
 and the link landed on `127.0.0.1:3000` — a port nothing was listening on.
-The hosted project needs the equivalent under Authentication → URL
-Configuration, which cannot be changed from the repo.
 
-The recovery link itself is a `303` to the app carrying `access_token` and
-`type=recovery` **in the URL fragment**, with no `code`. That is what
-`flowType: "implicit"` and `detectSessionInUrl: true` exist to consume, and it is
-why the fragment — not a query parameter — is the thing that must survive.
+**The hosted project needs the same treatment and it is not a repo change.**
+Authentication → URL Configuration → Redirect URLs on
+`dnyszknpinqvcfkmoauz` carries these three, and the first two were confirmed
+working end to end against production on 2026-09-27:
+
+| `redirectTo` sent | origin in the delivered link |
+|---|---|
+| `https://pgt-asset.vercel.app/reset-password` | as asked — no fallback |
+| `http://127.0.0.1:3000/reset-password` | as asked — `site_url` prefix match |
+| `http://localhost:5173/reset-password` | **unconfirmed** — see below |
+
+`pgt-asset.vercel.app` is the deployed app. It is **not** described anywhere in
+this repo, and there is no deploy config checked in — the connection lives in the
+hosting provider's settings, so nothing here will tell you it exists.
+
+**One gap is still open.** `npm run dev` serves `http://localhost:5173`, and the
+committed `.env.local` points that dev server at the **remote** project. So a
+password reset triggered from local dev sends
+`redirectTo: http://localhost:5173/reset-password` to the *hosted* GoTrue, not to
+the local one — where the `config.toml` fix does not apply. If
+`http://localhost:5173/reset-password` is not on the hosted allow list, local dev
+password reset is silently broken again, and nothing in the repo will show it.
+The local stack masks the problem, which is why it is easy to miss.
+
+### The recovery link, and why it is a fragment
+
+The recovery link is a `303` to the app carrying `access_token` and `type=recovery`
+**in the URL fragment**, with no `code`. That is what `flowType: "implicit"` and
+`detectSessionInUrl: true` exist to consume, and it is why the fragment — not a
+query parameter — is the thing that must survive.
+
+Confirmed against production: `alg` is `ES256`, so the publishable key cannot
+forge a session even if it leaks, and the `profiles` read through a
+recovered session returns the user's own row and nothing else.
+
+Turn that hash into a session with `setSession`, not `getSession(url)` —
+`getSession` takes no arguments in supabase-js 2 and reads storage, so calling it
+with a URL silently returns the *empty* session rather than erroring.
 
 ### Access model
 

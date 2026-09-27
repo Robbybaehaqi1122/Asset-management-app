@@ -194,20 +194,22 @@ manusia sungguhan:
 
 **Dua hal yang berubah sifatnya, bukan cuma statusnya:**
 
-- **`redirectTo` bisa diabaikan diam-diam.** Ditemukan, diperbaiki, dan sekarang
-  terdokumentasi di `AGENTS.md` → "`redirectTo` is silently ignored when the exact
-  URL is not allow-listed". Aturannya asimetrik, dan itu bagian yang Hour One
-  dari menggarapnya: **`site_url` dicocokkan sebagai prefix** sehingga path bebas,
-  tapi entri `additional_redirect_urls` harus **persis** termasuk path. Dulu
-  hanya `http://localhost:5173` yang thinking allows — yang justru address dari
-  `npm run dev` — tetap ditolak, dan API mengembalikan `error: null`, jadi reset
-  password di dev lokal rusak tanpa error yang terlihat. `supabase/config.toml`
-  sekarang memuat kedua URL dev secara penuh, terverifikasi sampai ke email yang
-  benar-benar sampai.
-  **Yang tidak bisa dikerjakan dari repo:** allow-list project remote masih harus
-  dicek manual di **Authentication → URL Configuration → Redirect URLs**. Kalau
-  origin produksi belum terdaftar, password reset produksi diam-diam rusak juga,
-  dengan bentuk yang persis sama.
+- **`redirectTo` bisa diabaikan diam-diam.** Ditemukan, diperbaiki di repo, dan
+  sekarang terdokumentasi di `AGENTS.md` → "`redirectTo` is silently ignored when
+  the exact URL is not allow-listed". Aturannya asimetrik, dan itu bagian yang
+  bikin satu jam hilang: **`site_url` dicocokkan sebagai prefix** sehingga path
+  bebas, tapi entri `additional_redirect_urls` harus **persis** termasuk path.
+  Dulu hanya origin `localhost:5173` yang thinking allows — yang justru address
+  dari `npm run dev` — tetap ditolak, dan API mengembalikan `error: null`.
+  `supabase/config.toml` sekarang memuat kedua URL dev secara penuh.
+  **Sudah dikonfirmasi di produksi:** link untuk
+  `https://pgt-asset.vercel.app/reset-password` mendarat tepat di origin itu,
+  bukan fallback. `alg` JWT `ES256`, dan sesi hasil pemulihan hanya membaca baris
+  `profiles` sendiri.
+  **Yang masih terbuka:** allow-list project remote harus memuat
+  `http://localhost:5173/reset-password` juga, karena `.env.local` mengarahkan
+  dev server ke project **remote**. Tanpa itu, reset password di dev lokal rusak
+  diam-diam — dan stack lokal justru menutupinya, sehingga sulit terlihat.
 - **Stack lokal auto-confirm email.** `supabase/config.toml` punya
   `enable_confirmations = false`, jadi signup di lokal selalu mengembalikan
   session dan cabang `confirm-email` di `SignUpForm` tidak pernah tersentuh.
