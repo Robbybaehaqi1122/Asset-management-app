@@ -32,5 +32,10 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true
   },
-  "include": ["src", "**/*.ts"]
+  "include": ["src", "**/*.ts"],
+
+  /* The broad glob also reaches supabase/functions, which runs on Deno's edge
+     runtime rather than in a browser. Nothing in src imports a function, so
+     excluding the directory is what keeps npm run build honest. */
+  "exclude": ["supabase"]
 }

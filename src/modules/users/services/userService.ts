@@ -139,3 +139,91 @@ export async function updateUserDetails(
 
   return data as Profile;
 }
+
+/** Yang dikirim ke `create-user`. Satu-satunya tempat password masuk repo. */
+export type NewUser = {
+  email: string;
+  password: string;
+  full_name: string;
+};
+
+/**
+ * Kode error dari Edge Function, bukan pesan GoTrue mentah.
+ *
+ * Function ini mengembalikan JSON sendiri dengan kode di dalamnya, jadi tidak
+ * ada pesan dari Supabase yang pernah sampai ke layar — yang sampai ke sini
+ * hanya string yang kita tentukan di `index.ts` atau, kalau function tidak
+ * bisa dibaca, `unknown`.
+ *
+ * Daftar ini sengaja lengkap terhadap kode yang bisa dikembalikan function.
+ * Layar memakainya lewat `t(\`errors.create.${error.code}\`)`, jadi satu kode
+ * yang tidak punya terjemahan akan tampil sebagai jalur kunci mentah, bukan
+ * pesan.
+ */
+export type CreateUserErrorCode =
+  | "unauthenticated"
+  | "forbidden"
+  | "invalid_email"
+  | "name_required"
+  | "weak_password"
+  | "already_exists"
+  | "not_configured"
+  | "network"
+  | "unknown";
+
+export class CreateUserError extends Error {
+  readonly code: CreateUserErrorCode;
+
+  constructor(code: CreateUserErrorCode) {
+    super(`create-user failed: ${code}`);
+    this.name = "CreateUserError";
+    this.code = code;
+  }
+}
+
+/**
+ * Buat satu akun lewat Edge Function `create-user`.
+ *
+ * Function ini satu-satunya tempat di project yang memakai Admin API. Lekukan
+ * karena `auth.admin.createUser` butuh `service_role`, dan key itu tidak boleh
+ * masuk browser. Yang dikembalikan cuma `id` dan `email` — role dan
+ * departemen sengaja tidak, dan itu bukan kelupaan: kolom `role` dilindungi
+ * `protect_profile_role`, yang menolak tulisan yang tidak dilakukan admin, dan
+ * penulisan lewat service role akan ditolak trigger itu karena `auth.uid()`
+ * kosong untuk permintaan tanpa JWT.
+ */
+export async function createUser(input: NewUser): Promise<{
+  id: string;
+  email: string;
+}> {
+  const { data, error } = await supabase.functions.invoke("create-user", {
+    body: input,
+  });
+
+  if (error) {
+    // `error.context` adalah Response-nya, jadi kode ada di dalam body. Kalau
+    // function tidak sempat menjawab — belum ter-deploy, atau tidak ada
+    // internet — yang tersisa hanya `unknown`.
+    let code: CreateUserErrorCode = "unknown";
+    const context = error.context;
+    if (context instanceof Response) {
+      try {
+        const body = (await context.json()) as { error?: string };
+        if (body?.error === "method_not_allowed") code = "network";
+        else if (typeof body?.error === "string") {
+          code = body.error as CreateUserErrorCode;
+        }
+      } catch {
+        code = "unknown";
+      }
+    }
+    throw new CreateUserError(code);
+  }
+
+  const created = data as { id?: string; email?: string } | null;
+  if (typeof created?.id !== "string") {
+    throw new CreateUserError("unknown");
+  }
+
+  return { id: created.id, email: created.email ?? input.email };
+}

@@ -20,13 +20,15 @@ import {
 import { useAuth } from "@/context/AuthContext";
 import { useIsAdmin } from "@/hooks/useIsAdmin";
 import { useModal } from "@/hooks/useModal";
-import { PlusIcon } from "@/icons";
+import { EyeCloseIcon, EyeIcon, PlusIcon } from "@/icons";
 import type { Profile, ProfileRole } from "@/lib/profiles";
 
 import {
   getAllUsers,
   isLastAdminError,
+  CreateUserError,
   NoRowsUpdatedError,
+  createUser,
   updateUserDetails,
   updateUserRole,
 } from "../services/userService";
@@ -43,6 +45,23 @@ type EditingDetails = {
   row: Profile;
   fullName: string;
   department: string;
+};
+
+/** The add-user form. Never kept in state after the modal closes. */
+type NewUserForm = {
+  email: string;
+  fullName: string;
+  department: string;
+  role: ProfileRole;
+  password: string;
+};
+
+const EMPTY_NEW_USER: NewUserForm = {
+  email: "",
+  fullName: "",
+  department: "",
+  role: "staff",
+  password: "",
 };
 
 /**
@@ -88,11 +107,16 @@ export default function UserListPage() {
   // is cheaper than adding instance identity to the hook for two callers.
   const roleModal = useModal();
   const editModal = useModal();
+  const createModal = useModal();
   const [pending, setPending] = useState<PendingChange | null>(null);
   const [editing, setEditing] = useState<EditingDetails | null>(null);
+  const [newUser, setNewUser] = useState<NewUserForm>(EMPTY_NEW_USER);
   const [isSaving, setIsSaving] = useState(false);
+  const [isCreating, setIsCreating] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [detailsError, setDetailsError] = useState<string | null>(null);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
 
   const reload = useCallback(() => setReloadToken((prev) => prev + 1), []);
 
@@ -141,6 +165,79 @@ export default function UserListPage() {
       ),
     );
   }, [users, query]);
+
+  const handleOpenCreate = () => {
+    setCreateError(null);
+    setShowPassword(false);
+    setNewUser(EMPTY_NEW_USER);
+    createModal.openModal();
+  };
+
+  const handleCreate = async () => {
+    const email = newUser.email.trim().toLowerCase();
+    const fullName = newUser.fullName.trim();
+    const department = newUser.department.trim();
+    const password = newUser.password;
+
+    // Checked here for an immediate message, and again by the Edge Function,
+    // which is the one that actually has to be believed.
+    if (fullName === "") {
+      setCreateError(t("errors.nameRequired"));
+      return;
+    }
+    if (password.length < 8) {
+      setCreateError(t("errors.create.weak_password"));
+      return;
+    }
+
+    setIsCreating(true);
+    setCreateError(null);
+
+    // Tracks whether the auth account came into existence, because that
+    // changes what the failure below means. Once created, it cannot be undone
+    // from this screen, and retrying blindly would just collide on the email.
+    let createdId: string | null = null;
+
+    try {
+      const created = await createUser({
+        email,
+        password,
+        full_name: fullName,
+      });
+      createdId = created.id;
+
+      // The account exists at this point, so the list is already out of date
+      // whatever happens next.
+      reload();
+
+      // Everything from here is a write the caller's own role already permits,
+      // so it goes back over the normal RLS path. It is a second step rather
+      // than part of the function on purpose: `protect_profile_role` refuses a
+      // role change from a service-role request, because `auth.uid()` is empty
+      // without a JWT. Attributing it to the admin is both the only way it
+      // succeeds and the correct reason it succeeds.
+      await updateUserDetails(created.id, {
+        full_name: fullName,
+        department: department === "" ? null : department,
+      });
+      await updateUserRole(created.id, newUser.role);
+
+      createModal.closeModal();
+      reload();
+    } catch (error) {
+      if (createdId !== null) {
+        // Partial success, and the only kind that cannot simply be retried.
+        reload();
+        setCreateError(t("errors.partial"));
+      } else if (error instanceof CreateUserError) {
+        setCreateError(t(`errors.create.${error.code}`));
+      } else {
+        setCreateError(t("errors.create.unknown"));
+      }
+    } finally {
+      setIsCreating(false);
+    }
+  };
 
   const handleOpenChange = (row: Profile) => {
     // Pre-filled with the opposite of the current role, so the control opens
@@ -281,24 +378,17 @@ export default function UserListPage() {
             </p>
           </div>
 
-          {/* Not a stub for a missing form: creating an account needs the
-              Admin API, which needs a `service_role` key we do not ship to the
-              browser. The button is here so the gap is visible, and the title
-              says why it cannot be pressed.
-
-              The title sits on a wrapper because a disabled button does not
-              receive pointer events, so a tooltip on it would never show. The
-              wrapper is also why `Button` itself is left alone rather than
-              growing a `title` prop for one caller. */}
-          <span title={t("createNotReady")}>
-            <Button
-              variant="outline"
-              disabled
-              startIcon={<PlusIcon className="size-4" />}
-            >
-              {t("addUser")}
-            </Button>
-          </span>
+          {/* The only control on this screen that needs the Admin API, and the
+              only one that goes through the server for it. `createUser` calls
+              an Edge Function; the `service_role` key it uses never reaches
+              this bundle. See `supabase/functions/create-user/index.ts`. */}
+          <Button
+            variant="outline"
+            onClick={handleOpenCreate}
+            startIcon={<PlusIcon className="size-4" />}
+          >
+            {t("addUser")}
+          </Button>
         </div>
 
         <div className="border-b border-gray-200 p-6 dark:border-gray-800">
@@ -420,13 +510,23 @@ export default function UserListPage() {
                             >
                               {t("edit")}
                             </Button>
-                            {/* Kept as its own control rather than folded into
-                                the edit form. This one is the only place the
-                                last-admin rule is visible, and a disabled
-                                button is the clearest way to say it. */}
+                            {/* The title sits on a wrapper because a disabled
+                                button does not receive pointer events, so a
+                                tooltip on it would never show.
+
+                                The wording depends on whether there is anyone
+                                to hand over to. "Promote somebody else first"
+                                is unhelpful advice when this is the only
+                                account in the project — which is exactly the
+                                state a fresh install starts in, and the reason
+                                the Add user button matters. */}
                             <span
                               title={
-                                isLastAdmin ? t("lastAdmin") : t("changeRole")
+                                !isLastAdmin
+                                  ? t("changeRole")
+                                  : users.length === 1
+                                    ? t("lastAdminOnlyAccount")
+                                    : t("lastAdmin")
                               }
                             >
                               <Button
@@ -462,6 +562,155 @@ export default function UserListPage() {
           </>
         )}
       </div>
+
+      <Modal
+        isOpen={createModal.isOpen}
+        onClose={createModal.closeModal}
+        className="max-w-lg"
+      >
+        <div className="p-6">
+          <h3 className="text-lg font-semibold text-gray-800 dark:text-white/90">
+            {t("createTitle")}
+          </h3>
+
+          <div className="mt-5 space-y-4">
+            <div>
+              <Label htmlFor="new-full-name">
+                {t("fields.fullName")} <span className="text-error-500">*</span>
+              </Label>
+              <Input
+                id="new-full-name"
+                name="full_name"
+                value={newUser.fullName}
+                onChange={(event) =>
+                  setNewUser((prev) => ({
+                    ...prev,
+                    fullName: event.target.value,
+                  }))
+                }
+                placeholder={t("fields.fullName")}
+                autoFocus
+              />
+            </div>
+
+            <div>
+              <Label htmlFor="new-email">
+                {t("fields.email")} <span className="text-error-500">*</span>
+              </Label>
+              <Input
+                id="new-email"
+                name="email"
+                type="email"
+                value={newUser.email}
+                onChange={(event) =>
+                  setNewUser((prev) => ({ ...prev, email: event.target.value }))
+                }
+                placeholder="name@example.com"
+                autoComplete="off"
+              />
+            </div>
+
+            <div>
+              <Label htmlFor="new-password">
+                {t("fields.password")} <span className="text-error-500">*</span>
+              </Label>
+              <div className="relative">
+                <Input
+                  id="new-password"
+                  name="password"
+                  type={showPassword ? "text" : "password"}
+                  value={newUser.password}
+                  onChange={(event) =>
+                    setNewUser((prev) => ({
+                      ...prev,
+                      password: event.target.value,
+                    }))
+                  }
+                  placeholder="••••••••"
+                  autoComplete="new-password"
+                  hint={t("passwordHint")}
+                  error={createError !== null && newUser.password.length < 8}
+                  className="pe-11"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((prev) => !prev)}
+                  aria-label={t("fields.password")}
+                  className="absolute end-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                >
+                  {showPassword ? (
+                    <EyeCloseIcon className="size-5" />
+                  ) : (
+                    <EyeIcon className="size-5" />
+                  )}
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <Label htmlFor="new-department">
+                {t("fields.department")}{" "}
+                <span className="text-sm font-normal text-gray-400 dark:text-gray-500">
+                  ({t("optional")})
+                </span>
+              </Label>
+              <Input
+                id="new-department"
+                name="department"
+                value={newUser.department}
+                onChange={(event) =>
+                  setNewUser((prev) => ({
+                    ...prev,
+                    department: event.target.value,
+                  }))
+                }
+                placeholder={t("fields.department")}
+              />
+            </div>
+
+            <div>
+              {/* Admin is the correct default here, not staff. An account
+                  created with no other admin around would otherwise start a
+                  project with nobody able to administer it, and the only way
+                  to fix that is a three-statement SQL procedure. Choosing
+                  "admin" means the second account can hand over. */}
+              <Label htmlFor="new-role">{t("fields.role")}</Label>
+              <Select
+                options={[
+                  { value: "admin", label: t("roles.admin") },
+                  { value: "staff", label: t("roles.staff") },
+                ]}
+                defaultValue={newUser.role}
+                onChange={(value) =>
+                  setNewUser((prev) => ({
+                    ...prev,
+                    role: value as ProfileRole,
+                  }))
+                }
+              />
+            </div>
+          </div>
+
+          {createError && (
+            <p className="mt-4 text-sm text-error-600 dark:text-error-500">
+              {createError}
+            </p>
+          )}
+
+          <div className="mt-6 flex justify-end gap-3">
+            <Button
+              variant="outline"
+              onClick={createModal.closeModal}
+              disabled={isCreating}
+            >
+              {t("cancel")}
+            </Button>
+            <Button onClick={handleCreate} disabled={isCreating}>
+              {isCreating ? t("saving") : t("addUser")}
+            </Button>
+          </div>
+        </div>
+      </Modal>
 
       <Modal isOpen={editModal.isOpen} onClose={editModal.closeModal}>
         <div className="p-6">

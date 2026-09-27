@@ -123,8 +123,19 @@
   "saveDetails": "Save changes",
   "emailManagedElsewhere": "The email address is changed in Supabase, not here.",
   "addUser": "Add user",
-    "createNotReady": "Creating an account needs a server-side Admin API call, which this app does not have yet. Create the user from the Supabase Dashboard instead.",
+  "createTitle": "Add user",
+  "fields": {
+    "fullName": "Full name",
+    "email": "Email address",
+    "department": "Department",
+    "role": "Role",
+    "password": "Password"
+  },
+  "passwordHint": "At least 8 characters. The person signs in with this, so tell it to them.",
+  "emailManagedElsewhere": "The email address is changed in Supabase, not here.",
+  "lastAdminOnlyAccount": "You are the only account here. Add another administrator first — that is the only way to hand over, and it is the reason this is disabled.",
     "lastAdmin": "This is the only administrator. Promote somebody else first.",
+  "lastAdminOnly": "This is the only administrator.",
     "confirmTitle": "Change role?",
     "confirmBody": "{{name}} will become {{role}}.",
     "selfWarning": "This is your own account. You will lose access to this page as soon as the change is saved.",
@@ -141,7 +152,19 @@
     "saveDetails": "The changes could not be saved. Please try again.",
     "nameRequired": "A name is required.",
     "notFound": "That account no longer exists, or you do not have access to it.",
-    "lastAdmin": "The last administrator cannot be demoted. Promote somebody else first."
+    "lastAdmin": "The last administrator cannot be demoted. Promote somebody else first.",
+    "partial": "The account was created, but its department and role did not save. Close this and edit them from the list.",
+    "create": {
+      "unauthenticated": "Your session has expired. Sign in again and retry.",
+      "forbidden": "Only an administrator can add an account.",
+      "invalid_email": "That does not look like an email address.",
+      "name_required": "A name is required.",
+      "weak_password": "The password needs to be at least 8 characters.",
+      "already_exists": "An account with that email address already exists.",
+      "not_configured": "The server function is not deployed yet. An administrator has to deploy it.",
+      "network": "The server could not be reached. Check the connection and retry.",
+      "unknown": "The account could not be created. Please try again."
+    }
   }
   }
 }

@@ -755,10 +755,10 @@ one recognisable code rather than three.
 
 ## User management
 
-`src/modules/users/` is the one feature module. It is a **read, edit, and
+`src/modules/users/` is the one feature module. It is a **read, edit, create, and
 role-change** screen: list every account, search, edit a name and a department,
-change a role. It cannot create or delete accounts, and that is a deliberate
-limit rather than a missing piece.
+change a role, add an account. It cannot delete accounts, and that is a
+deliberate limit rather than a missing piece.
 
 ### Editing the name and department, and why it needs no migration
 
@@ -788,22 +788,82 @@ answers a non-permitted write with **zero rows and no error**. A resolved
 promise is not proof, so `NoRowsUpdatedError` is thrown when no row comes back
 and the screen says so.
 
-### Why there is no create or delete button
+### Why there is no delete button
 
-Both need `supabase.auth.admin`, which needs a `service_role` key, and putting
-one in the browser is in Don'ts. So accounts are still created from the Supabase
-Dashboard — `on_auth_user_created` builds the profile either way, which is what
-makes invite-only work with no create-user code at all. The disabled "Add user"
-button on the screen carries that reason in its `title` rather than pretending to
-work. Wiring it properly means a Supabase Edge Function; `supabase/functions/`
-does not exist yet.
+Delete needs `supabase.auth.admin`, and it would be **wrong** even with one:
+`assignments.user_id` is `references public.profiles(id) on delete cascade`, so
+deleting a profile also deletes that person's loan history, and
+`assignments_sync_asset_status` then flips their assets back to `available` with
+no trace. `assigned_by` is `on delete set null`, so the record of who lent them
+is gone too. A deactivation flag would need a new column and a decision about
+live sessions.
 
-Delete is not merely absent, it would be **wrong**. `assignments.user_id` is
-`references public.profiles(id) on delete cascade`, so deleting a profile also
-deletes that person's loan history, and `assignments_sync_asset_status` then
-flips their assets back to `available` with no trace. `assigned_by` is
-`on delete set null`, so the record of who lent them is gone too. A deactivation
-flag would need a new column and a decision about live sessions.
+### Creating an account, and the deadlock it was hiding
+
+`supabase/functions/create-user/` is the **only** place in the project that
+touches the Admin API, and it is an Edge Function for one reason:
+`auth.admin.createUser` needs the `service_role` key, which bypasses RLS and
+must never be shipped to a browser. Supabase provides that key to every function
+as a **default secret**, so nothing has to be pasted into the file and nothing
+has to be committed.
+
+```
+browser ──invoke──▶ create-user (Edge Function)
+                      │  service role: read the caller, create the user
+                      ▼
+                    auth.users ──on_auth_user_created──▶ profiles
+                                                              ▲
+browser ──────────── updateUserDetails + updateUserRole ────┘
+         (ordinary requests, ordinary RLS, the admin's own JWT)
+```
+
+**The two steps are deliberate, and so is the split.** The function creates the
+auth user and returns `{ id, email }`; the browser then writes `department` and
+`role` through `updateUserDetails` and `updateUserRole` like any other edit.
+That is not an accident of layering. `protect_profile_role` refuses a role
+change unless `is_admin()`, and `is_admin()` reads `auth.uid()` — which is NULL
+for a service-role request. A function that also set the role would be rejected
+by our own trigger, and the only way around it is disabling the trigger, which
+is the thing the trigger is for.
+
+The function also confirms the email itself (`email_confirm: true`). This project
+has no working mail provider, so a confirmation email is a link that never
+arrives, and the account is created by an admin who is present for it anyway.
+
+It verifies the caller is an admin **using the service role on purpose** —
+RLS on `profiles` would otherwise answer from `profiles_select_own_or_admin`, and
+the check that enforces the endpoint must not be the one RLS can influence.
+
+#### The deadlock this removed
+
+A project with one admin cannot hand over. `guard_last_admin` refuses the
+demote, and `guard_last_admin` is right to. But there was no way to create a
+second admin either, so "promote somebody else first" was advice that could not
+be followed: the lockout was total, not partial.
+
+That was a design error, not a missing feature. The "Add user" button was
+rendered `disabled` with a tooltip explaining the missing Admin API, which read
+as honest while leaving a fresh project permanently stuck. A guard that cannot be
+escaped is only correct if the escape hatch exists. Now the create flow is the
+hatch, and the last-admin tooltip says so when there is nobody to promote.
+
+The role default in the create form is **admin**, not staff, for the same
+reason: a second account created as staff would leave the project one admin
+short of a handover, and the fix is a three-statement SQL procedure.
+
+Verified end to end on the local stack, against real GoTrue sessions rather than
+a forged token: a staff call returns `403 forbidden`; a missing name, a short
+password and a malformed address each return their own code; a duplicate returns
+`already_exists`; a good call creates an account that can sign in immediately,
+with `profiles.full_name` copied from metadata by the trigger and the email
+copied by `handle_new_user`; and once a second admin exists the original
+self-demote succeeds, which is the handover the guard was protecting.
+
+`tsconfig.app.json` excludes `supabase/` because the broad `**/*.ts` include —
+there so `vite.config.ts` is covered — also reaches `supabase/functions/`, and
+those run on Deno's edge runtime where neither `Deno` nor `npm:` specifiers
+exist. Nothing in `src` imports a function, so excluding the directory keeps
+`npm run build` type-checking the app honestly.
 
 ### Changing a role needs no new policy
 
@@ -1062,7 +1122,8 @@ These were deliberate. Do not "clean them up" without asking.
 | The "Asset Management" sidebar row is non-clickable | It marks where domain navigation will go. A `disabled` row cannot dead-link to a 404 |
 | `src/modules/<feature>/` for features that bring a page plus a service layer | A standalone page under `src/pages/` has nowhere to put its own service code. The route still lives in `App.tsx`; the module owns only the files below it. `src/modules/users/` is the precedent |
 | Modules are `.ts` / `.tsx`, never `.js` / `.jsx` | The spec for user management asked for `.js`/`.jsx`. `allowJs` is absent (so false) and `include` is `["src", "**/*.ts"]`, so a `.jsx` never enters the TypeScript program and a `.tsx` importing one fails `tsc -b`. Same files, correct extension |
-| User management has no create or delete | Both need `supabase.auth.admin` and therefore a `service_role` key in the browser, which is in Don'ts. Delete is worse than absent — it cascades through `assignments` and erases loan history. The disabled "Add user" button states the reason instead of looking unfinished |
+| User management has no delete | It needs `supabase.auth.admin`, so a `service_role` key, which is in Don'ts. Delete is worse than absent — it cascades through `assignments` and erases loan history. Create *is* implemented, through an Edge Function, because creating a user without a way to create a second admin locks a fresh project permanently |
+| Creating a user is two steps, not one | The Edge Function does the privileged half; the browser does the role and department over normal RLS. `protect_profile_role` refuses a role change from a service-role request, because `is_admin()` reads `auth.uid()` and that is NULL without a JWT. Doing it in one step would mean disabling the trigger, which is the point of the trigger |
 | The last-admin rule is a trigger, not a button's `disabled` | The one-statement lockout was demonstrated locally before the fix, and hiding a control does not stop anyone with a session from sending the request. Same reasoning as `protect_profile_role` and `assets_guard_status` |
 | `profiles.email` is a copy of `auth.users.email` | The user list has to show and search by email, and `auth.users` is not reachable from PostgREST. A `service_role` key is the only alternative and it is forbidden. Sign-in and password reset still read `auth.users`, so the copy is display data only |
 | Name and role are separate controls, not one form | The details write is safe precisely because it sends only two columns, and `role` in the payload would stop being safe. Two modals keeps the "only two columns" property in the code instead of relying on the form to be careful |

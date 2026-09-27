@@ -152,17 +152,20 @@ Inline SVG masih ada di `Alert.tsx`, `Modal`, `PageBreadCrumb`, `Select`, dan
 
 ---
 
-### 13. User management tidak bisa membuat atau menghapus akun
+### 13. User management tidak bisa menghapus akun
 
-Layar `/users` hanya membaca dan mengubah `role`. Membuat akun butuh
-`supabase.auth.admin`, yang butuh `service_role`, dan meletakkannya di browser
-melanggar aturan repo. Menghapus lebih buruk daripada tidak ada: `assignments`
-adalah `on delete cascade` dari `profiles`, jadi menghapus profil menghapus
-riwayat peminjaman orang itu **dan** mengembalikan asetnya ke `available` tanpa
-jejak, karena `assignments_sync_asset_status` ikut menyala.
+Layar `/users` membaca, mengedit, membuat, dan mengubah role. Yang tidak ada
+hanya **hapus**, dan itu disengaja: `supabase.auth.admin` butuh `service_role`,
+dan `service_role` di browser melanggar aturan repo.
 
-Jalur yang benar adalah Supabase Edge Function; `supabase/functions/` belum ada.
-Tombol "Add user" sengaja `disabled` dengan alasannya di `title`.
+Hapus juga akan salah, bukan sekadar belum ada. `assignments` adalah
+`on delete cascade` dari `profiles`, jadi menghapus profil menghapus riwayat
+peminjaman orang itu **dan** mengembalikan asetnya ke `available` tanpa jejak,
+karena `assignments_sync_asset_status` ikut menyala. `assigned_by` juga ikut
+hilang, jadi catatan siapa yanglenturkan barang itu ikut hilang.
+
+Perbaikan yang benar butuh keputusan soal sesi yang sedang aktif: soft-delete
+membutuh kolom baru dan keputusan apakah orang yang sudah login tetap punya akses.
 
 ### 14. `profiles.email` bisa basi
 
