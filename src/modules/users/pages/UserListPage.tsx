@@ -60,7 +60,12 @@ const EMPTY_NEW_USER: NewUserForm = {
   email: "",
   fullName: "",
   department: "",
-  role: "staff",
+  // `admin`, not `staff`, and the two must not drift apart again: the comment
+  // inside the modal already argues for admin, and the Select is seeded from
+  // this value, so a mismatch here is a mismatch the admin sees on screen. An
+  // account created as staff leaves a project with nobody to hand the admin
+  // role to, and the only fix for that is a three-statement SQL procedure.
+  role: "admin",
   password: "",
 };
 
