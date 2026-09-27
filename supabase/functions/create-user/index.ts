@@ -17,6 +17,9 @@
 // no trigger guards that column — see the comment at the write itself.
 
 import { createClient } from "npm:@supabase/supabase-js@2";
+// The SDK's own CORS header list, kept in step with the headers the client
+// sends and covered by the SDK's tests. See the note on `json` below.
+import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 
 /** GoTrue messages that are worth distinguishing, mapped to our own codes. */
 function mapAuthError(message: string): string {
@@ -35,15 +38,51 @@ function isEmail(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
-function json(status: number, body: Record<string, unknown>) {
+/**
+ * CORS headers, taken from the SDK rather than written by hand.
+ *
+ * The app is on a different origin from this function, and an `Authorization`
+ * header makes the request non-simple, so the browser sends an `OPTIONS`
+ * preflight before the `POST`. The gateway does **not** answer that preflight —
+ * it passes `OPTIONS` through to the function — so this is the only place the
+ * answer can come from. A function that refuses the preflight drops the real
+ * `POST` without ever sending it, and the console reports a CORS policy failure
+ * while the endpoint is reachable by curl and the logs show nothing wrong.
+ *
+ * `Access-Control-Allow-Headers` has to name every header the SDK sends, and
+ * that list grows: `x-client-info` arrived with a version bump and broke the
+ * preflight for a function that had been correct for the two headers it knew
+ * about. `@supabase/supabase-js/cors` is maintained in step with the client and
+ * checked by the SDK's own tests, so importing it is what stops that recurring.
+ *
+ * The wildcard origin matches the SDK's own default and the gateway's own error
+ * responses. It is safe here because the boundary is the admin check below, not
+ * the Origin: the caller's JWT is the credential, and a page on another site
+ * cannot obtain it, because it lives in storage only this app's origin can read.
+ * An origin allowlist would add no protection to that and would add one more
+ * reason for this to not work on somebody's machine. If sessions ever move to
+ * cookies, revisit it — a cookie *is* attached automatically.
+ */
+function json(_req: Request, status: number, body: Record<string, unknown>) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...corsHeaders },
+  });
+}
+
+/** The preflight. Answered before anything else, and answered completely. */
+function preflight(): Response {
+  return new Response(null, {
+    status: 204,
+    headers: corsHeaders,
   });
 }
 
 Deno.serve(async (req) => {
-  if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
+  if (req.method === "OPTIONS") return preflight();
+  if (req.method !== "POST") {
+    return json(req, 405, { error: "method_not_allowed" });
+  }
 
   // `supabase.functions.invoke` sends the caller's session as the
   // Authorization header, and the platform has already verified the signature
@@ -53,13 +92,13 @@ Deno.serve(async (req) => {
     .replace(/^Bearer\s+/i, "")
     .trim();
 
-  if (token === "") return json(401, { error: "unauthenticated" });
+  if (token === "") return json(req, 401, { error: "unauthenticated" });
 
   const url = Deno.env.get("SUPABASE_URL");
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
   if (!url || !serviceKey) {
-    return json(500, { error: "not_configured" });
+    return json(req, 500, { error: "not_configured" });
   }
 
   // The service-role client is used for two things only: reading who is
@@ -73,7 +112,7 @@ Deno.serve(async (req) => {
     await service.auth.getUser(token);
 
   if (callerError || !caller.user) {
-    return json(401, { error: "unauthenticated" });
+    return json(req, 401, { error: "unauthenticated" });
   }
 
   // The check that matters, and the reason this endpoint is not a public
@@ -86,7 +125,7 @@ Deno.serve(async (req) => {
     .eq("id", caller.user.id)
     .maybeSingle();
 
-  if (profile?.role !== "admin") return json(403, { error: "forbidden" });
+  if (profile?.role !== "admin") return json(req, 403, { error: "forbidden" });
 
   const body = await req.json().catch(() => null);
   const email =
@@ -95,9 +134,9 @@ Deno.serve(async (req) => {
   const fullName =
     typeof body?.full_name === "string" ? body.full_name.trim() : "";
 
-  if (!isEmail(email)) return json(400, { error: "invalid_email" });
-  if (fullName === "") return json(400, { error: "name_required" });
-  if (password.length < 8) return json(400, { error: "weak_password" });
+  if (!isEmail(email)) return json(req, 400, { error: "invalid_email" });
+  if (fullName === "") return json(req, 400, { error: "name_required" });
+  if (password.length < 8) return json(req, 400, { error: "weak_password" });
 
   const { data, error: createError } = await service.auth.admin.createUser({
     email,
@@ -113,7 +152,7 @@ Deno.serve(async (req) => {
   });
 
   if (createError || !data?.user) {
-    return json(400, {
+    return json(req, 400, {
       error: mapAuthError(createError?.message ?? "unknown"),
     });
   }
@@ -148,7 +187,7 @@ Deno.serve(async (req) => {
   // a warning: the admin knows the first password and the user is not being
   // asked to change it. That is an advisory failure, not a security one, which
   // is the same category migration 00800 puts this column in.
-  return json(200, {
+  return json(req, 200, {
     id: data.user.id,
     email: data.user.email,
     mustChangeFlagSet: flagError === null,

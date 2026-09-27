@@ -191,6 +191,118 @@ export class CreateUserError extends Error {
   }
 }
 
+/** Mirrors the union above. Used to reject a code we have no message for. */
+const KNOWN_CODES: ReadonlySet<string> = new Set<CreateUserErrorCode>([
+  "unauthenticated",
+  "forbidden",
+  "invalid_email",
+  "name_required",
+  "weak_password",
+  "already_exists",
+  "not_configured",
+  "network",
+  "unknown",
+]);
+
+/** Hasil pemanggilan `delete-user`. */
+export type DeletedUser = {
+  id: string;
+  /** Berapa riwayat peminjaman yang ikut terhapus, untuk dilaporkan jujur. */
+  erasedLoans: number;
+};
+
+/**
+ * Kode error dari Edge Function `delete-user`.
+ *
+ * `last_admin` dan `self_delete` bukan kode dari Supabase — keduanya milik kita,
+ * dan keduanya menolak sebelum ada yang dihapus. `last_admin` khususnya ada
+ * karena `guard_last_admin` hanya memicu pada `update of role`: cascade delete
+ * melewatinya, jadi satu-satunya penjaga adalah pengecekan di function.
+ */
+export type DeleteUserErrorCode =
+  | "unauthenticated"
+  | "forbidden"
+  | "not_found"
+  | "invalid_id"
+  | "self_delete"
+  | "last_admin"
+  | "not_configured"
+  | "network"
+  | "unknown";
+
+const DELETE_KNOWN_CODES: ReadonlySet<string> = new Set<DeleteUserErrorCode>([
+  "unauthenticated",
+  "forbidden",
+  "not_found",
+  "invalid_id",
+  "self_delete",
+  "last_admin",
+  "not_configured",
+  "network",
+  "unknown",
+]);
+
+export class DeleteUserError extends Error {
+  readonly code: DeleteUserErrorCode;
+
+  constructor(code: DeleteUserErrorCode) {
+    super(`delete-user failed: ${code}`);
+    this.name = "DeleteUserError";
+    this.code = code;
+  }
+}
+
+/**
+ * Hapus satu akun lewat Edge Function `delete-user`.
+ *
+ * Function, bukan request biasa, karena `auth.admin.deleteUser` butuh
+ * `service_role`.
+ *
+ * Melempar, mengikuti konvensi modul ini. Dua kode di sini berarti operasi
+ * **tidak** terjadi, dan pemanggil tidak perlu menebak: `self_delete` dan
+ * `last_admin` ditolak sebelum ada satu baris pun yang hilang.
+ */
+export async function deleteUser(userId: string): Promise<DeletedUser> {
+  const { data, error } = await supabase.functions.invoke("delete-user", {
+    body: { user_id: userId },
+  });
+
+  if (error) {
+    // Bentuk yang sama seperti `createUser`: bukan Response berarti preflight
+    // diblokir atau jaringan mati, dan itu `network`, bukan `unknown`.
+    const context = error.context;
+    if (!(context instanceof Response)) {
+      throw new DeleteUserError("network");
+    }
+
+    let code: DeleteUserErrorCode = "unknown";
+    try {
+      const body = (await context.json()) as { error?: string; code?: string };
+      if (
+        typeof body?.code === "string" &&
+        body.code.startsWith("UNAUTHORIZED")
+      ) {
+        code = "unauthenticated";
+      } else if (
+        typeof body?.error === "string" &&
+        DELETE_KNOWN_CODES.has(body.error)
+      ) {
+        code = body.error as DeleteUserErrorCode;
+      }
+    } catch {
+      code = context.status === 404 ? "not_configured" : "unknown";
+    }
+    throw new DeleteUserError(code);
+  }
+
+  const deleted = data as { id?: string; erasedLoans?: number } | null;
+  if (typeof deleted?.id !== "string") {
+    throw new DeleteUserError("unknown");
+  }
+
+  return { id: deleted.id, erasedLoans: deleted.erasedLoans ?? 0 };
+}
+
 /**
  * Hasil pemanggilan `create-user`.
  *
@@ -225,21 +337,54 @@ export async function createUser(input: NewUser): Promise<CreatedUser> {
   });
 
   if (error) {
-    // `error.context` adalah Response-nya, jadi kode ada di dalam body. Kalau
-    // function tidak sempat menjawab — belum ter-deploy, atau tidak ada
-    // internet — yang tersisa hanya `unknown`.
-    let code: CreateUserErrorCode = "unknown";
+    // `error.context` is the Response, so the function's own code is in the
+    // body. A `context` that is *not* a Response means the request never got an
+    // answer at all — the function is not deployed, the network is down, or the
+    // browser refused the response because of CORS.
+    //
+    // That last one is why this branch is "network" rather than "unknown". A
+    // blocked preflight is a transport failure from here: the `POST` is never
+    // sent, so no body exists to read, and reporting "unknown" would tell the
+    // admin to retry something that cannot succeed by retrying.
     const context = error.context;
-    if (context instanceof Response) {
-      try {
-        const body = (await context.json()) as { error?: string };
-        if (body?.error === "method_not_allowed") code = "network";
-        else if (typeof body?.error === "string") {
-          code = body.error as CreateUserErrorCode;
-        }
-      } catch {
-        code = "unknown";
+    if (!(context instanceof Response)) {
+      throw new CreateUserError("network");
+    }
+
+    let code: CreateUserErrorCode = "unknown";
+    try {
+      // Two different error shapes reach this point, and conflating them is how
+      // an expired session ends up reported as "something went wrong".
+      //
+      // The function answers `{ error }`. The Supabase gateway, which verifies
+      // the JWT before the function is invoked at all, answers `{ code, message }`
+      // with an `UNAUTHORIZED_*` code and answers with `Access-Control-Allow-Origin: *`
+      // of its own. An expired session therefore never reaches our JSON, and
+      // reading only `error` would report it as an unknown failure.
+      const body = (await context.json()) as {
+        error?: string;
+        code?: string;
+      };
+
+      if (
+        typeof body?.code === "string" &&
+        body.code.startsWith("UNAUTHORIZED")
+      ) {
+        code = "unauthenticated";
+      } else if (
+        typeof body?.error === "string" &&
+        KNOWN_CODES.has(body.error)
+      ) {
+        // Validated rather than cast, because the screen renders
+        // `t(\`errors.create.${code}\`)`. A code that is not in the union would
+        // resolve to nothing and print the raw key path to the user, which is
+        // worse than the generic message.
+        code = body.error as CreateUserErrorCode;
       }
+    } catch {
+      // A Response with a body that is not our JSON at all. The status is still
+      // evidence: the gateway answers 404 for a function that is not deployed.
+      code = context.status === 404 ? "not_configured" : "unknown";
     }
     throw new CreateUserError(code);
   }

@@ -793,15 +793,168 @@ answers a non-permitted write with **zero rows and no error**. A resolved
 promise is not proof, so `NoRowsUpdatedError` is thrown when no row comes back
 and the screen says so.
 
-### Why there is no delete button
+### Delete, and why the cascade cannot do the work
 
-Delete needs `supabase.auth.admin`, and it would be **wrong** even with one:
-`assignments.user_id` is `references public.profiles(id) on delete cascade`, so
-deleting a profile also deletes that person's loan history, and
-`assignments_sync_asset_status` then flips their assets back to `available` with
-no trace. `assigned_by` is `on delete set null`, so the record of who lent them
-is gone too. A deactivation flag would need a new column and a decision about
-live sessions.
+Delete needs `supabase.auth.admin`, so it lives in a second Edge Function,
+`supabase/functions/delete-user/`, for the same credential reason as
+`create-user`. It is a **hard delete**, and the cascade is what an admin has to
+be told about before pressing the button:
+
+| | |
+|---|---|
+| `assignments.user_id` `on delete cascade` | the person's loan history is erased, returned ones included |
+| `assignments.assigned_by` `on delete set null` | the record of which admin lent out each of those assets is lost |
+| `assignments_sync_asset_status` | every asset they were holding goes back to `available` with no history of who had it |
+
+The confirmation modal lists all three rather than saying "this cannot be
+undone", and the outcome reports how many loan records went with the account.
+A deactivation flag would avoid all of it, and needs a new column plus a
+decision about live sessions — not built.
+
+**It is a hard delete because that was the decision, and it is guarded where a
+cascade would otherwise not be.** `guard_last_admin` is `before update of role`;
+a delete is not an update, so the cascade walks straight past it and would
+remove the last admin with nothing to stop it. Two refusals sit in front of
+that: you may not delete the account you are signed in with, and you may not
+delete the last remaining admin.
+
+**The `last_admin` check is currently unreachable, and the comment in the
+function says so.** The caller has already been proven to be an admin, so if the
+count is 1 the only admin *is* the caller and any admin target is the caller —
+`self_delete` fires first. It is kept as a safety net for the day someone
+relaxes the self rule. If it ever does fire, that is a finding about the self
+check rather than a routine refusal.
+
+An earlier version of that check was **wrong in a way that looked like caution**:
+it refused *any* delete while the project had a single admin. The risk is only
+when the target is that admin, so the condition is `target.role = 'admin'`. As
+written it made every staff account undeletable in a fresh project, which is
+exactly the shape a new install is in.
+
+### Why a hard delete cannot rely on the cascade
+
+`profiles.id` is `references auth.users(id) on delete cascade`, which reads like
+the cleanup is free. It is not, and `auth.admin.deleteUser` **always fails** on
+any user with a profile. Verified on the local stack before the function was
+written:
+
+```
+profiles: relrowsecurity = t, relforcerowsecurity = t
+policies on profiles: profiles_select_own_or_admin (SELECT), profiles_update_own (UPDATE)
+```
+
+There is **no DELETE policy on `profiles` at all**. The cascade runs as
+`supabase_auth_admin`, which has `bypassrls = false`, against a table with
+`force row level security`. So it deletes zero rows, the `profiles` row survives
+pointing at an `auth.users` row that no longer exists, the foreign key is
+violated, and GoTrue reports the whole thing as:
+
+```
+Database error deleting user
+```
+
+Which is a genuinely bad error message: it names the database, not the policy,
+and looks like a schema problem rather than an RLS one.
+
+`delete-user` therefore removes the rows itself, in order, and deletes the auth
+user **last**: `assignments` first because `profiles` cannot go while a row still
+references it, then `profiles`, then `auth.users`. The service role bypasses
+RLS, and the triggers it fires behave exactly as they do for any other privileged
+write — `assignments_sync_asset_status` still flips the assets back, which is the
+point.
+
+The alternative — granting `DELETE` on `profiles` and `assignments` plus
+`UPDATE` on `assets` to `supabase_auth_admin`, and adding a DELETE policy to a
+table that deliberately has none — was rejected. It widens what the auth role can
+do in the database to work around a limitation of one function.
+
+The same trap is why **no delete was ever possible from the browser**: there is
+no policy a signed-in user could be granted, by design. See Why there are three
+separate protections.
+
+### CORS is the function's job, and the local stack hides the bug
+
+`supabase.functions.invoke` sends the caller's JWT, and an `Authorization` header
+makes the request non-simple, so the browser sends an `OPTIONS` preflight first.
+**The Supabase gateway does not answer that preflight** — it passes `OPTIONS`
+through to the function, which has to reply with
+`Access-Control-Allow-Origin` itself.
+
+Answering it with an ordinary refusal is therefore silently fatal. This is what
+happened: `if (req.method !== "POST") return json(405, …)` answered the
+preflight with a 405 carrying only `Content-Type`, the browser dropped the
+request, **the real `POST` was never sent**, and the console reported
+
+```
+blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present
+```
+
+while `curl` reached the function fine and the logs showed nothing wrong. The
+symptom looks like a network problem; the cause is a missing `OPTIONS` branch.
+
+**`Access-Control-Allow-Headers` has to name every header the SDK sends, and
+that list grows.** The same file added `authorization, content-type`, which was
+correct until `supabase-js` 2.117 added `X-Client-Info` to every request —
+confirmed in the bundle as `DEFAULT_HEADERS = { "X-Client-Info": … }` — and the
+preflight started failing again with
+
+```
+Request header field x-client-info is not allowed by Access-Control-Allow-Headers
+```
+
+A hand-maintained list is a list that will be wrong again. `supabase-js` ships
+the answer as a subpath export, kept in step with the client and checked by the
+SDK's own tests:
+
+```ts
+import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
+```
+
+It exports `authorization, x-client-info, apikey, content-type, x-retry-count,
+traceparent, tracestate, baggage` — all eight — plus a wildcard origin. Import it
+rather than copying the list, and note the failure mode: it only goes stale when
+the dependency is upgraded, at which point a redeploy is happening anyway.
+
+**The wildcard origin is correct here, and that is worth defending rather than
+assuming.** The boundary on this endpoint is the admin check, not the Origin: the
+caller's JWT is the credential, and a page on another site cannot obtain it,
+because it lives in storage only this app's own origin can read. An origin
+allowlist adds no protection to that and adds one more reason for the button to
+not work on somebody's machine. The platform's own gateway already answers its
+errors with `Access-Control-Allow-Origin: *`. If sessions ever move to cookies,
+revisit — a cookie *is* attached automatically, and then the Origin check starts
+to matter.
+
+Two things made the original bug survive as long as it did:
+
+- **`OPTIONS` skips the gateway's JWT check.** `POST` with a bad or missing
+  token is answered by the gateway with `{"code":"UNAUTHORIZED_…"}` and its own
+  `Access-Control-Allow-Origin: *`; `OPTIONS` sails straight through to the
+  function. So the one request the function was about to get wrong was the only
+  one the gateway did not screen.
+- **The local stack cannot reproduce it.** Kong adds CORS there, so a preflight
+  from any origin gets `200` with `Access-Control-Allow-Origin: *` whether or not
+  the function has a CORS branch — verified, it answers `*` even for an origin
+  that is not in the function's list. Verify this class of fix against
+  `--linked`, never `--local`.
+
+Note that a browser only ever reports the **first** thing it finds wrong. Fixing
+the origin check without fixing the header list does not look like a fix; it
+looks like the same error with a different sentence. Read the whole message.
+
+There are **two error shapes** to read on the client, and conflating them is how
+an expired session ends up reported as "something went wrong":
+
+| Source | Body | When |
+|---|---|---|
+| Gateway, before the function runs | `{"code":"UNAUTHORIZED_…","message":…}` | session absent, expired, or malformed |
+| `create-user` itself | `{"error":"forbidden"}` etc. | the request reached the function |
+
+`createUser` in `userService.ts` maps a body with no `code` and no `error` to
+`unknown`, and a `context` that is not a `Response` at all — which is what a
+blocked preflight looks like from `fetch` — to `network` rather than `unknown`.
+Retry does not fix either of those, so reporting them as a generic failure sends
+the admin round a loop that cannot succeed.
 
 ### Creating an account, and the deadlock it was hiding
 
@@ -1139,6 +1292,11 @@ something local, which is itself the bug.
 - Every page renders `<PageMeta title="…" description="…" />` first, and
   `<PageBreadcrumb pageTitle="…" />` at the top of admin pages.
 - Demo sections are wrapped in `<ComponentCard title="…">`.
+- Every `<Label htmlFor>` must name an id that actually exists in the rendered
+  output. `Select` and `MultiSelect` only have one if you pass `id`, so passing it
+  is part of using them, not an extra. A label pointing at nothing is a React
+  console warning, a screen reader announcing an unlabelled control, and a
+  browser that skips the field for autofill.
 - Modals use the `useModal` hook plus the `<Modal>` primitive.
 - Global state goes through the existing `useAuth`, `useSidebar`, `useTheme`,
   and `useLanguage` contexts. Do not add a provider without a clear need.
@@ -1175,7 +1333,13 @@ something local, which is itself the bug.
   not hypothetical — it shipped in `AppHeader` until it was fixed.
 - `src/i18n/languages.ts` holds the language registry. `LanguageContext` syncs
   i18next, `localStorage`, and `<html lang>` / `dir`.
-- Interpolation delimiters are `{` and `}`, not the i18next default.
+- Interpolation delimiters are `{` and `}`, not the i18next default — so a
+  placeholder in `common.json` is written `{name}`, **not** `{{name}}`.
+  `{{name}}` is not a near-miss that renders slightly wrong: with a single-brace
+  prefix and suffix, i18next does not recognise it at all and returns the
+  literal `{{name}}` to the screen. Every interpolated key in this file shipped
+  that way at first, including `users.confirmBody` and `users.showing`, and the
+  symptom reads as a missing translation rather than a delimiter mismatch.
 - Only `en` is enabled. If you add a locale, add a matching
   `src/locales/<code>/common.json` **and** register it in `languages.ts`. There is
   no RTL locale, so the `dir` plumbing is untested.
@@ -1222,7 +1386,7 @@ These were deliberate. Do not "clean them up" without asking.
 | The "Asset Management" sidebar row is non-clickable | It marks where domain navigation will go. A `disabled` row cannot dead-link to a 404 |
 | `src/modules/<feature>/` for features that bring a page plus a service layer | A standalone page under `src/pages/` has nowhere to put its own service code. The route still lives in `App.tsx`; the module owns only the files below it. `src/modules/users/` is the precedent |
 | Modules are `.ts` / `.tsx`, never `.js` / `.jsx` | The spec for user management asked for `.js`/`.jsx`. `allowJs` is absent (so false) and `include` is `["src", "**/*.ts"]`, so a `.jsx` never enters the TypeScript program and a `.tsx` importing one fails `tsc -b`. Same files, correct extension |
-| User management has no delete | It needs `supabase.auth.admin`, so a `service_role` key, which is in Don'ts. Delete is worse than absent — it cascades through `assignments` and erases loan history. Create *is* implemented, through an Edge Function, because creating a user without a way to create a second admin locks a fresh project permanently |
+| User management's delete is a hard delete, behind a warning | It needs `supabase.auth.admin`, so a `service_role` key, which is in Don'ts — hence a second Edge Function. The owner chose hard delete over a deactivation flag, and the modal spells out the cascade rather than saying "this cannot be undone", because losing loan history is the actual consequence. See Why a hard delete cannot rely on the cascade |
 | Creating a user is two steps, not one | The Edge Function does the privileged half; the browser does the role and department over normal RLS. `protect_profile_role` refuses a role change from a service-role request, because `is_admin()` reads `auth.uid()` and that is NULL without a JWT. Doing it in one step would mean disabling the trigger, which is the point of the trigger |
 | The `must_change_password` flag is set in the function, not the browser | It is the one column on the new row that no trigger guards, so the reason the create flow is split in two does not apply to it. Verified: a service-role write of that column succeeds where a `role` change in the same transaction is refused with 42501. It is also the one write that must not be skippable, and a client-side step is skippable by exactly the dropped request that makes people retry |
 | `must_change_password` has no trigger, and is a read-only badge rather than a button | It is a prompt to the account holder, not a privilege decision, so the column guards have nothing to say about it. An admin *can* clear it from the browser; the reason no button is offered is that it would look security-shaped while only writing a boolean. Clearing it belongs to the account holder |
@@ -1316,6 +1480,22 @@ not go looking for them unprompted.
   a working account out of the one screen that could fix whatever broke.
 - Don't add a button to the user list that clears `must_change_password` for
   somebody else. An admin can do it, but it belongs to the account holder.
+- Don't answer the function's `OPTIONS` preflight with an error, or with a
+  response that omits `Access-Control-Allow-Origin`. The gateway passes `OPTIONS`
+  straight through, so the function is the only thing that can answer it, and
+  getting it wrong drops the real `POST` without a word in the logs. The local
+  stack adds CORS itself and cannot reproduce it — verify with `--linked`.
+- Don't add an `OPTIONS` branch that returns a bare 200. It has to echo the
+  matching `Access-Control-Allow-Origin`, `Allow-Methods` and `Allow-Headers`,
+  or the browser still refuses the response body.
+- Don't hand-write `Access-Control-Allow-Headers`. The SDK sends
+  `X-Client-Info` on every request, and the list grows with the dependency —
+  import `corsHeaders` from `@supabase/supabase-js/cors` instead.
+- Don't call `auth.admin.deleteUser` expecting the cascade to clean up
+  `profiles`. It cannot, and the failure reads as a database error. See Why a
+  hard delete cannot rely on the cascade.
+- Don't report a gateway `UNAUTHORIZED_*` body as `unknown`. It has `code`, not
+  `error`, and it means the session expired — see the two error shapes above.
 - Don't trust `mustChangeFlagSet` being absent from a function response as
   success. The client defaults it to `false` on purpose, because claiming the
   user will be asked to change a password nothing will ask them for is the worse

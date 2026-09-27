@@ -9,6 +9,8 @@ import Select from "@/components/form/Select";
 import Input from "@/components/form/input/InputField";
 import Badge from "@/components/ui/badge/Badge";
 import Button from "@/components/ui/button/Button";
+import { Dropdown } from "@/components/ui/dropdown/Dropdown";
+import { DropdownItem } from "@/components/ui/dropdown/DropdownItem";
 import { Modal } from "@/components/ui/modal";
 import {
   Table,
@@ -20,7 +22,13 @@ import {
 import { useAuth } from "@/context/AuthContext";
 import { useIsAdmin } from "@/hooks/useIsAdmin";
 import { useModal } from "@/hooks/useModal";
-import { CloseIcon, EyeCloseIcon, EyeIcon, PlusIcon } from "@/icons";
+import {
+  CloseIcon,
+  EyeCloseIcon,
+  EyeIcon,
+  HorizontaLDots,
+  PlusIcon,
+} from "@/icons";
 import type { Profile, ProfileRole } from "@/lib/profiles";
 import { generatePassword } from "@/lib/password";
 
@@ -28,8 +36,10 @@ import {
   getAllUsers,
   isLastAdminError,
   CreateUserError,
+  DeleteUserError,
   NoRowsUpdatedError,
   createUser,
+  deleteUser,
   updateUserDetails,
   updateUserRole,
 } from "../services/userService";
@@ -114,15 +124,21 @@ export default function UserListPage() {
   const roleModal = useModal();
   const editModal = useModal();
   const createModal = useModal();
+  const deleteModal = useModal();
   const [pending, setPending] = useState<PendingChange | null>(null);
   const [editing, setEditing] = useState<EditingDetails | null>(null);
+  const [deleting, setDeleting] = useState<Profile | null>(null);
   const [newUser, setNewUser] = useState<NewUserForm>(EMPTY_NEW_USER);
   const [isSaving, setIsSaving] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [detailsError, setDetailsError] = useState<string | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
   const [createWarning, setCreateWarning] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleteOutcome, setDeleteOutcome] = useState<string | null>(null);
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
 
   const reload = useCallback(() => setReloadToken((prev) => prev + 1), []);
@@ -359,6 +375,47 @@ export default function UserListPage() {
     }
   };
 
+  const handleOpenDelete = (row: Profile) => {
+    setDeleteError(null);
+    setDeleteOutcome(null);
+    setDeleting(row);
+    deleteModal.openModal();
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleting) return;
+
+    setIsDeleting(true);
+    setDeleteError(null);
+    try {
+      const result = await deleteUser(deleting.id);
+      deleteModal.closeModal();
+
+      // Reported rather than silent. The account is gone and there is nothing
+      // to undo, so the number of loans that went with it is the last chance to
+      // say so out loud.
+      setDeleteOutcome(
+        result.erasedLoans === 0
+          ? t("deleteDone", {
+              name: deleting.full_name || deleting.email || t("notSet"),
+            })
+          : t("deleteDoneWithLoans", {
+              name: deleting.full_name || deleting.email || t("notSet"),
+              count: result.erasedLoans,
+            }),
+      );
+      reload();
+    } catch (error) {
+      setDeleteError(
+        error instanceof DeleteUserError
+          ? t(`errors.delete.${error.code}`)
+          : t("errors.delete.unknown"),
+      );
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   const roleLabel = (role: ProfileRole) =>
     role === "admin" ? t("roles.admin") : t("roles.staff");
 
@@ -414,6 +471,26 @@ export default function UserListPage() {
             onClick={() => setCreateWarning(null)}
             aria-label={t("dismiss")}
             className="shrink-0 text-warning-600 hover:text-warning-800 dark:text-orange-400 dark:hover:text-orange-200"
+          >
+            <CloseIcon className="size-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Same placement reasoning as `createWarning`: the outcome is raised after
+          the modal closes, and `Modal` returns null while closed, so a message
+          rendered in there would be written and never seen. */}
+      {deleteOutcome && (
+        <div
+          role="status"
+          className="mt-4 flex items-start justify-between gap-4 rounded-2xl border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700 dark:border-gray-800 dark:bg-white/5 dark:text-gray-300"
+        >
+          <p>{deleteOutcome}</p>
+          <button
+            type="button"
+            onClick={() => setDeleteOutcome(null)}
+            aria-label={t("dismiss")}
+            className="shrink-0 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
           >
             <CloseIcon className="size-4" />
           </button>
@@ -567,42 +644,18 @@ export default function UserListPage() {
                         </TableCell>
 
                         <TableCell className="px-6 py-4">
-                          <div className="flex justify-end gap-2">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => handleOpenEdit(row)}
-                            >
-                              {t("edit")}
-                            </Button>
-                            {/* The title sits on a wrapper because a disabled
-                                button does not receive pointer events, so a
-                                tooltip on it would never show.
-
-                                The wording depends on whether there is anyone
-                                to hand over to. "Promote somebody else first"
-                                is unhelpful advice when this is the only
-                                account in the project — which is exactly the
-                                state a fresh install starts in, and the reason
-                                the Add user button matters. */}
-                            <span
-                              title={
-                                !isLastAdmin
-                                  ? t("changeRole")
-                                  : users.length === 1
-                                    ? t("lastAdminOnlyAccount")
-                                    : t("lastAdmin")
-                              }
-                            >
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                disabled={isLastAdmin}
-                                onClick={() => handleOpenChange(row)}
-                              >
-                                {t("changeRole")}
-                              </Button>
-                            </span>
+                          <div className="flex justify-end">
+                            <RowActions
+                              row={row}
+                              isSelf={isSelf}
+                              isLastAdmin={isLastAdmin}
+                              isOnlyAccount={users.length === 1}
+                              openMenuId={openMenuId}
+                              setOpenMenuId={setOpenMenuId}
+                              onEdit={() => handleOpenEdit(row)}
+                              onChangeRole={() => handleOpenChange(row)}
+                              onDelete={() => handleOpenDelete(row)}
+                            />
                           </div>
                         </TableCell>
                       </TableRow>
@@ -759,6 +812,7 @@ export default function UserListPage() {
                   "admin" means the second account can hand over. */}
               <Label htmlFor="new-role">{t("fields.role")}</Label>
               <Select
+                id="new-role"
                 options={[
                   { value: "admin", label: t("roles.admin") },
                   { value: "staff", label: t("roles.staff") },
@@ -891,9 +945,17 @@ export default function UserListPage() {
           {/* Only one direction is offered, so the control is not a free choice
               between the two roles. `defaultValue` is safe here because Modal
               unmounts its children while closed, so the Select remounts with
-              the current role each time it opens. */}
+              the current role each time it opens.
+
+              The label was missing, which left this select with no accessible
+              name at all — a screen reader announces it as an unlabelled
+              dropdown, and there is no `for`/`id` pair to check. `role` is
+              already the term used on the badge and in the table header, so
+              reusing it keeps the same word attached to the same control. */}
           <div className="mt-4">
+            <Label htmlFor="change-role">{t("fields.role")}</Label>
             <Select
+              id="change-role"
               options={[
                 { value: "admin", label: t("roles.admin") },
                 { value: "staff", label: t("roles.staff") },
@@ -933,6 +995,175 @@ export default function UserListPage() {
           </div>
         </div>
       </Modal>
+
+      <Modal
+        isOpen={deleteModal.isOpen}
+        onClose={deleteModal.closeModal}
+        className="max-w-md"
+      >
+        <div className="p-6">
+          <h3 className="text-lg font-semibold text-gray-800 dark:text-white/90">
+            {t("deleteTitle")}
+          </h3>
+
+          {deleting && (
+            <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
+              {t("deleteBody", {
+                name: deleting.full_name || deleting.email || t("notSet"),
+              })}
+            </p>
+          )}
+
+          {/* The cascade, spelled out, because this is the one screen in the
+              app where a single click can remove rows nobody is looking at.
+              `guard_last_admin` does not cover this — it fires on
+              `update of role`, and a delete is not an update — so the refusal
+              below the warning is the only thing standing between this and a
+              project with no administrator. */}
+          <div className="mt-4 rounded-xl border border-error-200 bg-error-50 p-4 dark:border-error-800/60 dark:bg-error-500/10">
+            <p className="text-sm font-medium text-error-700 dark:text-error-400">
+              {t("deleteWarningTitle")}
+            </p>
+            <ul className="mt-2 list-disc space-y-1 ps-5 text-sm text-error-700 dark:text-error-400">
+              <li>{t("deleteWarningLoans")}</li>
+              <li>{t("deleteWarningLender")}</li>
+              <li>{t("deleteWarningAssets")}</li>
+            </ul>
+          </div>
+
+          {deleteError && (
+            <p className="mt-4 text-sm text-error-600 dark:text-error-500">
+              {deleteError}
+            </p>
+          )}
+
+          <div className="mt-6 flex justify-end gap-3">
+            <Button
+              variant="outline"
+              onClick={deleteModal.closeModal}
+              disabled={isDeleting}
+            >
+              {t("cancel")}
+            </Button>
+            <Button onClick={handleConfirmDelete} disabled={isDeleting}>
+              {isDeleting ? t("deleting") : t("deleteConfirm")}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+    </div>
+  );
+}
+
+/**
+ * The three row actions, behind one control.
+ *
+ * A dropdown rather than two buttons because delete has to join them, and a
+ * destructive action sitting next to a routine one as a peer button is exactly
+ * the shape that gets mis-clicked. The two safe items are still two clicks away
+ * and no further than they were.
+ *
+ * Only one menu can be open at a time, and the page owns which one — `openMenuId`
+ * lives here rather than in a `useState` per row, because that would mean
+ * rendering a component per row just to hold one boolean.
+ */
+function RowActions({
+  row,
+  isSelf,
+  isLastAdmin,
+  isOnlyAccount,
+  openMenuId,
+  setOpenMenuId,
+  onEdit,
+  onChangeRole,
+  onDelete,
+}: {
+  row: Profile;
+  isSelf: boolean;
+  isLastAdmin: boolean;
+  isOnlyAccount: boolean;
+  openMenuId: string | null;
+  setOpenMenuId: (id: string | null) => void;
+  onEdit: () => void;
+  onChangeRole: () => void;
+  onDelete: () => void;
+}) {
+  const { t } = useTranslation("common", { keyPrefix: "users" });
+  const isOpen = openMenuId === row.id;
+
+  const run = (action: () => void) => () => {
+    // Closed first, so the menu is not left hanging over the modal it opens.
+    setOpenMenuId(null);
+    action();
+  };
+
+  // Deleting yourself would strand this very session on an auth user that no
+  // longer exists, and if you are also the only admin it locks the project.
+  // Neither is a thing to offer as a clickable item.
+  const deleteReason = isSelf
+    ? t("deleteSelf")
+    : isOnlyAccount
+      ? t("deleteOnlyAccount")
+      : null;
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpenMenuId(isOpen ? null : row.id)}
+        aria-label={t("actionsLabel", {
+          name: row.full_name || row.email || t("notSet"),
+        })}
+        aria-haspopup="menu"
+        aria-expanded={isOpen}
+        className="dropdown-toggle rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-white/5 dark:hover:text-gray-200"
+      >
+        <HorizontaLDots className="size-5" />
+      </button>
+
+      {isOpen && (
+        <Dropdown isOpen onClose={() => setOpenMenuId(null)}>
+          <DropdownItem onClick={run(onEdit)}>{t("edit")}</DropdownItem>
+
+          {/* The title sits on a wrapper, not on the item. A disabled button
+              does not receive pointer events, so a tooltip on it would never
+              show — and the wording is the whole point here, because the
+              alternative advice is impossible to follow when there is nobody to
+              promote. */}
+          <span
+            title={
+              !isLastAdmin
+                ? undefined
+                : isOnlyAccount
+                  ? t("lastAdminOnlyAccount")
+                  : t("lastAdmin")
+            }
+          >
+            <DropdownItem
+              onClick={run(onChangeRole)}
+              className={isLastAdmin ? "pointer-events-none opacity-50" : ""}
+            >
+              {t("changeRole")}
+            </DropdownItem>
+          </span>
+
+          {/* Same wrapper trick: the refusal needs to explain itself, and a
+              control that refuses without saying why is the thing this screen
+              has been careful about elsewhere. */}
+          <span title={deleteReason ?? undefined}>
+            <DropdownItem
+              onClick={run(onDelete)}
+              className={
+                deleteReason
+                  ? "pointer-events-none opacity-50"
+                  : "text-error-600 hover:bg-error-50 dark:text-error-500 dark:hover:bg-error-500/10"
+              }
+            >
+              {t("delete")}
+            </DropdownItem>
+          </span>
+        </Dropdown>
+      )}
     </div>
   );
 }
