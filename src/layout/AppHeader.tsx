@@ -89,17 +89,20 @@ const AppHeader: React.FC = () => {
             {/* Cross Icon */}
           </button>
 
+          {/* The mobile counterpart of the sidebar logo, and the same file, so
+              the app does not show two different marks depending on the
+              viewport. `xl:hidden` because the sidebar takes over from here on
+              desktop. No light/dark pair: the wordmark is dark navy, so it reads
+              on the light header and needs the white plate only in dark mode. */}
           <Link to="/" className="xl:hidden">
-            <img
-              className="dark:hidden"
-              src="/images/logo/logo.svg"
-              alt="Logo"
-            />
-            <img
-              className="hidden dark:block"
-              src="/images/logo/logo-dark.svg"
-              alt="Logo"
-            />
+            <div className="flex items-center rounded-lg py-0.5 dark:bg-white">
+              <img
+                src="/images/logo/logo-pgt.png"
+                alt="Patimban Global Gateway Terminal"
+                width={120}
+                height={45}
+              />
+            </div>
           </Link>
 
           <button

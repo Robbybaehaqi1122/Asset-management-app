@@ -304,29 +304,41 @@ const AppSidebar: React.FC = () => {
       >
         <Link to="/">
           {isExpanded || isHovered || isMobileOpen ? (
-            <>
+            /* One image, not a light and a dark variant. The PGT wordmark is
+               dark navy on transparent, so it reads directly on this panel in
+               light mode (`bg-white`) and needs a white plate only in dark mode
+               (`dark:bg-gray-900`), which is why the plate is `dark:bg-white`
+               rather than unconditional — on the light sidebar it would be
+               invisible anyway. Same reason the login panel needed one.
+               425x160, so 150x56 is the real aspect. */
+            <div className="flex items-center rounded-xl py-1 dark:bg-white">
               <img
-                className="dark:hidden"
-                src="/images/logo/logo.svg"
-                alt="Logo"
+                src="/images/logo/logo-pgt.png"
+                alt="Patimban Global Gateway Terminal"
                 width={150}
-                height={40}
+                height={56}
               />
-              <img
-                className="hidden dark:block"
-                src="/images/logo/logo-dark.svg"
-                alt="Logo"
-                width={150}
-                height={40}
-              />
-            </>
+            </div>
           ) : (
-            <img
-              src="/images/logo/logo-icon.svg"
-              alt="Logo"
-              width={32}
-              height={32}
-            />
+            /* Collapsed the panel is `w-22.5` — about 50px of usable width once
+               the padding is taken, and the wordmark at that size is unreadable.
+               So the emblem is cropped out of the same file rather than keeping a
+               second asset: `h-10` scales the 2.66:1 image to 40px tall, and
+               `w-8` keeps only the left 32px of the resulting ~106px, which is
+               the mark and stops just short of the first letter.
+
+               That boundary is a property of *this* image, not of the component:
+               the emblem ends at about 26% of the width, and a replacement logo
+               with a different proportion would be clipped at the wrong place. If
+               that happens, give this state its own square asset instead of
+               retuning the number. */
+            <div className="flex size-10 items-center justify-center overflow-hidden rounded-xl dark:bg-white">
+              <img
+                src="/images/logo/logo-pgt.png"
+                alt="Patimban Global Gateway Terminal"
+                className="h-10 w-8 object-cover object-left"
+              />
+            </div>
           )}
         </Link>
       </div>

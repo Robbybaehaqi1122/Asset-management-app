@@ -17,10 +17,18 @@
   },
   "userDropdown": {
     "editProfile": "Edit profile",
+    "profileDetail": "Profile detail",
     "accountSettings": "Account settings",
     "support": "Support",
     "language": "Language",
-    "signOut": "Sign out"
+    "signOut": "Sign out",
+    "helpRequest": {
+      "greeting": "Hello IT, I need help.",
+      "name": "Name",
+      "role": "Role",
+      "department": "Department",
+      "details": "Details:"
+    }
   },
   "auth": {
     "signIn": {

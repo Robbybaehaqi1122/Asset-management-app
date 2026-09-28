@@ -1483,11 +1483,24 @@ not go looking for them unprompted.
   read-only. The function is sound and correct — it sends the same two columns
   `updateUserDetails` does, for the same trigger reason — it is just waiting on
   the edit form that would resolve the next item.
-- The three `DropdownItem`s in `UserDropdown` all point at `/profile`, and they
-  now land on a real page, but they are three labels for one destination:
-  "Edit profile", "Account settings" and "Support" are the same read-only view.
-  The page is read-only, so "Edit profile" overpromises. Either build the edit
-  capability or collapse the three into one item.
+- `UserDropdown` is now role-aware, and that resolved the three-labels-one-page
+  problem. Support is not a page at all: it is an external `wa.me` link to the IT
+  help desk carrying a prefilled message — name, role, department, then an empty
+  `Details:` line for the person to continue typing in WhatsApp. `Account
+  settings` is admin-only, because for a staff member it resolved to the same
+  read-only `/profile` as the item above it, which is a promise the app cannot
+  keep. The remaining item is relabelled `Profile detail` for staff, since
+  "Edit profile" overpromises on a page nothing can be edited on. Two of the
+  labels still mean "look at your own row", so the honest fix is still to build
+  the edit capability and collapse them.
+- `DropdownItem` takes `href` as well as `to`, and they are not
+  interchangeable. `to` renders a react-router `Link`, which intercepts the click
+  and routes inside the SPA, so an external URL sent through it navigates instead
+  of opening. `rel="noreferrer"` is there because `target="_blank"` without it
+  hands a third-party page a `window.opener` reference back to this one.
+- A `wa.me` number must be international and bare: no `+`, no spaces, no leading
+  zero. `081180119800` is `6281180119800`; the local form opens a chat to a
+  number that does not exist and reports no error.
 - `useIsAdmin()` now has two kinds of caller: the role badge on `/profile`, and
   `/users`, which refuses to render at all for a non-admin and hides its
   admin-only row actions behind the same hook. That is the end-to-end
