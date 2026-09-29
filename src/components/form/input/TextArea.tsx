@@ -1,6 +1,8 @@
 import React from "react";
 
 interface TextareaProps {
+  id?: string; // Ties a <label htmlFor> to this control
+  name?: string;
   placeholder?: string; // Placeholder text
   rows?: number; // Number of rows
   value?: string; // Current value
@@ -12,14 +14,16 @@ interface TextareaProps {
 }
 
 const TextArea: React.FC<TextareaProps> = ({
+  id,
+  name,
   placeholder = "Enter your message", // Default placeholder
   rows = 3, // Default number of rows
   value = "", // Default value
-  onChange, // Callback for changes
-  className = "", // Additional custom styles
+  onChange, // Change handler
+  className = "", // Additional custom classes
   disabled = false, // Disabled state
   error = false, // Error state
-  hint = "", // Default hint text
+  hint = "", // Hint text to display
 }) => {
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     if (onChange) {
@@ -40,6 +44,8 @@ const TextArea: React.FC<TextareaProps> = ({
   return (
     <div className="relative">
       <textarea
+        id={id}
+        name={name}
         placeholder={placeholder}
         rows={rows}
         value={value}

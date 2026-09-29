@@ -1192,6 +1192,7 @@ export default function AssetListPage() {
                     {t("fields.description")} <Optional />
                   </Label>
                   <TextArea
+                    id="asset-description"
                     rows={2}
                     value={form.description}
                     onChange={(v) => set("description", v)}
