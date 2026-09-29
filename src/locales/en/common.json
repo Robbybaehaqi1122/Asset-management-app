@@ -344,6 +344,27 @@
       "poor": "Poor",
       "broken": "Broken"
     },
+    "connectionType": {
+      "ethernet": "Ethernet",
+      "wifi": "Wi-Fi",
+      "fiber": "Fiber",
+      "cellular": "Cellular",
+      "other": "Other"
+    },
+    "ports": {
+      "vga": "VGA",
+      "hdmi": "HDMI",
+      "lan": "LAN",
+      "wifi": "Wi-Fi",
+      "usb": "USB"
+    },
+    "connectivity": {
+      "usb": "USB",
+      "bt_wireless": "Bluetooth / wireless",
+      "hdmi": "HDMI",
+      "lan": "LAN",
+      "wifi": "Wi-Fi"
+    },
     "statusTitle": "Change status",
     "statusBody": "{name} is currently {current}.",
     "deleteTitle": "Delete asset",
@@ -357,8 +378,10 @@
       "serialNumber": "Serial number",
       "shortName": "Short name",
       "condition": "Condition",
-      "category": "Category",
+      "parentCategory": "Main category",
+      "subCategory": "Sub-category",
       "location": "Location",
+      "currentLocation": "Current location",
       "isLabeled": "Asset tag attached",
       "isLabeledHint": "Whether the physical label has been printed and stuck on the device.",
       "manufacture": "Manufacturer",
@@ -386,6 +409,24 @@
       "ownership": "Ownership",
       "assetPic": "Person in charge",
       "handoverDocNo": "Handover document no.",
+      "gpuModel": "GPU",
+      "resolution": "Resolution",
+      "panelSize": "Panel size",
+      "capacity": "Capacity",
+      "speed": "Speed",
+      "protocolUrl": "Management URL",
+      "protocolUrlHint": "Stored on the asset itself, which every signed-in user can read. Do not put a username or password in this URL — a credential belongs in the Credentials tab.",
+      "connectionType": "Connection type",
+      "portRj45": "RJ45 ports",
+      "portSfp": "SFP ports",
+      "portConsole": "Console ports",
+      "inputPorts": "Input ports",
+      "connectivity": "Connectivity",
+      "ipAddress": "IP address",
+      "macAddress": "MAC address",
+      "firmwareVersion": "Firmware version",
+      "usageStatus": "Usage status",
+      "usageStatusHint": "Follows the loans and the maintenance record. Change it from the status control in the list, not here.",
       "none": "Not set"
     },
     "errors": {
@@ -395,6 +436,7 @@
       "assetCodeRequired": "The asset code is required.",
       "nameRequired": "The name is required.",
       "priceInvalid": "The purchase price has to be a number.",
+      "portsInvalid": "Each port count has to be a whole number, or left empty.",
       "duplicateCode": "That asset code is already used by another asset.",
       "statusContradictsLoans": "That status disagrees with the current loans, so the database refused it. An asset out on loan is Assigned on its own.",
       "inUse": "{name} cannot be deleted: it still has {assignments} loan record(s) and {maintenance} maintenance record(s). Returning it and clearing its history is the only way to remove it."

@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import PageBreadcrumb from "@/components/common/PageBreadCrumb";
 import PageMeta from "@/components/common/PageMeta";
 import Label from "@/components/form/Label";
+import Checkbox from "@/components/form/input/Checkbox";
 import Input from "@/components/form/input/InputField";
 import TextArea from "@/components/form/input/TextArea";
 import Select from "@/components/form/Select";
@@ -37,6 +38,9 @@ import type {
   AssetRef,
   AssetStatus,
   CategoryOption,
+  ConnectionType,
+  Connectivity,
+  InputPort,
   SelectableAssetStatus,
 } from "../services/assetService";
 
@@ -67,8 +71,11 @@ type AssetForm = {
   name: string;
   description: string;
   condition: AssetCondition;
+  /** UI-only: the main category. `category_id` holds the chosen sub-category. */
+  parent_category_id: string;
   category_id: string;
   location_id: string;
+  current_location: string;
   purchase_date: string;
   purchase_price: string;
   supplier: string;
@@ -93,6 +100,18 @@ type AssetForm = {
   ram_spec: string;
   storage_spec: string;
   display_spec: string;
+  gpu_model: string;
+  resolution: string;
+  panel_size: string;
+  capacity: string;
+  speed: string;
+  protocol_url: string;
+  connection_type: string;
+  port_rj45: string;
+  port_sfp: string;
+  port_console: string;
+  input_ports: InputPort[];
+  connectivity: Connectivity[];
   credential_username: string;
   credential_password: string;
 };
@@ -102,8 +121,10 @@ const EMPTY_FORM: AssetForm = {
   name: "",
   description: "",
   condition: "good",
+  parent_category_id: "",
   category_id: "",
   location_id: "",
+  current_location: "",
   purchase_date: "",
   purchase_price: "",
   supplier: "",
@@ -128,19 +149,39 @@ const EMPTY_FORM: AssetForm = {
   ram_spec: "",
   storage_spec: "",
   display_spec: "",
+  gpu_model: "",
+  resolution: "",
+  panel_size: "",
+  capacity: "",
+  speed: "",
+  protocol_url: "",
+  connection_type: "",
+  port_rj45: "",
+  port_sfp: "",
+  port_console: "",
+  input_ports: [],
+  connectivity: [],
   credential_username: "",
   credential_password: "",
 };
 
 /** Credentials are omitted when the tab was never opened on an existing asset. */
-function formFromAsset(asset: Asset): AssetForm {
+function formFromAsset(asset: Asset, categories: CategoryOption[]): AssetForm {
+  const category = asset.category_id
+    ? (categories.find((c) => c.id === asset.category_id) ?? null)
+    : null;
+
   return {
     asset_code: asset.asset_code,
     name: asset.name,
     description: asset.description ?? "",
     condition: asset.condition,
-    category_id: asset.category_id ?? "",
+    // A sub-category's parent is what the fieldset switches on; a top-level
+    // category is its own parent.
+    parent_category_id: category ? (category.parentId ?? category.id) : "",
+    category_id: category?.parentId ? category.id : "",
     location_id: asset.location_id ?? "",
+    current_location: asset.current_location ?? "",
     purchase_date: asset.purchase_date ?? "",
     purchase_price:
       asset.purchase_price === null ? "" : String(asset.purchase_price),
@@ -166,11 +207,31 @@ function formFromAsset(asset: Asset): AssetForm {
     ram_spec: asset.ram_spec ?? "",
     storage_spec: asset.storage_spec ?? "",
     display_spec: asset.display_spec ?? "",
+    gpu_model: asset.gpu_model ?? "",
+    resolution: asset.resolution ?? "",
+    panel_size: asset.panel_size ?? "",
+    capacity: asset.capacity ?? "",
+    speed: asset.speed ?? "",
+    protocol_url: asset.protocol_url ?? "",
+    connection_type: asset.connection_type ?? "",
+    port_rj45: asset.port_rj45 === null ? "" : String(asset.port_rj45),
+    port_sfp: asset.port_sfp === null ? "" : String(asset.port_sfp),
+    port_console: asset.port_console === null ? "" : String(asset.port_console),
+    input_ports: asset.input_ports,
+    connectivity: asset.connectivity,
     // Null for a staff member, so this stays empty rather than showing a blank
     // that looks like a stored-but-empty credential.
     credential_username: asset.credentials?.username ?? "",
     credential_password: asset.credentials?.password ?? "",
   };
+}
+
+/** Empty box means "not recorded"; the caller has already rejected junk. */
+function portOrNull(value: string): number | null {
+  const trimmed = value.trim();
+  if (trimmed === "") return null;
+  const parsed = Number(trimmed);
+  return Number.isNaN(parsed) ? null : parsed;
 }
 
 /** The two required fields, the price, and the two credential boxes. */
@@ -182,8 +243,11 @@ function toInput(form: AssetForm, includeCredentials: boolean): AssetInput {
     name: form.name,
     description: form.description || null,
     condition: form.condition,
-    category_id: form.category_id || null,
+    // The sub-category wins when one is chosen; otherwise a top-level category is
+    // stored on the asset directly.
+    category_id: form.category_id || form.parent_category_id || null,
     location_id: form.location_id || null,
+    current_location: form.current_location || null,
     purchase_date: form.purchase_date || null,
     // An empty box is "not recorded", not zero. NaN means the box holds
     // something that is not a number, which the column check would refuse.
@@ -211,6 +275,18 @@ function toInput(form: AssetForm, includeCredentials: boolean): AssetInput {
     ram_spec: form.ram_spec || null,
     storage_spec: form.storage_spec || null,
     display_spec: form.display_spec || null,
+    gpu_model: form.gpu_model || null,
+    resolution: form.resolution || null,
+    panel_size: form.panel_size || null,
+    capacity: form.capacity || null,
+    speed: form.speed || null,
+    protocol_url: form.protocol_url || null,
+    connection_type: (form.connection_type || null) as ConnectionType | null,
+    port_rj45: portOrNull(form.port_rj45),
+    port_sfp: portOrNull(form.port_sfp),
+    port_console: portOrNull(form.port_console),
+    input_ports: form.input_ports,
+    connectivity: form.connectivity,
     credentials: includeCredentials
       ? {
           username: form.credential_username || null,
@@ -252,6 +328,67 @@ const CONDITION_COLOR: Record<
   broken: "error",
 };
 
+/**
+ * The categories that share the network fieldset. They are distinct parents
+ * (`NETWORK_DEVICES`, `SERVER`, `IOT`) but the same set of columns serves all
+ * three, so the form switches on membership here rather than on one code.
+ */
+const NETWORK_LIKE: ReadonlySet<string> = new Set([
+  "NETWORK_DEVICES",
+  "SERVER",
+  "IOT",
+]);
+
+const INPUT_PORTS = ["vga", "hdmi", "lan", "wifi", "usb"] as const;
+const CONNECTIVITY = ["usb", "bt_wireless", "hdmi", "lan", "wifi"] as const;
+const CONNECTION_TYPES = [
+  "ethernet",
+  "wifi",
+  "fiber",
+  "cellular",
+  "other",
+] as const;
+
+/** One labelled checkbox group over a closed set of values. */
+function CheckboxGroup<T extends string>({
+  idPrefix,
+  label,
+  options,
+  value,
+  onChange,
+}: {
+  idPrefix: string;
+  label: string;
+  options: { value: T; label: string }[];
+  value: T[];
+  onChange: (next: T[]) => void;
+}) {
+  return (
+    <div>
+      <p className="mb-1.5 text-sm font-medium text-gray-700 dark:text-gray-400">
+        {label}
+      </p>
+      <div className="flex flex-wrap gap-x-5 gap-y-2">
+        {options.map((option) => (
+          <Checkbox
+            key={option.value}
+            id={`${idPrefix}-${option.value}`}
+            label={option.label}
+            checked={value.includes(option.value)}
+            onChange={(checked) =>
+              onChange(
+                checked
+                  ? [...value, option.value]
+                  : value.filter((v) => v !== option.value),
+              )
+            }
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function AssetListPage() {
   const { t } = useTranslation("common", { keyPrefix: "assets" });
   const isAdmin = useIsAdmin();
@@ -275,6 +412,7 @@ export default function AssetListPage() {
   const [form, setForm] = useState<AssetForm>(EMPTY_FORM);
   const [section, setSection] = useState<Section>("identity");
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingStatus, setEditingStatus] = useState<AssetStatus | null>(null);
 
   const [pendingStatus, setPendingStatus] = useState<Asset | null>(null);
   const [nextStatus, setNextStatus] =
@@ -336,6 +474,67 @@ export default function AssetListPage() {
     [categories],
   );
 
+  /** The main-category picker: parents only. Nothing here has a `parent_id`. */
+  const parentOptions = useMemo(
+    () =>
+      categories
+        .filter((option) => option.parentId === null)
+        .map((option) => ({ value: option.id, label: option.name })),
+    [categories],
+  );
+
+  /** The sub-category picker: children of whatever main category is chosen. */
+  const childOptions = useMemo(
+    () =>
+      categories
+        .filter((option) => option.parentId === form.parent_category_id)
+        .map((option) => ({ value: option.id, label: option.name })),
+    [categories, form.parent_category_id],
+  );
+
+  /**
+   * The fieldset is chosen by the *main* category's `code`, never by its name.
+   * A name is editable and the seed already carries two rows called "UPS", so a
+   * name is not a key; the code is what the migration wrote as stable.
+   */
+  const parentCode = useMemo(
+    () =>
+      categories.find((option) => option.id === form.parent_category_id)
+        ?.code ?? null,
+    [categories, form.parent_category_id],
+  );
+
+  const isComputer = parentCode === "COMPUTER";
+  const isDisplay = parentCode === "DISPLAY";
+  const isPeripheral = parentCode === "PERIPHERAL";
+  const isNetworkLike = parentCode !== null && NETWORK_LIKE.has(parentCode);
+  // Everything else — an uncategorised asset, UTILITIES, or a code an admin
+  // invented later — gets the common fields plus the original generic spec set,
+  // so no category ever leaves a tab empty.
+  const isGeneric =
+    !isComputer && !isDisplay && !isPeripheral && !isNetworkLike;
+
+  const inputPortOptions = useMemo(
+    () => INPUT_PORTS.map((value) => ({ value, label: t(`ports.${value}`) })),
+    [t],
+  );
+  const connectivityOptions = useMemo(
+    () =>
+      CONNECTIVITY.map((value) => ({
+        value,
+        label: t(`connectivity.${value}`),
+      })),
+    [t],
+  );
+  const connectionTypeOptions = useMemo(
+    () =>
+      CONNECTION_TYPES.map((value) => ({
+        value,
+        label: t(`connectionType.${value}`),
+      })),
+    [t],
+  );
+
   /**
    * Filtering in the browser, on purpose. `getAssets` is a plain ordered read
    * and the inventory is a few hundred rows; a query per keystroke would be
@@ -372,14 +571,16 @@ export default function AssetListPage() {
     setForm(EMPTY_FORM);
     setSection("identity");
     setEditingId(null);
+    setEditingStatus(null);
     setSaveError(null);
     formModal.openModal();
   };
 
   const handleOpenEdit = (row: Asset) => {
-    setForm(formFromAsset(row));
+    setForm(formFromAsset(row, categories));
     setSection("identity");
     setEditingId(row.id);
+    setEditingStatus(row.status);
     setSaveError(null);
     formModal.openModal();
   };
@@ -403,6 +604,16 @@ export default function AssetListPage() {
       Number.isNaN(Number(form.purchase_price))
     ) {
       setSaveError(t("errors.priceInvalid"));
+      return;
+    }
+    // The three port columns are `integer check (>= 0)`. An empty box is "not
+    // recorded"; anything else has to be a whole count, or the column check
+    // refuses the whole save with a message about ports.
+    const badPort = [form.port_rj45, form.port_sfp, form.port_console].some(
+      (value) => value.trim() !== "" && !/^\d+$/.test(value.trim()),
+    );
+    if (badPort) {
+      setSaveError(t("errors.portsInvalid"));
       return;
     }
 
@@ -855,33 +1066,53 @@ export default function AssetListPage() {
                   />
                 </div>
 
+                <div>
+                  <Label htmlFor="asset-condition">
+                    {t("fields.condition")}
+                  </Label>
+                  {/* `key` is load-bearing: `Select` keeps its selection in
+                      `useState(defaultValue)`, so without it the box would keep
+                      showing the previously edited asset's condition. */}
+                  <Select
+                    key={`cond-${editingId ?? "new"}`}
+                    id="asset-condition"
+                    options={(
+                      ["new", "good", "fair", "poor", "broken"] as const
+                    ).map((c) => ({ value: c, label: t(`condition.${c}`) }))}
+                    defaultValue={form.condition}
+                    onChange={(v) => set("condition", v as AssetCondition)}
+                  />
+                </div>
+
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                   <div>
-                    <Label htmlFor="asset-condition">
-                      {t("fields.condition")}
+                    <Label htmlFor="asset-parent-category">
+                      {t("fields.parentCategory")} <Optional />
                     </Label>
-                    {/* `key` is load-bearing: `Select` keeps its selection in
-                        `useState(defaultValue)`, so without it the box would keep
-                        showing the previously edited asset's condition. */}
                     <Select
-                      key={`cond-${editingId ?? "new"}`}
-                      id="asset-condition"
-                      options={(
-                        ["new", "good", "fair", "poor", "broken"] as const
-                      ).map((c) => ({ value: c, label: t(`condition.${c}`) }))}
-                      defaultValue={form.condition}
-                      onChange={(v) => set("condition", v as AssetCondition)}
+                      key={`form-parent-${editingId ?? "new"}`}
+                      id="asset-parent-category"
+                      options={parentOptions}
+                      placeholder={t("fields.none")}
+                      defaultValue={form.parent_category_id}
+                      onChange={(v) => {
+                        set("parent_category_id", v);
+                        // Whatever sub-category was chosen belongs to the old
+                        // main category, so it cannot survive the change.
+                        set("category_id", "");
+                      }}
                     />
                   </div>
-
                   <div>
                     <Label htmlFor="asset-category">
-                      {t("fields.category")} <Optional />
+                      {t("fields.subCategory")} <Optional />
                     </Label>
+                    {/* Keyed on the parent so picking a new main category
+                        remounts this with that parent's children. */}
                     <Select
-                      key={`form-cat-${editingId ?? "new"}`}
+                      key={`form-cat-${editingId ?? "new"}-${form.parent_category_id}`}
                       id="asset-category"
-                      options={categoryOptions}
+                      options={childOptions}
                       placeholder={t("fields.none")}
                       defaultValue={form.category_id}
                       onChange={(v) => set("category_id", v)}
@@ -933,86 +1164,247 @@ export default function AssetListPage() {
                     onChange={(v) => set("model_type", v)}
                   />
                 </div>
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  <TextField
-                    id="asset-processor"
-                    label={t("fields.processorSpec")}
-                    value={form.processor_spec}
-                    onChange={(v) => set("processor_spec", v)}
-                    placeholder="Apple M3 Pro"
-                  />
-                  <TextField
-                    id="asset-ram"
-                    label={t("fields.ramSpec")}
-                    value={form.ram_spec}
-                    onChange={(v) => set("ram_spec", v)}
-                    placeholder="18 GB"
-                  />
-                  <TextField
-                    id="asset-storage"
-                    label={t("fields.storageSpec")}
-                    value={form.storage_spec}
-                    onChange={(v) => set("storage_spec", v)}
-                    placeholder="512 GB NVMe"
-                  />
-                  <TextField
-                    id="asset-display"
-                    label={t("fields.displaySpec")}
-                    value={form.display_spec}
-                    onChange={(v) => set("display_spec", v)}
-                    placeholder="14.2 inch Liquid Retina XDR"
-                  />
-                </div>
+
+                {(isComputer || isGeneric) && (
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <TextField
+                      id="asset-processor"
+                      label={t("fields.processorSpec")}
+                      value={form.processor_spec}
+                      onChange={(v) => set("processor_spec", v)}
+                      placeholder="Apple M3 Pro"
+                    />
+                    <TextField
+                      id="asset-ram"
+                      label={t("fields.ramSpec")}
+                      value={form.ram_spec}
+                      onChange={(v) => set("ram_spec", v)}
+                      placeholder="18 GB"
+                    />
+                    <TextField
+                      id="asset-storage"
+                      label={t("fields.storageSpec")}
+                      value={form.storage_spec}
+                      onChange={(v) => set("storage_spec", v)}
+                      placeholder="512 GB NVMe"
+                    />
+                    <TextField
+                      id="asset-display"
+                      label={t("fields.displaySpec")}
+                      value={form.display_spec}
+                      onChange={(v) => set("display_spec", v)}
+                      placeholder="14.2 inch Liquid Retina XDR"
+                    />
+                    <TextField
+                      id="asset-gpu"
+                      label={t("fields.gpuModel")}
+                      value={form.gpu_model}
+                      onChange={(v) => set("gpu_model", v)}
+                      placeholder="RTX 4060"
+                    />
+                  </div>
+                )}
+
+                {isDisplay && (
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <TextField
+                      id="asset-resolution"
+                      label={t("fields.resolution")}
+                      value={form.resolution}
+                      onChange={(v) => set("resolution", v)}
+                      placeholder="1920 x 1080"
+                    />
+                    <TextField
+                      id="asset-panel-size"
+                      label={t("fields.panelSize")}
+                      value={form.panel_size}
+                      onChange={(v) => set("panel_size", v)}
+                      placeholder='24"'
+                    />
+                  </div>
+                )}
+
+                {isPeripheral && (
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <TextField
+                      id="asset-capacity"
+                      label={t("fields.capacity")}
+                      value={form.capacity}
+                      onChange={(v) => set("capacity", v)}
+                      placeholder="1 TB"
+                    />
+                    <TextField
+                      id="asset-speed"
+                      label={t("fields.speed")}
+                      value={form.speed}
+                      onChange={(v) => set("speed", v)}
+                      placeholder="7200 rpm"
+                    />
+                  </div>
+                )}
+
+                {isNetworkLike && (
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                    <TextField
+                      id="asset-port-rj45"
+                      label={t("fields.portRj45")}
+                      type="number"
+                      value={form.port_rj45}
+                      onChange={(v) => set("port_rj45", v)}
+                      placeholder="24"
+                    />
+                    <TextField
+                      id="asset-port-sfp"
+                      label={t("fields.portSfp")}
+                      type="number"
+                      value={form.port_sfp}
+                      onChange={(v) => set("port_sfp", v)}
+                      placeholder="4"
+                    />
+                    <TextField
+                      id="asset-port-console"
+                      label={t("fields.portConsole")}
+                      type="number"
+                      value={form.port_console}
+                      onChange={(v) => set("port_console", v)}
+                      placeholder="1"
+                    />
+                  </div>
+                )}
               </>
             )}
 
             {section === "network" && (
               <>
-                <TextField
-                  id="asset-hostname"
-                  label={t("fields.hostname")}
-                  value={form.hostname}
-                  onChange={(v) => set("hostname", v)}
-                  placeholder="mbp-01"
-                />
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                {(isComputer || isNetworkLike || isGeneric) && (
+                  <>
+                    <TextField
+                      id="asset-hostname"
+                      label={t("fields.hostname")}
+                      value={form.hostname}
+                      onChange={(v) => set("hostname", v)}
+                      placeholder="mbp-01"
+                    />
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                      <TextField
+                        id="asset-ip-wifi"
+                        label={t("fields.ipWifi")}
+                        value={form.ip_wifi}
+                        onChange={(v) => set("ip_wifi", v)}
+                      />
+                      <TextField
+                        id="asset-ip-eth"
+                        label={t("fields.ipEth")}
+                        value={form.ip_eth}
+                        onChange={(v) => set("ip_eth", v)}
+                      />
+                      <TextField
+                        id="asset-mac-wifi"
+                        label={t("fields.macWifi")}
+                        value={form.mac_wifi}
+                        onChange={(v) => set("mac_wifi", v)}
+                      />
+                      <TextField
+                        id="asset-mac-eth"
+                        label={t("fields.macEth")}
+                        value={form.mac_eth}
+                        onChange={(v) => set("mac_eth", v)}
+                      />
+                    </div>
+                    <TextField
+                      id="asset-os"
+                      label={
+                        isComputer
+                          ? t("fields.osOrFirmware")
+                          : t("fields.firmwareVersion")
+                      }
+                      value={form.os_or_firmware_version}
+                      onChange={(v) => set("os_or_firmware_version", v)}
+                    />
+                  </>
+                )}
+
+                {(isComputer || isGeneric) && (
                   <TextField
-                    id="asset-ip-wifi"
-                    label={t("fields.ipWifi")}
-                    value={form.ip_wifi}
-                    onChange={(v) => set("ip_wifi", v)}
+                    id="asset-product-key"
+                    label={t("fields.productKey")}
+                    value={form.product_key}
+                    onChange={(v) => set("product_key", v)}
                   />
-                  <TextField
-                    id="asset-ip-eth"
-                    label={t("fields.ipEth")}
-                    value={form.ip_eth}
-                    onChange={(v) => set("ip_eth", v)}
+                )}
+
+                {isNetworkLike && (
+                  <>
+                    <div>
+                      <Label htmlFor="asset-connection-type">
+                        {t("fields.connectionType")} <Optional />
+                      </Label>
+                      <Select
+                        key={`form-conn-${editingId ?? "new"}`}
+                        id="asset-connection-type"
+                        options={connectionTypeOptions}
+                        placeholder={t("fields.none")}
+                        defaultValue={form.connection_type}
+                        onChange={(v) => set("connection_type", v)}
+                      />
+                    </div>
+                    <TextField
+                      id="asset-protocol-url"
+                      label={t("fields.protocolUrl")}
+                      value={form.protocol_url}
+                      onChange={(v) => set("protocol_url", v)}
+                      placeholder="https://10.0.0.2"
+                    />
+                    {/* Said plainly on the form: this column is on `assets`,
+                        which every signed-in user can read, so a URL carrying a
+                        device password is readable by all staff. */}
+                    <p className="rounded-lg border border-warning-200 bg-warning-50 p-3 text-xs text-warning-700 dark:border-warning-500/20 dark:bg-warning-500/10 dark:text-warning-400">
+                      {t("fields.protocolUrlHint")}
+                    </p>
+                  </>
+                )}
+
+                {isPeripheral && (
+                  <>
+                    <TextField
+                      id="asset-hostname"
+                      label={t("fields.hostname")}
+                      value={form.hostname}
+                      onChange={(v) => set("hostname", v)}
+                    />
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                      <TextField
+                        id="asset-ip-eth"
+                        label={t("fields.ipAddress")}
+                        value={form.ip_eth}
+                        onChange={(v) => set("ip_eth", v)}
+                      />
+                      <TextField
+                        id="asset-mac-eth"
+                        label={t("fields.macAddress")}
+                        value={form.mac_eth}
+                        onChange={(v) => set("mac_eth", v)}
+                      />
+                    </div>
+                    <CheckboxGroup
+                      idPrefix="asset-connectivity"
+                      label={t("fields.connectivity")}
+                      options={connectivityOptions}
+                      value={form.connectivity}
+                      onChange={(v) => set("connectivity", v)}
+                    />
+                  </>
+                )}
+
+                {isDisplay && (
+                  <CheckboxGroup
+                    idPrefix="asset-input-port"
+                    label={t("fields.inputPorts")}
+                    options={inputPortOptions}
+                    value={form.input_ports}
+                    onChange={(v) => set("input_ports", v)}
                   />
-                  <TextField
-                    id="asset-mac-wifi"
-                    label={t("fields.macWifi")}
-                    value={form.mac_wifi}
-                    onChange={(v) => set("mac_wifi", v)}
-                  />
-                  <TextField
-                    id="asset-mac-eth"
-                    label={t("fields.macEth")}
-                    value={form.mac_eth}
-                    onChange={(v) => set("mac_eth", v)}
-                  />
-                </div>
-                <TextField
-                  id="asset-os"
-                  label={t("fields.osOrFirmware")}
-                  value={form.os_or_firmware_version}
-                  onChange={(v) => set("os_or_firmware_version", v)}
-                />
-                <TextField
-                  id="asset-product-key"
-                  label={t("fields.productKey")}
-                  value={form.product_key}
-                  onChange={(v) => set("product_key", v)}
-                />
+                )}
               </>
             )}
 
@@ -1080,6 +1472,13 @@ export default function AssetListPage() {
                   </div>
                 </div>
 
+                <TextField
+                  id="asset-current-location"
+                  label={t("fields.currentLocation")}
+                  value={form.current_location}
+                  onChange={(v) => set("current_location", v)}
+                />
+
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                   <TextField
                     id="asset-purchase-price"
@@ -1119,6 +1518,28 @@ export default function AssetListPage() {
                     onChange={(v) => set("handover_doc_no", v)}
                   />
                 </div>
+
+                {/* `usage_status` from the spreadsheet is deliberately not a
+                    column: `available`/`assigned` are the loans' to decide and
+                    `assets_guard_status` refuses a contradicting write, while
+                    `condition` and `maintenance` cover the rest. Read-only here
+                    so the form still shows where the asset stands, with the
+                    status control in the list as the one place to change it. */}
+                {editingId && editingStatus && (
+                  <div className="flex items-center justify-between rounded-lg border border-gray-200 p-4 dark:border-gray-800">
+                    <div>
+                      <p className="text-sm font-medium text-gray-800 dark:text-white/90">
+                        {t("fields.usageStatus")}
+                      </p>
+                      <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                        {t("fields.usageStatusHint")}
+                      </p>
+                    </div>
+                    <Badge size="sm" color={STATUS_COLOR[editingStatus]}>
+                      {t(`status.${editingStatus}`)}
+                    </Badge>
+                  </div>
+                )}
               </>
             )}
           </div>

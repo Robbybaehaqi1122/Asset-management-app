@@ -11,14 +11,25 @@ auth pages, calendar — wrapped around a blank dashboard. **Supabase auth is no
 wired up**: email/password sign in, sign up, password reset, session persistence,
 and route protection all go through a real backend.
 
-The asset management domain is **partly implemented** as of issue #49.
-`src/modules/assets/` is the asset inventory: a readable-by-everyone list with
-search and filters, badges, an admin-only add/edit form, a status control and a
-guarded delete. Credentials live in their own table and are readable by admins
-only. **Assignments and maintenance are still not implemented** — there is no
-code in `src/` that creates a loan or schedules a repair, so the two tables the
-inventory depends on are written by nothing but the test fixtures. See The asset
-inventory and Database.
+The asset management domain is **partly implemented** as of issue #49, with the
+form made **dynamic per category** by issue #50. `src/modules/assets/` is the
+asset inventory: a readable-by-everyone list with search and filters, badges, an
+admin-only add/edit form, a status control and a guarded delete. The form's five
+tabs no longer show the same fields for every asset — they switch on the **main**
+category, so a switch is a server-rendered bitmap, a display offers its input
+ports and a network device offers its port counts. Credentials live in their own
+table and are readable by admins only. **Assignments and maintenance are still
+not implemented** — there is no code in `src/` that creates a loan or schedules a
+repair, so the two tables the inventory depends on are written by nothing but the
+test fixtures. See The asset inventory, The form switches on a category code, and
+Database.
+
+**`20260927001100` is applied to the local database and not yet to the remote.**
+`db diff --linked` therefore lists 14 `drop column` statements, which is the
+diff saying the remote is behind the files — not drift, and not something to fix
+by hand. Push it with `db reset --local` first, then `db push`, then confirm in
+`supabase_migrations.schema_migrations` rather than from the CLI's wording. See
+Database.
 
 The "Sign in with Google" and "Sign in with X" buttons, the "or" divider that
 separated them from the form, and the "back to dashboard" link are all gone
@@ -202,6 +213,9 @@ supabase/
     └── 20260927000600_profiles_email.sql  profiles.email + backfill
     └── 20260927000700_user_management_guards.sql  last-admin + email guards
     └── 20260927000800_must_change_password.sql  one column, no trigger
+    └── 20260927000900_departments.sql  the departments table + backfill
+    └── 20260927001000_asset_inventory.sql  21 columns on assets + credentials
+    └── 20260927001100_asset_dynamic_form.sql  categories.code + seed + 13 columns
 
 .github/
 ├── ISSUES_KNOWN.md            known problems, grouped by severity
@@ -213,7 +227,7 @@ vercel.json                    SPA rewrite only — no framework, no buildComman
 ## Database
 
 `supabase/migrations/` holds the schema, applied to project
-`dnyszknpinqvcfkmoauz` (Postgres 17.6.1). Ten migrations, in order:
+`dnyszknpinqvcfkmoauz` (Postgres 17.6.1). Eleven migrations, in order:
 
 | File | Contents |
 |---|---|
@@ -227,23 +241,30 @@ vercel.json                    SPA rewrite only — no framework, no buildComman
 | `20260927000800_must_change_password.sql` | `profiles.must_change_password boolean not null default false`; one column, no trigger; see The temporary password is a prompt, not a boundary |
 | `20260927000900_departments.sql` | `departments` table, `profiles.department` text -> `department_id` uuid, backfill, rewritten `handle_new_user`; see Departments are reference data |
 | `20260927001000_asset_inventory.sql` | 21 columns on `assets`, `categories.parent_id`, the `asset_credentials` table; see The asset inventory |
+| `20260927001100_asset_dynamic_form.sql` | `categories.code`, 13 per-category columns on `assets`, the category and location seed; see The form switches on a category code |
 
-**All ten are applied to the remote, and `db diff --linked` reports `No schema
-changes found`, so the files and the live database agree.** That was confirmed
-after pushing `01000`; read the ledger rather than trusting the CLI's wording,
-because this file previously claimed `00900` was still unpushed when it had
-already been applied.
+**The first ten are applied to the remote and `01100` is not.** `db diff --linked`
+therefore reports fourteen `drop column` statements today. That is the diff
+saying the remote is behind the checked-in files, which is the normal state
+between authoring a migration and pushing it — it is not drift and not something
+to repair by hand. The 26→27 count below is the local database's; the remote is
+one index short until the push lands.
+
+Read the ledger rather than trusting the CLI's wording, because this file
+previously claimed `00900` was still unpushed when it had already been applied.
 
 Note that `db push` printed `Remote database is up to date.` immediately after
 applying 004, with no "Applying migration" line. That message is not a reliable
 signal in either direction — confirm a push landed by reading
 `supabase_migrations.schema_migrations`, not by trusting the CLI's wording.
 
-`pg_indexes` reports **26** for `public`, against 11 explicit indexes across the
-migrations: Postgres adds an index for every primary key and unique constraint
-automatically, and `01000` added a new table with both. The automatic ones are 8
-primary keys plus the `unique` on `assets.asset_code`, `categories.name`,
-`locations.name`, and `asset_credentials.asset_id`.
+`pg_indexes` reports **27** for `public` on the local database and **26** on the
+remote, and the difference is one index. The 27 is 8 primary keys, 6 unique
+constraints (`assets.asset_code`, `categories.name`, `locations.name`,
+`departments.name`, `profiles.email`, `asset_credentials.asset_id`) and 13
+explicitly created indexes. `01100` added the one that is missing remotely,
+`categories_code_key`. Postgres creates the index for a primary key or a unique
+constraint itself, which is why none of the 14 are in the migration files.
 
 There are now **8 tables** in `public`, not 6: `01000` added `asset_credentials`.
 Two earlier claims that this file made about "6 tables" were true when written and
@@ -371,9 +392,12 @@ exists`. So the files are not a repair tool.
 holds one row per applied version — `20260927000100` schema, `20260927000200`
 triggers, `20260927000300` rls, `20260927000400` drop first-admin grant,
 `20260927000500` status/loan sync, `20260927000600` profiles.email,
-`20260927000700` user-management guards. That table, not the schema itself, is what
-the CLI consults to decide what is pending, and it is also the only trustworthy way
-to confirm a push landed.
+`20260927000700` user-management guards, `20260927000800` must_change_password,
+`20260927000900` departments, `20260927001000` asset_inventory. Read out of the
+linked project on 2026-09-28, which is also the proof that `01100` is the one
+version still missing. That table, not the schema itself, is what the CLI
+consults to decide what is pending, and it is also the only trustworthy way to
+confirm a push landed.
 
 `migration list --linked` is the exception that proves the rule: it failed once
 with `password authentication failed for user "cli_login_postgres"` while
@@ -880,9 +904,18 @@ is the same reasoning recorded for `profiles.email` and `profiles.department`.
 | `notes` | `assets.description` exists. |
 | `category`, `location` | `assets.category_id` and `assets.location_id` are already uuid FKs to `categories` and `locations`. |
 | `sub_category` | `categories.parent_id`, added by the same migration, rather than free text on every row. |
-| `current_location` | A second location beside `location_id` that nothing would keep in step. Divergence between "where it is registered" and "where it is" needs a transition rule and an audit trail, not a nullable text column. |
+| `current_location` | Reversed by `01100` — see below. |
 | `device_condition` | `assets.condition`, already constrained to five values. |
-| `usage_status` | See below. |
+| `usage_status` | Still absent. See below. |
+
+**`current_location` is the one that changed its mind.** `01000` refused it
+because a second location beside `location_id`, with nothing keeping the two in
+step, is the kind of drift that needs a transition rule and an audit trail rather
+than a nullable text column. `01100` adds it anyway, on request: a physical room
+or desk changes faster than a picker can be kept current, and the honest cost is
+that the two can now disagree. The column comment says so where the schema is
+read, and the form's own field label is the free-text box rather than a picker.
+Reverting to the `01000` position is a drop-column migration, not an edit.
 
 **`usage_status` is the one worth arguing about.** The spreadsheet's column mixes
 two axes: "In Use" and "Idle" are loan state, "Good" is condition, and "Service"
@@ -892,7 +925,9 @@ is maintenance state. The first is already `assets.status`, kept honest by
 unguarded text column whose values can contradict the two that are enforced would
 reintroduce exactly the inconsistency `00500` was written to remove. The list
 therefore badges ten values across two columns, and **every one of them comes
-from a check constraint** — there is no third axis to keep in step.
+from a check constraint** — there is no third axis to keep in step. `#50` asked
+for it a second time and the answer did not change; the form shows the status
+read-only instead.
 
 ### Credentials are a separate table, and it is the only reason the table exists
 
@@ -991,6 +1026,83 @@ open. The issue's grouping was followed.
   `Select` in this form is keyed on the row being edited, and the filter selects
   are keyed on the current filter value so clearing one actually resets it.
 
+### The form switches on a category code
+
+`01100` is issue #50. The five tabs still exist; what changed is that
+**Specification** and **Network** render a fieldset chosen by the *main* category
+instead of the same fields for every asset.
+
+**`categories.code`, not `categories.name`.** A name is editable, and the seed
+already carries two rows named "UPS" — one under `PERIPHERAL`, one under
+`SERVER` — so a name is not a key. `code` is nullable, seeded for the seven
+parents, unique, and survives a rename. Verified: renaming `COMPUTER` to
+`COMPUTERS` leaves the code, and the fieldset with it. A category with no code —
+one an admin added after the seed — falls back to the common fields rather than
+breaking.
+
+| `code` | shows |
+|---|---|
+| `COMPUTER` | processor, RAM, storage, display, GPU; hostname, four IP/MAC boxes, OS/firmware, product key |
+| `DISPLAY` | resolution, panel size; input ports as checkboxes |
+| `PERIPHERAL` | capacity, speed; hostname, one IP and one MAC, connectivity as checkboxes |
+| `NETWORK_DEVICES`, `SERVER`, `IOT` | RJ45 / SFP / console counts; hostname, four IP/MAC boxes, firmware, connection type, management URL |
+| `UTILITIES`, or no code at all | the original generic specification and network fields |
+
+`NETWORK_LIKE` is a `Set` rather than three separate branches because the three
+categories share one fieldset. Anything outside all four groups is `isGeneric` and
+gets the generic set, so **no category can leave a tab empty** — including a
+category invented after this was written.
+
+**The switch is on the main category, never the sub-category.** `parent_id is
+null` is what makes a row a parent. The form resolves `parent_category_id` from
+the asset's own category and the sub-category only refines the label, so an asset
+with no sub-category stores the main category directly on `assets.category_id`.
+That is why `toInput` sends `category_id || parent_category_id`, and why picking a
+new main category clears the sub-category: the chosen child belongs to the parent
+just left.
+
+**Multi-value fields are `text[]` with a closed-set check, not a child table.**
+`input_ports` and `connectivity` are a handful of fixed options that are never
+joined on, so an array is the right shape and a join table would be three extra
+objects per asset. The check (`<@ array[...]`) is what makes "HDMI" and "hdmi"
+impossible, and it is why the form can offer exactly five options without ever
+hitting a constraint error. An empty selection is stored as NULL rather than `{}`,
+so it reads the same as a field that category never had.
+
+**The three port counts are validated before the save, not after the failure.**
+`handleSave` rejects anything that is not `^\d+$`, because the column check would
+otherwise refuse the whole write with a message about ports and no idea which
+box. The rejection is one i18n key, and it is the same shape as the existing
+price check.
+
+#### Two columns #50 asked for that are not what the issue assumed
+
+- **`usage_status` is still absent, and now that is a decision rather than an
+  omission.** See the `usage_status` row in the seven-skipped-columns table. The
+  form shows the status **read-only** in the Administration tab instead, because
+  an admin opening a form still wants to know where the asset stands — with the
+  list's status control as the one place to change it, since `assets_guard_status`
+  refuses `available` and `assigned` from a form.
+- **`protocol_url` is on `assets`, which means every staff member can read it.**
+  The issue asked for it beside the network fields, and `assets` is where the
+  network fields live, so that is where it went.
+  `assets_select_authenticated` is `using (true)`, so a URL that embeds a
+  credential — `rtsp://user:pass@host/…` — leaks that credential to every signed-in
+  user. The alternatives were a credentials-shaped table (one per category, to
+  hold a field that is not really a secret) or warning rather than preventing. The
+  owner chose the second, so the form says so in a warning under the box and the
+  column comment repeats it where the schema is read. Do not "fix" this by quietly
+  moving the column.
+
+**`current_location` was added on request and can diverge from `location_id`.**
+The spreadsheet's `current_location` is a free-text room or desk; `location_id` is
+the registered location. Nothing keeps the two in step — the same kind of
+inconsistency that made the delete guard necessary, and unlike `status` this one
+is not enforced at all. It was added anyway, because a physical location changes
+faster than a picker can be kept current, and the column comment says so at the
+point where someone reads the schema. If it starts causing arguments, the fix is
+a transition rule and an audit trail, not a second nullable text column.
+
 ### The list is readable by everyone, and that is the opposite of `/users`
 
 `/users` and `/departments` refuse to render for a staff member. This page does
@@ -1014,6 +1126,9 @@ filter state to survive a reload.
 - **Categories and locations have no admin UI either.** They were already
   reference tables with no management screen, and the inventory only reads them.
   `categories.parent_id` exists but nothing creates a sub-category from the app.
+  `01100` now *seeds* both — 7 parent categories, 23 sub-categories, 3 locations —
+  so a fresh install is usable, but a hand-added category with no `code` is the
+  fallback path, not a feature gap.
 - **No `useIsAdmin` gate on the read**, deliberately, unlike both other modules.
 
 ## User management
@@ -1652,9 +1767,9 @@ something local, which is itself the bug.
 - i18next is bootstrapped once in `src/i18n/index.ts`, imported by `src/main.tsx`.
   Never re-initialise it.
 - One namespace, `"common"`. One locale, `en`. The file is
-  `src/locales/en/common.json` — add new keys there. It holds 205 leaf keys
+  `src/locales/en/common.json` — add new keys there. It holds 371 leaf keys
   today, under `sidebar`, `header`, `userDropdown`, `auth`, `profile`,
-  `mustChangePassword`, and `users`.
+  `mustChangePassword`, `departments`, `users`, and `assets`.
 - **Do not repeat a key inside one object.** JSON resolves a duplicate by taking
   the last one, silently, and `require()` will not complain. `users.fields` and
   `users.emailManagedElsewhere` both existed twice for a while; the two copies
@@ -1717,6 +1832,11 @@ These were deliberate. Do not "clean them up" without asking.
 | The asset delete is guarded, not hard and not soft | Both foreign keys cascade, so a hard delete takes loan and service history — the same loss the user-delete warning spells out. A guard is cheap here in a way it was not for users: an asset with no history is safe to remove, one with history is worth keeping. Soft delete was rejected because it adds a `status` value the two status guards would then have to be taught about |
 | `status` is not a field on the asset form, and `assigned` is offered nowhere in the module | `available` and `assigned` are derived from the loans and `assets_guard_status` refuses a contradicting write, so a form offering either would offer something the database rejects. `setAssetStatus` takes `Exclude<AssetStatus, "assigned">` so the un-derivable value cannot even be passed |
 | The asset list is readable by every signed-in user, unlike `/users` | Stock belongs to the company rather than one department, and `assets_select_authenticated` is `using (true)`, so gating the read hands every staff member an empty page. Staff lose the Credentials tab and the write actions, and the credential was never in their response |
+| The form switches on `categories.code`, not on the category name | A name is editable and the seed carries two "UPS" rows, so a name is not a key. `code` is nullable and unique, survives a rename, and a category without one falls back to the common fields instead of breaking the form. See The form switches on a category code |
+| The switch is on the *main* category, and an asset with no sub-category stores the parent directly | `parent_id is null` is what makes a row a parent. Sub-category only refines the label, so `toInput` sends `category_id \|\| parent_category_id` and a new main category clears the child. One column, two possible meanings resolved by one rule, instead of a second nullable column |
+| `input_ports` and `connectivity` are `text[]` with a `<@ array[...]` check, not a child table | A handful of fixed options that are never joined on. A join table is three extra objects per asset for no query that needs it, and the closed-set check is what makes "HDMI" and "hdmi" impossible. An empty selection is NULL, not `{}`, so it reads the same as a field that category never had |
+| `protocol_url` stays on `assets` even though that exposes it to every staff member | The owner chose warning over a credentials-shaped table and over moving the column. A URL embedding `user:pass` is readable by all signed-in users, which the form says out loud and the column comment repeats — the alternative would be a per-category secret table holding a field that is not really a secret |
+| `current_location` is a free-text column that is allowed to diverge from `location_id` | Accepted knowingly, not overlooked: a physical room or desk changes faster than a picker can be kept current, and nothing keeps the two in step. Unlike a `status` contradiction this is not enforced, so the fix, if it ever is needed, is a transition rule and an audit trail rather than a second text column |
 | No first-signup admin grant; the first admin is promoted by hand | The owner chose to close it (#39) over keeping it for convenience. The remote had 0 users with signup open, so the grant was an unclaimed admin for anyone who found the URL. The cost is a fresh project starts read-only — see Promoting the first admin |
 | `@supabase/supabase-js` is the backend, wired for email/password auth | Requested by the project owner. It costs ~760 kB of extra JavaScript, most of it realtime/PostgREST/storage this app does not use yet, but the owner wants this client |
 | The social sign-in buttons are removed, not `disabled` | They were `disabled` placeholders and the owner reversed the earlier decision to keep them visible. The "or" divider went with them, because its only purpose was to separate two ways in — leaving it above a form with no alternative reads as a bug. `google.svg` and `x.svg` are still in `src/icons/` and still exported, unreferenced, in case OAuth is picked up again |
@@ -1856,6 +1976,15 @@ not go looking for them unprompted.
   send `status` from `createAsset` or `updateAsset`. See The asset inventory.
 - Don't hard-delete an asset from the UI, and don't add soft delete without
   teaching `assets_guard_status` and the maintenance guards the new value.
+- Don't switch the asset form on `categories.name`. Two seeded categories are
+  both called "UPS", and a rename would silently empty a fieldset. Switch on
+  `code`, and add a code to a category rather than teaching the form its name.
+- Don't offer a checkbox option that is not in the column's `<@ array[...]`
+  check, and don't add a fourth free-text column next to a constrained one.
+  The check is the only thing stopping "HDMI" and "hdmi" becoming two values.
+- Don't add `usage_status` to `assets` to satisfy the spreadsheet. `status`,
+  `condition` and `maintenance` already cover it and are enforced; see The form
+  switches on a category code.
 - Don't add an INSERT policy on `profiles`, and don't read `role` from
   `raw_user_meta_data` in `handle_new_user`. Both are privilege-escalation paths.
 - Don't move `must_change_password` into the browser create step to "keep the

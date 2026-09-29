@@ -34,6 +34,16 @@ export type SelectableAssetStatus = Exclude<AssetStatus, "assigned">;
 /** Mirrors the `assets_condition_check` constraint. */
 export type AssetCondition = "new" | "good" | "fair" | "poor" | "broken";
 
+/** Mirrors the `assets_connection_type_check` constraint. */
+export type ConnectionType =
+  "ethernet" | "wifi" | "fiber" | "cellular" | "other";
+
+/** Mirrors the `assets_input_ports_check` constraint. DISPLAY only. */
+export type InputPort = "vga" | "hdmi" | "lan" | "wifi" | "usb";
+
+/** Mirrors the `assets_connectivity_check` constraint. PERIPHERAL only. */
+export type Connectivity = "usb" | "bt_wireless" | "hdmi" | "lan" | "wifi";
+
 export type AssetCredentials = {
   username: string | null;
   password: string | null;
@@ -48,6 +58,11 @@ export type CategoryOption = AssetRef & {
   /** The parent category, when this row is a sub-category. */
   parentId: string | null;
   parentName: string | null;
+  /**
+   * The stable key the form switches its fieldset on. `null` for a category an
+   * admin added after the seed, which gets the common fields only.
+   */
+  code: string | null;
 };
 
 export type Asset = {
@@ -88,6 +103,20 @@ export type Asset = {
   ram_spec: string | null;
   storage_spec: string | null;
   display_spec: string | null;
+
+  gpu_model: string | null;
+  resolution: string | null;
+  panel_size: string | null;
+  capacity: string | null;
+  speed: string | null;
+  current_location: string | null;
+  protocol_url: string | null;
+  connection_type: ConnectionType | null;
+  port_rj45: number | null;
+  port_sfp: number | null;
+  port_console: number | null;
+  input_ports: InputPort[];
+  connectivity: Connectivity[];
 
   created_at: string;
   updated_at: string;
@@ -130,6 +159,19 @@ export type AssetInput = {
   ram_spec: string | null;
   storage_spec: string | null;
   display_spec: string | null;
+  gpu_model: string | null;
+  resolution: string | null;
+  panel_size: string | null;
+  capacity: string | null;
+  speed: string | null;
+  current_location: string | null;
+  protocol_url: string | null;
+  connection_type: ConnectionType | null;
+  port_rj45: number | null;
+  port_sfp: number | null;
+  port_console: number | null;
+  input_ports: InputPort[];
+  connectivity: Connectivity[];
   /** Omit entirely on update to leave the stored credentials untouched. */
   credentials: AssetCredentials | null;
 };
@@ -176,6 +218,9 @@ const ASSET_COLUMNS = `
   hostname, ip_wifi, ip_eth, mac_wifi, mac_eth,
   os_or_firmware_version, product_key,
   processor_spec, ram_spec, storage_spec, display_spec,
+  gpu_model, resolution, panel_size, capacity, speed,
+  current_location, protocol_url, connection_type,
+  port_rj45, port_sfp, port_console, input_ports, connectivity,
   created_at, updated_at,
   category:categories!assets_category_id_fkey ( id, name ),
   location:locations!assets_location_id_fkey ( id, name ),
@@ -197,6 +242,12 @@ function embedded<T>(value: unknown): T | null {
 
 const str = (v: unknown): string | null =>
   v === null || v === undefined ? null : String(v);
+
+const num = (v: unknown): number | null =>
+  v === null || v === undefined ? null : Number(v);
+
+/** A Postgres `text[]` arrives as a JS array; anything else reads as empty. */
+const arr = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : []);
 
 function mapAsset(row: RawAsset): Asset {
   const category = embedded<RawAsset>(row.category);
@@ -239,6 +290,19 @@ function mapAsset(row: RawAsset): Asset {
     ram_spec: str(row.ram_spec),
     storage_spec: str(row.storage_spec),
     display_spec: str(row.display_spec),
+    gpu_model: str(row.gpu_model),
+    resolution: str(row.resolution),
+    panel_size: str(row.panel_size),
+    capacity: str(row.capacity),
+    speed: str(row.speed),
+    current_location: str(row.current_location),
+    protocol_url: str(row.protocol_url),
+    connection_type: str(row.connection_type) as ConnectionType | null,
+    port_rj45: num(row.port_rj45),
+    port_sfp: num(row.port_sfp),
+    port_console: num(row.port_console),
+    input_ports: arr(row.input_ports) as InputPort[],
+    connectivity: arr(row.connectivity) as Connectivity[],
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
     category: category
@@ -287,7 +351,7 @@ export async function getAssetFilterOptions(): Promise<{
     supabase
       .from("categories")
       .select(
-        "id, name, parent_id, parent:categories!categories_parent_id_fkey(id, name)",
+        "id, name, parent_id, code, parent:categories!categories_parent_id_fkey(id, name)",
       )
       .order("name", { ascending: true }),
     supabase
@@ -307,6 +371,7 @@ export async function getAssetFilterOptions(): Promise<{
         name: String(row.name),
         parentId: str(row.parent_id),
         parentName: parent ? String(parent.name) : null,
+        code: str(row.code),
       };
     }),
     locations: ((locations.data ?? []) as AssetRef[]).map((row) => ({
@@ -363,6 +428,21 @@ function normalise(input: Omit<AssetInput, "credentials">) {
     ram_spec: text(input.ram_spec),
     storage_spec: text(input.storage_spec),
     display_spec: text(input.display_spec),
+    gpu_model: text(input.gpu_model),
+    resolution: text(input.resolution),
+    panel_size: text(input.panel_size),
+    capacity: text(input.capacity),
+    speed: text(input.speed),
+    current_location: text(input.current_location),
+    protocol_url: text(input.protocol_url),
+    connection_type: input.connection_type || null,
+    port_rj45: input.port_rj45,
+    port_sfp: input.port_sfp,
+    port_console: input.port_console,
+    // An empty array is "none selected", stored as NULL rather than `{}`, so it
+    // reads the same as a field the category never had.
+    input_ports: input.input_ports.length ? input.input_ports : null,
+    connectivity: input.connectivity.length ? input.connectivity : null,
   };
 }
 
@@ -373,11 +453,13 @@ function normalise(input: Omit<AssetInput, "credentials">) {
  * and an edit that submitted a second row would fail on every save after the
  * first. Clearing both fields deletes the row instead of storing an empty one,
  * so "no credentials" and "an empty credential" stay the same thing.
+ *
+ * Returns what is now stored, because the asset row was read *before* this ran.
  */
 async function writeCredentials(
   assetId: string,
   credentials: AssetCredentials,
-): Promise<void> {
+): Promise<AssetCredentials> {
   const username = credentials.username?.trim() || null;
   const password = credentials.password?.trim() || null;
 
@@ -387,7 +469,7 @@ async function writeCredentials(
       .delete()
       .eq("asset_id", assetId);
     if (error) throw error;
-    return;
+    return { username: null, password: null };
   }
 
   const { error } = await supabase
@@ -397,6 +479,7 @@ async function writeCredentials(
       { onConflict: "asset_id" },
     );
   if (error) throw error;
+  return { username, password };
 }
 
 /**
@@ -423,7 +506,12 @@ export async function createAsset(input: AssetInput): Promise<Asset> {
   const row = data as RawAsset;
   const assetId = String(row.id);
 
-  if (credentials) await writeCredentials(assetId, credentials);
+  if (credentials) {
+    // The select above ran before this write, so the embedded credential on it
+    // is absent. Returning what was actually stored keeps the object honest
+    // for a caller that renders it without reloading.
+    row.credentials = await writeCredentials(assetId, credentials);
+  }
 
   return mapAsset(row);
 }
@@ -456,7 +544,12 @@ export async function updateAsset(
 
   const row = data as RawAsset;
 
-  if (credentials) await writeCredentials(assetId, credentials);
+  if (credentials) {
+    // Same reason as on create, and worse here: the embed carries the *previous*
+    // credential, so returning `row` unchanged would hand the caller a password
+    // the admin just replaced.
+    row.credentials = await writeCredentials(assetId, credentials);
+  }
 
   return mapAsset(row);
 }
