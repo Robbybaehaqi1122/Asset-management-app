@@ -39,8 +39,10 @@ import {
   CreateUserError,
   DeleteUserError,
   NoRowsUpdatedError,
+  ResetPasswordError,
   createUser,
   deleteUser,
+  resetUserPassword,
   updateUserDetails,
   updateUserRole,
 } from "../services/userService";
@@ -90,24 +92,13 @@ const EMPTY_NEW_USER: NewUserForm = {
  * Admin-only user list: who exists, what their role is, and a way to change
  * it.
  *
- * What this screen deliberately does not have: create and delete. Both need
+ * Four of the things on this screen — add, delete, change a role, reset a
+ * password — are here for different reasons and it is worth keeping them apart.
+ * Editing a name and a department needs no privileged access at all, so it goes
+ * over ordinary RLS and needs no migration. The other three touch
  * `supabase.auth.admin`, which needs a `service_role` key, and `AGENTS.md`
- * forbids putting one in the browser. Accounts are still created from the
- * Supabase Dashboard, and the `on_auth_user_created` trigger builds their
- * profile either way. Delete is not merely a missing button: `assignments`
- * cascades on `profiles`, so removing a profile would erase that person's
- * loan history and hand their assets back as `available`. See issue #48.
- *
- * The role column is the whole feature, and it needs no new policy or
- * migration: `profiles_select_own_or_admin` already lets an admin read every
- * row, `profiles_update_own` already lets one write any row, and
- * `profiles_protect_role` already restricts the change to admins.
- *
- * Editing the name and department needs no migration either, and not because
- * nothing guards them. Three triggers sit on `profiles`; the reason this works
- * is that only the two harmless columns are sent, so the two `UPDATE OF`
- * triggers never fire and the third returns early on an unchanged role. See
- * `updateUserDetails`.
+ * forbids putting one in the browser — so each has an Edge Function behind it
+ * and the browser does the rest.
  *
  * Role and name are separate controls rather than one combined form, because
  * they are separate concerns: role is protected, name is not, and folding them
@@ -131,21 +122,40 @@ export default function UserListPage() {
   const editModal = useModal();
   const createModal = useModal();
   const deleteModal = useModal();
+  const resetModal = useModal();
   const [pending, setPending] = useState<PendingChange | null>(null);
   const [editing, setEditing] = useState<EditingDetails | null>(null);
   const [deleting, setDeleting] = useState<Profile | null>(null);
+  const [resetting, setResetting] = useState<Profile | null>(null);
   const [newUser, setNewUser] = useState<NewUserForm>(EMPTY_NEW_USER);
+  /**
+   * The password being handed over in the reset form. Held separately from
+   * `newUser` and never kept after the modal closes, for the same reason the
+   * add-user form is not kept in state either.
+   */
+  const [resetPasswordValue, setResetPasswordValue] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [detailsError, setDetailsError] = useState<string | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
   const [createWarning, setCreateWarning] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
-  const [deleteOutcome, setDeleteOutcome] = useState<string | null>(null);
+  /**
+   * One slot for "this happened, here is what", shared by the delete and the
+   * reset flows. They are the same kind of message and were going to need the
+   * same banner, so a second piece of state would only be a second thing to
+   * remember to clear. The warning below is separate because it is a different
+   * kind of outcome and looks different on screen.
+   */
+  const [outcome, setOutcome] = useState<string | null>(null);
+  const [resetError, setResetError] = useState<string | null>(null);
+  const [resetWarning, setResetWarning] = useState<string | null>(null);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
+  const [showResetPassword, setShowResetPassword] = useState(false);
 
   /**
    * The departments the pickers draw from.
@@ -424,7 +434,7 @@ export default function UserListPage() {
 
   const handleOpenDelete = (row: Profile) => {
     setDeleteError(null);
-    setDeleteOutcome(null);
+    setOutcome(null);
     setDeleting(row);
     deleteModal.openModal();
   };
@@ -441,7 +451,7 @@ export default function UserListPage() {
       // Reported rather than silent. The account is gone and there is nothing
       // to undo, so the number of loans that went with it is the last chance to
       // say so out loud.
-      setDeleteOutcome(
+      setOutcome(
         result.erasedLoans === 0
           ? t("deleteDone", {
               name: deleting.full_name || deleting.email || t("notSet"),
@@ -460,6 +470,81 @@ export default function UserListPage() {
       );
     } finally {
       setIsDeleting(false);
+    }
+  };
+
+  const handleOpenReset = (row: Profile) => {
+    setResetError(null);
+    setResetWarning(null);
+    setOutcome(null);
+    // Cleared on the way in, not only on the way out, so a modal that was
+    // closed without submitting does not leave a credential sitting in state.
+    setResetPasswordValue("");
+    setShowResetPassword(false);
+    setResetting(row);
+    resetModal.openModal();
+  };
+
+  const handleGenerateResetPassword = () => {
+    setResetPasswordValue(generatePassword());
+    // Revealing it is the point, for the same reason as the add-user form: a
+    // generated password nobody can read is a password nobody has.
+    setShowResetPassword(true);
+  };
+
+  const handleConfirmReset = async () => {
+    if (!resetting) return;
+
+    // Checked here so the message lands on the field being looked at, and again
+    // in the function, which is the authority. The two rules can disagree — the
+    // hosted auth allows a shorter minimum — and when they do, the stricter one
+    // is the one that protects the account.
+    if (resetPasswordValue.length < 8) {
+      setResetError(t("errors.reset.weak_password"));
+      return;
+    }
+
+    setIsResetting(true);
+    setResetError(null);
+    setResetWarning(null);
+    try {
+      const result = await resetUserPassword(resetting.id, resetPasswordValue);
+      resetModal.closeModal();
+      setResetPasswordValue("");
+
+      // The flag and the badge both read that column, so the cached row is stale
+      // whichever way the target compares to the signed-in user. The same rule
+      // the other two handlers use, for the same reason.
+      if (resetting.id === user?.id) {
+        await refreshProfile();
+      } else {
+        reload();
+      }
+
+      setOutcome(
+        t("resetDone", {
+          name: resetting.full_name || resetting.email || t("notSet"),
+        }),
+      );
+
+      // The credential changed before the flag write, so a failure here is not a
+      // failed reset — it is a reset that will never ask to be replaced. Said
+      // out loud, because nothing in this screen can put it back afterwards.
+      if (!result.mustChangeFlagSet) {
+        setResetWarning(
+          t("resetFlagFailed", {
+            name: resetting.full_name || resetting.email || t("notSet"),
+          }),
+        );
+      }
+    } catch (error) {
+      setResetError(
+        error instanceof ResetPasswordError
+          ? t(`errors.reset.${error.code}`)
+          : t("errors.reset.unknown"),
+      );
+    } finally {
+      setIsResetting(false);
     }
   };
 
@@ -526,18 +611,41 @@ export default function UserListPage() {
 
       {/* Same placement reasoning as `createWarning`: the outcome is raised after
           the modal closes, and `Modal` returns null while closed, so a message
-          rendered in there would be written and never seen. */}
-      {deleteOutcome && (
+          rendered in there would be written and never seen. Shared by the delete
+          and reset flows, which is why it is one slot rather than two. */}
+      {outcome && (
         <div
           role="status"
           className="mt-4 flex items-start justify-between gap-4 rounded-2xl border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700 dark:border-gray-800 dark:bg-white/5 dark:text-gray-300"
         >
-          <p>{deleteOutcome}</p>
+          <p>{outcome}</p>
           <button
             type="button"
-            onClick={() => setDeleteOutcome(null)}
+            onClick={() => setOutcome(null)}
             aria-label={t("dismiss")}
             className="shrink-0 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+          >
+            <CloseIcon className="size-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Same placement reasoning as `createWarning`, for the same reason: the
+          flag write is the last thing that can fail, after the password has
+          already changed and after the modal has closed. `Modal` returns null
+          while closed, so a message rendered in there would be written and never
+          seen. */}
+      {resetWarning && (
+        <div
+          role="status"
+          className="mt-4 flex items-start justify-between gap-4 rounded-2xl border border-warning-200 bg-warning-50 p-4 text-sm text-warning-700 dark:border-warning-800/60 dark:bg-warning-500/10 dark:text-orange-300"
+        >
+          <p>{resetWarning}</p>
+          <button
+            type="button"
+            onClick={() => setResetWarning(null)}
+            aria-label={t("dismiss")}
+            className="shrink-0 text-warning-600 hover:text-warning-800 dark:text-orange-400 dark:hover:text-orange-200"
           >
             <CloseIcon className="size-4" />
           </button>
@@ -701,6 +809,7 @@ export default function UserListPage() {
                               setOpenMenuId={setOpenMenuId}
                               onEdit={() => handleOpenEdit(row)}
                               onChangeRole={() => handleOpenChange(row)}
+                              onReset={() => handleOpenReset(row)}
                               onDelete={() => handleOpenDelete(row)}
                             />
                           </div>
@@ -1110,17 +1219,121 @@ export default function UserListPage() {
           </div>
         </div>
       </Modal>
+
+      <Modal
+        isOpen={resetModal.isOpen}
+        onClose={resetModal.closeModal}
+        className="max-w-lg"
+      >
+        <div className="p-6">
+          <h3 className="text-lg font-semibold text-gray-800 dark:text-white/90">
+            {t("resetTitle")}
+          </h3>
+
+          {resetting && (
+            <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
+              {t("resetBody", {
+                name: resetting.full_name || resetting.email || t("notSet"),
+              })}
+            </p>
+          )}
+
+          <div className="mt-5 space-y-4">
+            <div>
+              <Label htmlFor="reset-password">{t("fields.password")}</Label>
+              <div className="relative">
+                <Input
+                  id="reset-password"
+                  name="new_password"
+                  type={showResetPassword ? "text" : "password"}
+                  value={resetPasswordValue}
+                  onChange={(event) =>
+                    setResetPasswordValue(event.target.value)
+                  }
+                  placeholder="••••••••"
+                  autoComplete="new-password"
+                  hint={t("passwordHint")}
+                  error={resetError !== null && resetPasswordValue.length < 8}
+                  // Room for two controls on the trailing edge, so neither
+                  // overlaps the text being typed. Same layout as the add-user
+                  // form, for the same reason.
+                  className="pe-24"
+                />
+                {/* Two trailing controls rather than one stacked pair: the
+                    reveal toggle is for reading what the admin typed, and this
+                    one is for producing something to read. Folding them into a
+                    single button would make "show" mean "replace". */}
+                <button
+                  type="button"
+                  onClick={handleGenerateResetPassword}
+                  title={t("generatePassword")}
+                  className="absolute end-11 top-1/2 -translate-y-1/2 rounded px-1 py-0.5 text-xs font-medium text-brand-600 hover:bg-brand-50 hover:text-brand-700 dark:text-brand-400 dark:hover:bg-brand-500/10"
+                >
+                  {t("generatePassword")}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowResetPassword((prev) => !prev)}
+                  aria-label={
+                    showResetPassword
+                      ? t("fields.hidePassword")
+                      : t("fields.showPassword")
+                  }
+                  className="absolute end-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                >
+                  {showResetPassword ? (
+                    <EyeCloseIcon className="size-5" />
+                  ) : (
+                    <EyeIcon className="size-5" />
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Stated before the button, not after it. This is the one screen
+              where the person reading it is going to learn somebody's
+              credential, and the only thing standing between that and a
+              password that never changes is the flag written on the other side
+              of this button. */}
+          <p className="mt-4 rounded-xl border border-gray-200 bg-gray-50 p-3 text-sm text-gray-500 dark:border-gray-800 dark:bg-white/5 dark:text-gray-400">
+            {t("resetPrompt")}
+          </p>
+
+          {resetError && (
+            <p className="mt-4 text-sm text-error-600 dark:text-error-500">
+              {resetError}
+            </p>
+          )}
+
+          <div className="mt-6 flex justify-end gap-3">
+            <Button
+              variant="outline"
+              onClick={resetModal.closeModal}
+              disabled={isResetting}
+            >
+              {t("cancel")}
+            </Button>
+            <Button
+              onClick={handleConfirmReset}
+              disabled={isResetting || resetPasswordValue.length < 8}
+            >
+              {isResetting ? t("resetting") : t("resetConfirm")}
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }
 
 /**
- * The three row actions, behind one control.
+ * The four row actions, behind one control.
  *
- * A dropdown rather than two buttons because delete has to join them, and a
- * destructive action sitting next to a routine one as a peer button is exactly
- * the shape that gets mis-clicked. The two safe items are still two clicks away
- * and no further than they were.
+ * A dropdown rather than four buttons because delete has to join them, and a
+ * destructive action sitting next to routine ones as a peer button is exactly
+ * the shape that gets mis-clicked. The safe items are still two clicks away and
+ * no further than they were.
  *
  * Only one menu can be open at a time, and the page owns which one — `openMenuId`
  * lives here rather than in a `useState` per row, because that would mean
@@ -1135,6 +1348,7 @@ function RowActions({
   setOpenMenuId,
   onEdit,
   onChangeRole,
+  onReset,
   onDelete,
 }: {
   row: Profile;
@@ -1145,6 +1359,7 @@ function RowActions({
   setOpenMenuId: (id: string | null) => void;
   onEdit: () => void;
   onChangeRole: () => void;
+  onReset: () => void;
   onDelete: () => void;
 }) {
   const { t } = useTranslation("common", { keyPrefix: "users" });
@@ -1206,9 +1421,20 @@ function RowActions({
             </DropdownItem>
           </span>
 
+          {/* No wrapper, and no disabled branch, and that is the point. Every
+              other guarded item on this screen needed a refusal explained
+              because it has a rule that can stop it. A password reset has none:
+              it does not change the admin count, and a session survives its own
+              credential changing, so there is no case where the honest answer is
+              "you cannot do that". It is the recovery path for somebody locked
+              out, and gating it would defeat the only reason it exists. */}
+          <DropdownItem onClick={run(onReset)}>
+            {t("resetPassword")}
+          </DropdownItem>
+
           {/* Same wrapper trick: the refusal needs to explain itself, and a
-              control that refuses without saying why is the thing this screen
-              has been careful about elsewhere. */}
+          control that refuses without saying why is the thing this screen
+          has been careful about elsewhere. */}
           <span title={deleteReason ?? undefined}>
             <DropdownItem
               onClick={run(onDelete)}

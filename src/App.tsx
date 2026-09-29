@@ -3,6 +3,7 @@ import RequireAuth from "@/components/auth/RequireAuth";
 import { Route, BrowserRouter as Router, Routes } from "react-router";
 import { ScrollToTop } from "./components/common/ScrollToTop";
 import AppLayout from "./layout/AppLayout";
+import AssetListPage from "./modules/assets/pages/AssetListPage";
 import DepartmentListPage from "./modules/departments/pages/DepartmentListPage";
 import UserListPage from "./modules/users/pages/UserListPage";
 import SignIn from "./pages/AuthPages/SignIn";
@@ -31,6 +32,11 @@ export default function App() {
                   UI yang tidak menambah keamanan. */}
               <Route path="/users" element={<UserListPage />} />
               <Route path="/departments" element={<DepartmentListPage />} />
+              {/* `assets_select_authenticated` adalah `using (true)` dan stok
+                  bukan milik satu departemen, jadi halaman ini juga untuk staff.
+                  Yang admin-only di dalamnya adalah kredensial: RLS menyembunyikan
+                  barisnya, sehingga staff tidak pernah menerimanya di respons. */}
+              <Route path="/assets" element={<AssetListPage />} />
               <Route path="/blank" element={<Blank />} />
             </Route>
           </Route>

@@ -225,6 +225,136 @@ const KNOWN_CODES: ReadonlySet<string> = new Set<CreateUserErrorCode>([
   "unknown",
 ]);
 
+/**
+ * Hasil pemanggilan `reset-password`.
+ *
+ * `mustChangeFlagSet` means here what it means on `CreatedUser`, for the same
+ * reason, and its `false` default is deliberate in the same direction: a
+ * response that omits it must never be read as "this person will be asked to
+ * change the password".
+ */
+export type ResetPasswordResult = {
+  id: string;
+  email: string | null;
+  mustChangeFlagSet: boolean;
+};
+
+/**
+ * Kode error dari Edge Function `reset-password`.
+ *
+ * `unauthenticated`, `forbidden`, `not_configured` and `network` are the same
+ * four every other call in this module can produce and mean the same thing.
+ * `not_found` is the account having gone away; `invalid_id` and `weak_password`
+ * are the two the function validates before it touches anything.
+ *
+ * There is deliberately no `self_delete` and no `last_admin`, unlike
+ * `DeleteUserErrorCode`. Neither would protect anything: replacing a password
+ * does not remove an administrator, and a session survives its own credential
+ * changing. The second absence is the sharper one — a rule keyed on how many
+ * admins the *project* has would refuse every staff account in a fresh project,
+ * which is the shape a new install is in, and the opposite of the intent.
+ */
+export type ResetPasswordErrorCode =
+  | "unauthenticated"
+  | "forbidden"
+  | "not_found"
+  | "invalid_id"
+  | "weak_password"
+  | "not_configured"
+  | "network"
+  | "unknown";
+
+const RESET_KNOWN_CODES: ReadonlySet<string> = new Set<ResetPasswordErrorCode>([
+  "unauthenticated",
+  "forbidden",
+  "not_found",
+  "invalid_id",
+  "weak_password",
+  "not_configured",
+  "network",
+  "unknown",
+]);
+
+export class ResetPasswordError extends Error {
+  readonly code: ResetPasswordErrorCode;
+
+  constructor(code: ResetPasswordErrorCode) {
+    super(`reset-password failed: ${code}`);
+    this.name = "ResetPasswordError";
+    this.code = code;
+  }
+}
+
+/**
+ * Ganti password satu akun lewat Edge Function `reset-password`.
+ *
+ * Function, bukan request biasa, karena `auth.admin.updateUserById` butuh
+ * `service_role`. Tidak ada kolom `profiles` yang bisa menggantikannya: GoTrue
+ * menyimpan password di `auth.users`, dan PostgREST tidak bisa menjangkau tabel
+ * itu dari browser.
+ *
+ * Melempar, mengikuti konvensi modul ini. Tidak ada kode di sini yang berarti
+ * "password berubah sebagian" — kalau errornya sampai, password yang lama masih
+ * berlaku dan tidak ada yang perlu dibersihkan.
+ */
+export async function resetUserPassword(
+  userId: string,
+  password: string,
+): Promise<ResetPasswordResult> {
+  const { data, error } = await supabase.functions.invoke("reset-password", {
+    body: { user_id: userId, password },
+  });
+
+  if (error) {
+    // Same two shapes as `deleteUser`: a `context` that is not a `Response`
+    // means the request never got an answer, and a body carrying `code` rather
+    // than `error` came from the gateway instead of from our function.
+    const context = error.context;
+    if (!(context instanceof Response)) {
+      throw new ResetPasswordError("network");
+    }
+
+    let code: ResetPasswordErrorCode = "unknown";
+    try {
+      const body = (await context.json()) as { error?: string; code?: string };
+      if (
+        typeof body?.code === "string" &&
+        body.code.startsWith("UNAUTHORIZED")
+      ) {
+        code = "unauthenticated";
+      } else if (
+        typeof body?.error === "string" &&
+        RESET_KNOWN_CODES.has(body.error)
+      ) {
+        code = body.error as ResetPasswordErrorCode;
+      }
+    } catch {
+      code = context.status === 404 ? "not_configured" : "unknown";
+    }
+    throw new ResetPasswordError(code);
+  }
+
+  const reset = data as {
+    id?: string;
+    email?: string | null;
+    mustChangeFlagSet?: boolean;
+  } | null;
+
+  if (typeof reset?.id !== "string") {
+    throw new ResetPasswordError("unknown");
+  }
+
+  return {
+    id: reset.id,
+    email: reset.email ?? null,
+    // Defaulted to `false` on purpose, exactly as in `createUser`: an older
+    // deployment of the function returns neither field, and telling the admin
+    // that the person will be asked to change a password nothing is going to ask
+    // them for is the worse lie.
+    mustChangeFlagSet: reset.mustChangeFlagSet === true,
+  };
+}
+
 /** Hasil pemanggilan `delete-user`. */
 export type DeletedUser = {
   id: string;

@@ -55,7 +55,11 @@ const navItems: NavItem[] = [
     icon: <BoxCubeIcon fontSize={24} />,
     name: "Asset Management",
     key: "assetManagement",
-    disabled: true,
+    // A submenu rather than a top-level row for the same reason user management
+    // is one: this marks the group, the screen lives under it. The group with an
+    // open submenu is derived from the active route, so navigating into Asset IT
+    // opens it on its own.
+    subItems: [{ name: "Asset IT", key: "assetIt", path: "/assets" }],
   },
   {
     icon: <GroupIcon fontSize={24} />,
