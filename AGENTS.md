@@ -1264,6 +1264,12 @@ filter state to survive a reload.
   switching a sub-category does not lose the values the old main category owned.
   A REST-level round trip does not cover any of those, which is why this is listed
   rather than claimed as done.
+- **`/asset-settings` has not been opened in a browser either.** The 10 database
+  assertions and the RLS split are verified; the two tabs, the three modals and
+  the disabled-delete states are only build-verified. Note that two bugs shipped
+  from here to the browser uncaught — the dropped `locations.name` in the asset
+  read, and a sidebar predicate that removed User Management for admins — so
+  treat the first click-through as the real test.
 
 ## Asset settings manages the reference data
 
@@ -2082,7 +2088,7 @@ These were deliberate. Do not "clean them up" without asking.
 | `locations.room_name` is nullable, and `name` is dropped | An area is a legitimate value on its own, and a `not null` room forces "N/A" — a null written as a string. `name` is dropped rather than kept beside the pair, so the two cannot disagree with nothing saying which is right. The display string is assembled client-side, because a picker wants one line and the database should hold the two facts |
 | The category delete is refused by a trigger *and* by the app | `assets.category_id` is `on delete set null`, so the database would silently un-assign every asset in the category. `categories_guard_delete` holds for any caller; `deleteCategory` also asks, so the admin is told the counts rather than just getting a refusal code. Same pattern as `DepartmentInUseError` |
 | Writes on both reference tables are admin-only | The issue asked for "read & write for authenticated". Staff read them because the asset form's pickers need the data, but a staff write could re-point every asset in a category. Matches `assets_write_admin` and the existing policies |
-| `NavSubItem` has `adminOnly` and the sidebar filters it | The Asset Management group mixes an open-to-everyone screen (the inventory) with an admin-only one, so the flag cannot live on the group. A group whose every sub-item is admin-only is dropped entirely rather than rendered as a dead row for staff |
+| `NavSubItem` has `adminOnly` and the sidebar filters it | The Asset Management group mixes an open-to-everyone screen (the inventory) with an admin-only one, so the flag cannot live on the group. A group whose every sub-item is admin-only is dropped entirely rather than rendered as a dead row for staff. The emptiness test is "does it still have any sub-items", **not** "is it adminOnly" — the latter also drops admin-only groups for an admin, which is how User Management went missing the first time this was written |
 | `status` is not a field on the asset form, and `assigned` is offered nowhere in the module | `available` and `assigned` are derived from the loans and `assets_guard_status` refuses a contradicting write, so a form offering either would offer something the database rejects. `setAssetStatus` takes `Exclude<AssetStatus, "assigned">` so the un-derivable value cannot even be passed |
 | The asset list is readable by every signed-in user, unlike `/users` | Stock belongs to the company rather than one department, and `assets_select_authenticated` is `using (true)`, so gating the read hands every staff member an empty page. Staff lose the Credentials tab and the write actions, and the credential was never in their response |
 | The form switches on `categories.code`, not on the category name | A name is editable, so a rename would silently empty a fieldset. `code` is nullable and unique, survives a rename, and a category without one falls back to the common fields instead of breaking the form. See The form switches on a category code |
@@ -2260,6 +2266,18 @@ not go looking for them unprompted.
 - Don't assume a 200 from PostgREST means the embed is right. A wrong-direction
   self-embed is a 200 with an empty array, which is why this went unnoticed while
   the explicit-hint version 400'd loudly.
+- **Don't leave a `select` list naming a column a migration dropped.** This is
+  the `locations.name` case: `01300` split it into `area_name` + `room_name`, the
+  asset read's embed kept asking for `name`, and the failure was not a null in one
+  column — PostgREST refused the *whole statement* with `42703` and the entire
+  list rendered nothing. The list view is the only place a dropped column shows
+  up as a total outage rather than a blank cell, so it is the reason the column
+  list is explicit.
+- **Don't put a comment inside the `ASSET_COLUMNS` template literal.** supabase-js
+  parses that string at the type level, so a `--` line turns the whole literal into
+  a `ParserError` and `tsc` fails on every `.select()` in the file with a message
+  that names the comment rather than the cause. The explanation belongs in the
+  doc comment above the constant.
 - Don't re-add a port-name array beside the `port_*` counts, and don't add a
   fourth free-text column next to a constrained one. Two models for one fact is
   the problem; the count columns are the model the workbook uses.

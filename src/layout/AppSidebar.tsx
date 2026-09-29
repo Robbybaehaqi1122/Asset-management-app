@@ -141,8 +141,11 @@ const AppSidebar: React.FC = () => {
             : nav,
         )
         // A group whose every sub-item is admin-only would render as a dead row
-        // for a staff member, which is a worse affordance than hiding it.
-        .filter((nav) => !nav.adminOnly && (nav.subItems?.length ?? 1) > 0),
+        // for a staff member, which is a worse affordance than hiding it. The
+        // test is "does it still have any sub-items", NOT "is it adminOnly" —
+        // the latter also threw away the admin-only groups for an admin, which
+        // is how User Management went missing.
+        .filter((nav) => !nav.subItems || nav.subItems.length > 0),
     [isAdmin],
   );
 

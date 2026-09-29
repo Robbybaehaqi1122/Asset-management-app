@@ -308,6 +308,19 @@ export class AssetInUseError extends Error {
  * because an OEM key is nobody's business while browsing a list, and it should
  * not ride along in every response. And a column list fails loudly when a
  * migration renames something, where `*` would quietly return null.
+ *
+ * **The second reason is not hypothetical, and it is the whole `locations` embed.**
+ * `01300` dropped `locations.name` in favour of `area_name` + `room_name`. The
+ * embed below kept asking for `name`, and the consequence was not a null in one
+ * column: PostgREST refuses the whole statement with `42703` "column
+ * locations_1.name does not exist", so the entire asset read 400'd and the list
+ * rendered nothing. Verified against the local stack by sending the same
+ * question, which reproduced the 400 exactly. The two halves are selected here
+ * and the display string is assembled in `mapAsset`.
+ *
+ * No comments inside the literal: supabase-js parses the select string at the
+ * type level, and a `--` line turns the whole thing into a parse error rather
+ * than an ignored comment.
  */
 const ASSET_COLUMNS = `
   id, asset_code, name, description,
@@ -332,7 +345,7 @@ const ASSET_COLUMNS = `
   port_rj45, port_sfp, port_console, port_power,
   created_at, updated_at,
   category:categories!assets_category_id_fkey ( id, name ),
-  location:locations!assets_location_id_fkey ( id, name ),
+  location:locations!assets_location_id_fkey ( id, area_name, room_name ),
   credentials:asset_credentials ( username, password )
 ` as const;
 
@@ -354,6 +367,21 @@ const str = (v: unknown): string | null =>
 
 const num = (v: unknown): number | null =>
   v === null || v === undefined ? null : Number(v);
+
+/**
+ * "Patimban / Customs Building", or just "Patimban" when the location is an
+ * area with no room recorded.
+ *
+ * One place, used by both reads: the list's embedded location and the filter
+ * pickers. `01300` split `locations.name` into `area_name` and `room_name`
+ * because that is what the workbook records, and the database should hold the two
+ * facts; a picker wants one line of text, so the joining is done here rather than
+ * stored in a third column that could disagree with the other two.
+ */
+const locationDisplayName = (
+  areaName: string,
+  roomName: string | null,
+): string => (roomName ? `${areaName} / ${roomName}` : areaName);
 
 function mapAsset(row: RawAsset): Asset {
   const category = embedded<RawAsset>(row.category);
@@ -442,7 +470,13 @@ function mapAsset(row: RawAsset): Asset {
       ? { id: String(category.id), name: String(category.name) }
       : null,
     location: location
-      ? { id: String(location.id), name: String(location.name) }
+      ? {
+          id: String(location.id),
+          name: locationDisplayName(
+            String(location.area_name),
+            str(location.room_name),
+          ),
+        }
       : null,
     credentials: credentials
       ? {
@@ -526,11 +560,8 @@ export async function getAssetFilterOptions(): Promise<{
         id: String(row.id),
         areaName,
         roomName,
-        // "Patimban / Customs Building", or just "Patimban" when the location is
-        // an area with no room recorded. `01300` split one `name` column into
-        // two because the workbook records two, and a picker still wants a
-        // single line of text.
-        name: roomName ? `${areaName} / ${roomName}` : areaName,
+        // The same join the list uses, for the same reason.
+        name: locationDisplayName(areaName, roomName),
       };
     }),
   };
