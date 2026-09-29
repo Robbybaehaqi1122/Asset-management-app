@@ -1324,14 +1324,22 @@ account and recreate it — which took their loan history with it.
 not an address, and re-confirming an account nobody asked about would change who
 can sign in.
 
-**`must_change_password` is raised here, in the same transaction as the
-credential**, for the two reasons `create-user` gives — no trigger guards that
-column, and a client-side step is skippable by exactly the dropped request that
-makes people reach for a retry. A password that changed while the flag write was
-lost is one the administrator keeps forever with nobody asked to replace it. The
-flag failure is therefore **reported** as `mustChangeFlagSet: false` and shown as
-a warning above the list, not thrown: the credential did change, so an error
-status would be a lie about it.
+**`must_change_password` is raised here, immediately after the credential**, for
+the two reasons `create-user` gives — no trigger guards that column, and a
+client-side step is skippable by exactly the dropped request that makes people
+reach for a retry. A password that changed while the flag write was lost is one
+the administrator keeps forever with nobody asked to replace it. The flag failure
+is therefore **reported** as `mustChangeFlagSet: false` and shown as a warning
+above the list, not thrown: the credential did change, so an error status would
+be a lie about it.
+
+**It is not one transaction, and the wording matters.** The credential goes
+through GoTrue's Admin API and the flag through PostgREST, so they are two HTTP
+calls with no atomicity between them. The flag write is the second one on
+purpose: a lost flag write leaves a working password the admin knows, which is
+recoverable, whereas a lost credential write with a set flag would tell the user
+to change a password they never received. The `mustChangeFlagSet` field is the
+only honest way to report the gap.
 
 **Known gap, not handled: existing sessions survive.** GoTrue's admin update does
 not revoke a session that is already signed in, so a staff member who forgot
@@ -1344,6 +1352,22 @@ known limitation, not as something the endpoint did.
 **There is no audit log anywhere in this project.** An admin-driven password
 reset is the highest-trust action in the app and currently leaves no record of
 who did it to whom.
+
+**Verified end to end**, 17 assertions against real GoTrue sessions on the local
+stack via `supabase functions serve`: a malformed id, a short password, a missing
+password and an unknown id each return their own code; a staff caller gets
+`forbidden`; `GET` gets `method_not_allowed`; a reset leaves the old password
+dead and the new one working; a self-reset is allowed; and
+`profiles.must_change_password` is `true` afterwards on exactly the reset rows and
+not on the untouched ones. The credential change and the flag are the two writes
+the run proves are observable, not the atomicity it disproves.
+
+The CORS half was verified against **`--linked`, because the local stack cannot
+reproduce it**: a preflight to the deployed function returns `204` with
+`Access-Control-Allow-Origin: *` and all eight headers, including
+`x-client-info`. The function is deployed (`reset-password`, version 1,
+`ACTIVE`) — a client sees `errors.create.not_configured` until it is, and that is
+the only thing standing between the screen and a working reset.
 
 ### Changing a role needs no new policy
 
