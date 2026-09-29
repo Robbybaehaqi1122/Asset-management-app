@@ -350,9 +350,7 @@ export async function getAssetFilterOptions(): Promise<{
   const [categories, locations] = await Promise.all([
     supabase
       .from("categories")
-      .select(
-        "id, name, parent_id, code, parent:categories!categories_parent_id_fkey(id, name)",
-      )
+      .select("id, name, parent_id, code")
       .order("name", { ascending: true }),
     supabase
       .from("locations")
@@ -363,14 +361,27 @@ export async function getAssetFilterOptions(): Promise<{
   if (categories.error) throw categories.error;
   if (locations.error) throw locations.error;
 
+  const rows = (categories.data ?? []) as RawAsset[];
+
+  // The parent's name comes out of this same result set rather than through a
+  // self-referential embed. `parent:categories!categories_parent_id_fkey` is the
+  // documented hint for that FK and PostgREST rejects it with PGRST200 on a
+  // self-relationship; the forms that *are* accepted resolve the inbound
+  // direction and return an empty array instead of the parent, so the label
+  // would read "Sub-category" with nothing in front of the slash. One flat read
+  // plus a lookup cannot pick the wrong direction.
+  const nameById = new Map(
+    rows.map((row) => [String(row.id), String(row.name)]),
+  );
+
   return {
-    categories: ((categories.data ?? []) as RawAsset[]).map((row) => {
-      const parent = embedded<RawAsset>(row.parent);
+    categories: rows.map((row) => {
+      const parentId = str(row.parent_id);
       return {
         id: String(row.id),
         name: String(row.name),
-        parentId: str(row.parent_id),
-        parentName: parent ? String(parent.name) : null,
+        parentId,
+        parentName: parentId ? (nameById.get(parentId) ?? null) : null,
         code: str(row.code),
       };
     }),

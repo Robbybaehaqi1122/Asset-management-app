@@ -1034,13 +1034,19 @@ open. The issue's grouping was followed.
 **Specification** and **Network** render a fieldset chosen by the *main* category
 instead of the same fields for every asset.
 
-**`categories.code`, not `categories.name`.** A name is editable, and the seed
-already carries two rows named "UPS" — one under `PERIPHERAL`, one under
-`SERVER` — so a name is not a key. `code` is nullable, seeded for the seven
-parents, unique, and survives a rename. Verified: renaming `COMPUTER` to
-`COMPUTERS` leaves the code, and the fieldset with it. A category with no code —
-one an admin added after the seed — falls back to the common fields rather than
-breaking.
+**`categories.code`, not `categories.name`.** A name is editable and a rename
+would silently empty a fieldset, so the form must not key off one. `code` is
+nullable, seeded for the seven parents, unique, and survives a rename. Verified:
+renaming `COMPUTER` to `COMPUTERS` leaves the code, and the fieldset with it. A
+category with no code — one an admin added after the seed — falls back to the
+common fields rather than breaking.
+
+An earlier version of this file justified that with the seed carrying two rows
+named "UPS", one under `PERIPHERAL` and one under `SERVER`. **That is not
+possible** and never was: `categories_name_key` is `UNIQUE (name)`, verified in
+`pg_constraint` on both databases, and the seed resolves only 23 sub-categories
+with exactly one `UPS`. The decision stands on the rename argument alone, which
+is enough on its own — but do not reach for the duplicate-name example again.
 
 | `code` | shows |
 |---|---|
@@ -1843,7 +1849,7 @@ These were deliberate. Do not "clean them up" without asking.
 | The asset delete is guarded, not hard and not soft | Both foreign keys cascade, so a hard delete takes loan and service history — the same loss the user-delete warning spells out. A guard is cheap here in a way it was not for users: an asset with no history is safe to remove, one with history is worth keeping. Soft delete was rejected because it adds a `status` value the two status guards would then have to be taught about |
 | `status` is not a field on the asset form, and `assigned` is offered nowhere in the module | `available` and `assigned` are derived from the loans and `assets_guard_status` refuses a contradicting write, so a form offering either would offer something the database rejects. `setAssetStatus` takes `Exclude<AssetStatus, "assigned">` so the un-derivable value cannot even be passed |
 | The asset list is readable by every signed-in user, unlike `/users` | Stock belongs to the company rather than one department, and `assets_select_authenticated` is `using (true)`, so gating the read hands every staff member an empty page. Staff lose the Credentials tab and the write actions, and the credential was never in their response |
-| The form switches on `categories.code`, not on the category name | A name is editable and the seed carries two "UPS" rows, so a name is not a key. `code` is nullable and unique, survives a rename, and a category without one falls back to the common fields instead of breaking the form. See The form switches on a category code |
+| The form switches on `categories.code`, not on the category name | A name is editable, so a rename would silently empty a fieldset. `code` is nullable and unique, survives a rename, and a category without one falls back to the common fields instead of breaking the form. See The form switches on a category code |
 | The switch is on the *main* category, and an asset with no sub-category stores the parent directly | `parent_id is null` is what makes a row a parent. Sub-category only refines the label, so `toInput` sends `category_id \|\| parent_category_id` and a new main category clears the child. One column, two possible meanings resolved by one rule, instead of a second nullable column |
 | `input_ports` and `connectivity` are `text[]` with a `<@ array[...]` check, not a child table | A handful of fixed options that are never joined on. A join table is three extra objects per asset for no query that needs it, and the closed-set check is what makes "HDMI" and "hdmi" impossible. An empty selection is NULL, not `{}`, so it reads the same as a field that category never had |
 | `protocol_url` stays on `assets` even though that exposes it to every staff member | The owner chose warning over a credentials-shaped table and over moving the column. A URL embedding `user:pass` is readable by all signed-in users, which the form says out loud and the column comment repeats — the alternative would be a per-category secret table holding a field that is not really a secret |
@@ -1987,9 +1993,20 @@ not go looking for them unprompted.
   send `status` from `createAsset` or `updateAsset`. See The asset inventory.
 - Don't hard-delete an asset from the UI, and don't add soft delete without
   teaching `assets_guard_status` and the maintenance guards the new value.
-- Don't switch the asset form on `categories.name`. Two seeded categories are
-  both called "UPS", and a rename would silently empty a fieldset. Switch on
-  `code`, and add a code to a category rather than teaching the form its name.
+- Don't switch the asset form on `categories.name`. A name is editable, and a
+  rename would silently empty a fieldset. Switch on `code`, and add a code to a
+  category rather than teaching the form its name.
+- Don't self-embed `categories` to reach a category's own parent.
+  `parent:categories!categories_parent_id_fkey` — the documented hint for that
+  exact FK — fails with `PGRST200` on both the local stack and the remote,
+  because a self-relationship is not matched by constraint name. The hintless
+  and `!parent_id` forms do resolve, and resolve to the **inbound** direction:
+  they return an empty array where the parent belongs, so the label silently
+  reads as a bare sub-category. `getAssetFilterOptions` reads the table flat and
+  joins `parent_id` to `id` in memory instead, which cannot pick a direction.
+- Don't assume a 200 from PostgREST means the embed is right. A wrong-direction
+  self-embed is a 200 with an empty array, which is why this went unnoticed while
+  the explicit-hint version 400'd loudly.
 - Don't offer a checkbox option that is not in the column's `<@ array[...]`
   check, and don't add a fourth free-text column next to a constrained one.
   The check is the only thing stopping "HDMI" and "hdmi" becoming two values.
