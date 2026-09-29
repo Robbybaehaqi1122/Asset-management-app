@@ -24,12 +24,14 @@ repair, so the two tables the inventory depends on are written by nothing but th
 test fixtures. See The asset inventory, The form switches on a category code, and
 Database.
 
-**`20260927001100` is applied to the local database and not yet to the remote.**
-`db diff --linked` therefore lists 14 `drop column` statements, which is the
-diff saying the remote is behind the files — not drift, and not something to fix
-by hand. Push it with `db reset --local` first, then `db push`, then confirm in
-`supabase_migrations.schema_migrations` rather than from the CLI's wording. See
-Database.
+**All eleven migrations, including `20260927001100`, are applied to the remote**
+as of 2026-09-29. `db diff --linked` reports `No schema changes found`, and
+`pg_indexes` returns 27 for `public` on both the local and the remote database.
+The 14 `drop column` statements that `db diff --linked` listed while `01100` was
+unpushed were the diff saying the remote was behind the files — not drift, and
+not something to fix by hand. The next migration will produce the same list again
+until it is pushed, and the way to tell the two apart is
+`supabase_migrations.schema_migrations`, not the CLI's wording. See Database.
 
 The "Sign in with Google" and "Sign in with X" buttons, the "or" divider that
 separated them from the form, and the "back to dashboard" link are all gone
@@ -243,12 +245,12 @@ vercel.json                    SPA rewrite only — no framework, no buildComman
 | `20260927001000_asset_inventory.sql` | 21 columns on `assets`, `categories.parent_id`, the `asset_credentials` table; see The asset inventory |
 | `20260927001100_asset_dynamic_form.sql` | `categories.code`, 13 per-category columns on `assets`, the category and location seed; see The form switches on a category code |
 
-**The first ten are applied to the remote and `01100` is not.** `db diff --linked`
-therefore reports fourteen `drop column` statements today. That is the diff
-saying the remote is behind the checked-in files, which is the normal state
-between authoring a migration and pushing it — it is not drift and not something
-to repair by hand. The 26→27 count below is the local database's; the remote is
-one index short until the push lands.
+**All eleven are applied to the remote.** `db diff --linked` reports
+`No schema changes found`, which is the proof that the checked-in migrations and
+the live database agree. Before the `01100` push it reported fourteen `drop
+column` statements; that was the diff saying the remote was behind the
+checked-in files, the normal state between authoring a migration and pushing it,
+not drift and not something to repair by hand.
 
 Read the ledger rather than trusting the CLI's wording, because this file
 previously claimed `00900` was still unpushed when it had already been applied.
@@ -258,13 +260,13 @@ applying 004, with no "Applying migration" line. That message is not a reliable
 signal in either direction — confirm a push landed by reading
 `supabase_migrations.schema_migrations`, not by trusting the CLI's wording.
 
-`pg_indexes` reports **27** for `public` on the local database and **26** on the
-remote, and the difference is one index. The 27 is 8 primary keys, 6 unique
-constraints (`assets.asset_code`, `categories.name`, `locations.name`,
-`departments.name`, `profiles.email`, `asset_credentials.asset_id`) and 13
-explicitly created indexes. `01100` added the one that is missing remotely,
-`categories_code_key`. Postgres creates the index for a primary key or a unique
-constraint itself, which is why none of the 14 are in the migration files.
+`pg_indexes` reports **27** for `public` on both the local and the remote
+database. The 27 is 8 primary keys, 6 unique constraints (`assets.asset_code`,
+`categories.name`, `locations.name`, `departments.name`, `profiles.email`,
+`asset_credentials.asset_id`) and 13 explicitly created indexes. `01100` added
+the twenty-seventh, `categories_code_key`, and the remote was one short until it
+was pushed. Postgres creates the index for a primary key or a unique constraint
+itself, which is why none of the 14 are in the migration files.
 
 There are now **8 tables** in `public`, not 6: `01000` added `asset_credentials`.
 Two earlier claims that this file made about "6 tables" were true when written and
@@ -393,11 +395,11 @@ holds one row per applied version — `20260927000100` schema, `20260927000200`
 triggers, `20260927000300` rls, `20260927000400` drop first-admin grant,
 `20260927000500` status/loan sync, `20260927000600` profiles.email,
 `20260927000700` user-management guards, `20260927000800` must_change_password,
-`20260927000900` departments, `20260927001000` asset_inventory. Read out of the
-linked project on 2026-09-28, which is also the proof that `01100` is the one
-version still missing. That table, not the schema itself, is what the CLI
-consults to decide what is pending, and it is also the only trustworthy way to
-confirm a push landed.
+`20260927000900` departments, `20260927001000` asset_inventory,
+`20260927001100` asset_dynamic_form. Read out of the linked project on
+2026-09-29, which is all eleven and therefore nothing pending. That table, not
+the schema itself, is what the CLI consults to decide what is pending, and it is
+also the only trustworthy way to confirm a push landed.
 
 `migration list --linked` is the exception that proves the rule: it failed once
 with `password authentication failed for user "cli_login_postgres"` while
@@ -1130,6 +1132,15 @@ filter state to survive a reload.
   so a fresh install is usable, but a hand-added category with no `code` is the
   fallback path, not a feature gap.
 - **No `useIsAdmin` gate on the read**, deliberately, unlike both other modules.
+- **The dynamic form has not been driven in a browser.** It was verified at the
+  database layer (15 assertions on the constraints, the RLS split and the seed)
+  and at the build layer (`tsc`, `eslint`, Prettier), and the fieldset logic is
+  read off the `code` groups in this file rather than observed. What that leaves
+  untested is the rendering half: that each of the seven main categories shows its
+  own fieldset, that editing a row rehydrates the same set, and that an admin
+  switching a sub-category does not lose the values the old main category owned.
+  A REST-level round trip does not cover any of those, which is why this is listed
+  rather than claimed as done.
 
 ## User management
 
