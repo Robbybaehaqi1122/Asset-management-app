@@ -1277,6 +1277,31 @@ filter state to survive a reload.
 `src/modules/asset-settings/` is issue #51: the admin screen behind the asset
 form's category and location pickers.
 
+### The category list collapses, and the state is a `Set` of ids
+
+Each parent row carries a chevron that hides its sub-categories, plus one
+`Collapse all` / `Expand all` button. Both are here because the list is going to
+grow: a flat parent-plus-children table with dozens of children is a wall, and
+the two levels stop being visually distinct once the wall is long enough.
+
+Three decisions that are not obvious from the code:
+
+- **Every group starts open.** The collapsed set is empty on load. Defaulting to
+  collapsed would hide data behind a control on first sight, which is the
+  confusion the feature exists to remove.
+- **A parent with no sub-categories has no toggle at all**, not a disabled one.
+  A control that looks actionable and is not is the same problem. A `size-5`
+  spacer keeps the names on one left edge so both kinds of row still line up.
+- **`allCollapsed` is measured against `collapsibleIds`, not `collapsedIds.size`.**
+  A collapsed id left over from a category that has since been deleted would
+  otherwise make the button claim everything is closed while a group still showed
+  its children. Verified in isolation: toggle, double-toggle back to open,
+  collapse-all, expand-all, and a stale id not counting.
+
+**A collapsed group is not rendered, not hidden with CSS.** `!isCollapsed && …`
+rather than a `hidden` class, so the rows are absent from a screen reader's row
+count and from `Ctrl-F` instead of present but invisible.
+
 ### The three tables were not created, and that was the whole finding
 
 The issue asked for `asset_categories`, `asset_sub_categories` and

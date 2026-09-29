@@ -21,7 +21,13 @@ import { Modal } from "@/components/ui/modal";
 import { useAuth } from "@/context/AuthContext";
 import { useIsAdmin } from "@/hooks/useIsAdmin";
 import { useModal } from "@/hooks/useModal";
-import { CloseIcon, PencilIcon, PlusIcon, TrashBinIcon } from "@/icons";
+import {
+  ChevronDownIcon,
+  CloseIcon,
+  PencilIcon,
+  PlusIcon,
+  TrashBinIcon,
+} from "@/icons";
 
 import {
   createCategory,
@@ -176,6 +182,59 @@ export default function AssetSettingsPage() {
     }
     return map;
   }, [categories]);
+
+  const topLevelCategories = useMemo(
+    () => categories.filter((row) => !row.parentId),
+    [categories],
+  );
+
+  /** Only the parents that actually have children, so a toggle is never a lie. */
+  const collapsibleIds = useMemo(
+    () =>
+      topLevelCategories
+        .filter((row) => (subCategoriesByParent.get(row.id) ?? []).length > 0)
+        .map((row) => row.id),
+    [topLevelCategories, subCategoriesByParent],
+  );
+
+  /**
+   * Which parents are collapsed, as a `Set` of ids.
+   *
+   * A `Set` rather than an object of booleans because the question it answers is
+   * "is this one id collapsed", and a `Set` answers that without a scan. Being a
+   * single value also means one functional update toggles or clears every group
+   * without two of them racing.
+   *
+   * **Empty by default, so every group starts open.** The opposite default would
+   * hide data behind a control on first sight, which is the confusion this
+   * feature exists to remove; an admin who wants the compact view presses the
+   * one button that collapses everything.
+   */
+  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+
+  const toggleCollapsed = useCallback((id: string) => {
+    setCollapsedIds((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
+  }, []);
+
+  /**
+   * "Everything is closed" is measured against the ids that *can* be closed, not
+   * against `collapsedIds.size`. A collapsed id that belongs to a category since
+   * deleted would otherwise make the button claim all-closed while some group
+   * still showed its children.
+   */
+  const allCollapsed =
+    collapsibleIds.length > 0 &&
+    collapsibleIds.every((id) => collapsedIds.has(id));
+
+  const toggleAll = useCallback(() => {
+    setCollapsedIds(allCollapsed ? new Set() : new Set(collapsibleIds));
+  }, [allCollapsed, collapsibleIds]);
 
   const handleOpenCreateCategory = () => {
     setSaveError(null);
@@ -442,22 +501,36 @@ export default function AssetSettingsPage() {
                 role="tabpanel"
                 aria-labelledby="asset-settings-tab-categories"
               >
-                {/* The hint is the flexible part and the button is not: a long
-                    sentence beside a short label used to squeeze the button until
-                    its own label wrapped onto two lines. `sm:shrink-0` pins the
-                    button's natural width. */}
                 <div className="flex flex-col gap-4 border-b border-gray-200 p-6 sm:flex-row sm:items-center sm:justify-between dark:border-gray-800">
-                  <p className="text-sm text-gray-500 sm:pe-6 dark:text-gray-400">
-                    {t("categoriesHint")}
-                  </p>
-                  <Button
-                    variant="outline"
-                    onClick={handleOpenCreateCategory}
-                    startIcon={<PlusIcon className="size-4" />}
-                    className="shrink-0 self-start sm:self-auto"
-                  >
-                    {t("addCategory")}
-                  </Button>
+                  <div className="sm:pe-6">
+                    <p className="text-sm text-gray-500 dark:text-gray-400">
+                      {t("categoriesHint")}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-3 self-start sm:self-auto">
+                    {/* Only rendered when there is something to collapse, so the
+                        button is never a control with nothing to act on. */}
+                    {collapsibleIds.length > 0 && (
+                      <Button
+                        variant="outline"
+                        onClick={toggleAll}
+                        startIcon={
+                          <ChevronDownIcon
+                            className={`size-4 transition-transform ${allCollapsed ? "-rotate-90" : ""}`}
+                          />
+                        }
+                      >
+                        {allCollapsed ? t("expandAll") : t("collapseAll")}
+                      </Button>
+                    )}
+                    <Button
+                      variant="outline"
+                      onClick={handleOpenCreateCategory}
+                      startIcon={<PlusIcon className="size-4" />}
+                    >
+                      {t("addCategory")}
+                    </Button>
+                  </div>
                 </div>
 
                 <div className="overflow-x-auto">
@@ -497,21 +570,21 @@ export default function AssetSettingsPage() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {categories
-                        .filter((row) => !row.parentId)
-                        .map((parent) => {
-                          const children =
-                            subCategoriesByParent.get(parent.id) ?? [];
-                          return (
-                            <CategoryGroup
-                              key={parent.id}
-                              parent={parent}
-                              children={children}
-                              onEdit={handleOpenEditCategory}
-                              onDelete={handleOpenDelete}
-                            />
-                          );
-                        })}
+                      {topLevelCategories.map((parent) => {
+                        const children =
+                          subCategoriesByParent.get(parent.id) ?? [];
+                        return (
+                          <CategoryGroup
+                            key={parent.id}
+                            parent={parent}
+                            children={children}
+                            isCollapsed={collapsedIds.has(parent.id)}
+                            onToggle={() => toggleCollapsed(parent.id)}
+                            onEdit={handleOpenEditCategory}
+                            onDelete={handleOpenDelete}
+                          />
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 </div>
@@ -524,6 +597,10 @@ export default function AssetSettingsPage() {
                 role="tabpanel"
                 aria-labelledby="asset-settings-tab-locations"
               >
+                {/* The hint is the flexible part and the buttons are not: a long
+                    sentence beside short labels used to squeeze them until their
+                    own labels wrapped onto two lines. `shrink-0` pins their
+                    natural width. */}
                 <div className="flex flex-col gap-4 border-b border-gray-200 p-6 sm:flex-row sm:items-center sm:justify-between dark:border-gray-800">
                   <p className="text-sm text-gray-500 sm:pe-6 dark:text-gray-400">
                     {t("locationsHint")}
@@ -878,37 +955,75 @@ export default function AssetSettingsPage() {
 }
 
 /**
- * One parent row plus its sub-category rows.
+ * One parent row plus its sub-category rows, which collapse under it.
  *
  * Rendered as a fragment rather than nested markup because a `<Table>` cannot
  * hold a `<div>`, and the sub-categories are visibly indented children of the row
  * above rather than peers of it.
+ *
+ * **A parent with no sub-categories has no toggle at all**, not a disabled one:
+ * there is nothing to open, and a control that looks like it should work but
+ * does not is the same confusion the collapse is meant to remove.
  */
 function CategoryGroup({
   parent,
   children,
+  isCollapsed,
+  onToggle,
   onEdit,
   onDelete,
 }: {
   parent: CategoryRow;
   children: CategoryRow[];
+  isCollapsed: boolean;
+  onToggle: () => void;
   onEdit: (row: CategoryRow) => void;
   onDelete: (kind: "category", row: CategoryRow) => void;
 }) {
   const { t } = useTranslation("common", { keyPrefix: "assetSettings" });
+  const hasChildren = children.length > 0;
 
   return (
     <>
       <TableRow className="border-b border-gray-100 hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-white/3">
         <TableCell className="px-6 py-3">
-          <span className="font-medium text-gray-800 dark:text-white/90">
-            {parent.name}
-          </span>
-          {parent.description && (
-            <span className="mt-0.5 block text-xs text-gray-500 dark:text-gray-400">
-              {parent.description}
+          <div className="flex items-center gap-2">
+            {hasChildren ? (
+              <button
+                type="button"
+                onClick={onToggle}
+                aria-expanded={!isCollapsed}
+                // Names the group the toggle controls, which is what a screen
+                // reader needs to say "collapsed COMPUTER" rather than a bare
+                // "collapsed".
+                aria-label={
+                  isCollapsed
+                    ? t("expandLabel", { name: parent.name })
+                    : t("collapseLabel", { name: parent.name })
+                }
+                className="shrink-0 rounded p-0.5 text-gray-500 transition-transform hover:bg-gray-100 hover:text-gray-800 dark:text-gray-400 dark:hover:bg-white/5 dark:hover:text-white/90"
+              >
+                <ChevronDownIcon
+                  className={`size-4 transition-transform ${isCollapsed ? "-rotate-90" : ""}`}
+                />
+              </button>
+            ) : (
+              // Keeps the name on the same left edge whether or not there is a
+              // toggle, so the two kinds of row stay aligned.
+              <span className="size-5 shrink-0" aria-hidden="true" />
+            )}
+
+            <span className="min-w-0">
+              <span className="font-medium text-gray-800 dark:text-white/90">
+                {parent.name}
+              </span>
+              {parent.description && (
+                <span className="mt-0.5 block text-xs text-gray-500 dark:text-gray-400">
+                  {parent.description}
+                </span>
+              )}
             </span>
-          )}
+          </div>
         </TableCell>
         <TableCell className="px-4 py-3">
           {parent.code ? (
@@ -945,48 +1060,55 @@ function CategoryGroup({
         </TableCell>
       </TableRow>
 
-      {children.map((child) => (
-        <TableRow
-          key={child.id}
-          className="border-b border-gray-100 last:border-0 hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-white/3"
-        >
-          {/* `ps-9` rather than stacking on `px-6`: Tailwind emits both as
-              `padding-inline-start` and the later-declared one in the stylesheet
-              wins, so two logical-direction utilities on one element resolve by
-              stylesheet order rather than by the order written here. */}
-          <TableCell className="py-3 ps-9 pe-4">
-            <span className="text-gray-700 dark:text-gray-300">
-              {child.name}
-            </span>
-            {child.description && (
-              <span className="mt-0.5 block ps-9 text-xs text-gray-500 dark:text-gray-400">
-                {child.description}
+      {/* Not `hidden` on the rows: a collapsed group is removed from the table
+          entirely, so it is absent from a screen reader's row count and from
+          Ctrl-F, rather than present but invisible. */}
+      {!isCollapsed &&
+        children.map((child) => (
+          <TableRow
+            key={child.id}
+            className="border-b border-gray-100 last:border-0 hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-white/3"
+          >
+            {/* `ps-9` rather than stacking on `px-6`: Tailwind emits both as
+                `padding-inline-start` and the later-declared one in the
+                stylesheet wins, so two logical-direction utilities on one element
+                resolve by stylesheet order rather than by the order written
+                here. */}
+            <TableCell className="py-3 ps-9 pe-4">
+              <span className="text-gray-700 dark:text-gray-300">
+                {child.name}
               </span>
-            )}
-          </TableCell>
-          <TableCell className="px-4 py-3">
-            <span className="text-xs text-gray-400 dark:text-gray-500">
-              {t("subCategory")}
-            </span>
-          </TableCell>
-          <TableCell className="px-4 py-3 text-sm text-gray-400 dark:text-gray-500">
-            —
-          </TableCell>
-          <TableCell className="px-4 py-3 text-sm text-gray-600 dark:text-gray-300">
-            {t("assetCount", { count: child.assetCount })}
-          </TableCell>
-          <TableCell className="px-6 py-3 text-end">
-            <RowActions
-              editLabel={t("editLabel", { name: child.name })}
-              deleteLabel={t("deleteLabel", { name: child.name })}
-              deleteDisabled={child.assetCount > 0}
-              deleteTitle={child.assetCount > 0 ? t("deleteInUse") : undefined}
-              onEdit={() => onEdit(child)}
-              onDelete={() => onDelete("category", child)}
-            />
-          </TableCell>
-        </TableRow>
-      ))}
+              {child.description && (
+                <span className="mt-0.5 block ps-9 text-xs text-gray-500 dark:text-gray-400">
+                  {child.description}
+                </span>
+              )}
+            </TableCell>
+            <TableCell className="px-4 py-3">
+              <span className="text-xs text-gray-400 dark:text-gray-500">
+                {t("subCategory")}
+              </span>
+            </TableCell>
+            <TableCell className="px-4 py-3 text-sm text-gray-400 dark:text-gray-500">
+              —
+            </TableCell>
+            <TableCell className="px-4 py-3 text-sm text-gray-600 dark:text-gray-300">
+              {t("assetCount", { count: child.assetCount })}
+            </TableCell>
+            <TableCell className="px-6 py-3 text-end">
+              <RowActions
+                editLabel={t("editLabel", { name: child.name })}
+                deleteLabel={t("deleteLabel", { name: child.name })}
+                deleteDisabled={child.assetCount > 0}
+                deleteTitle={
+                  child.assetCount > 0 ? t("deleteInUse") : undefined
+                }
+                onEdit={() => onEdit(child)}
+                onDelete={() => onDelete("category", child)}
+              />
+            </TableCell>
+          </TableRow>
+        ))}
     </>
   );
 }
