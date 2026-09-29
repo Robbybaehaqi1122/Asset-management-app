@@ -39,9 +39,8 @@ import type {
   AssetStatus,
   CategoryOption,
   ConnectionType,
-  Connectivity,
-  InputPort,
   SelectableAssetStatus,
+  UsageStatus,
 } from "../services/assetService";
 
 /**
@@ -107,11 +106,36 @@ type AssetForm = {
   speed: string;
   protocol_url: string;
   connection_type: string;
+  usage_status: string;
+  // COMPUTER, per the workbook's own headings.
+  processor_mfg: string;
+  processor_model: string;
+  ram_mfg: string;
+  ram_type: string;
+  ram_speed: string;
+  ram_slots: string;
+  ram_channel: string;
+  ram_size_gb: string;
+  gpu_onboard: boolean | null;
+  storage_mfg: string;
+  storage_type: string;
+  storage_size: string;
+  display_model: string;
+  display_type: string;
+  display_size: string;
+  firmware_platform: string;
+  power_source: string;
+  // Port counts, one per port. The workbook holds numbers here, not names.
+  port_vga: string;
+  port_hdmi: string;
+  port_lan: string;
+  port_wifi: string;
+  port_usb: string;
+  port_bluetooth: string;
   port_rj45: string;
   port_sfp: string;
   port_console: string;
-  input_ports: InputPort[];
-  connectivity: Connectivity[];
+  port_power: string;
   credential_username: string;
   credential_password: string;
 };
@@ -156,11 +180,34 @@ const EMPTY_FORM: AssetForm = {
   speed: "",
   protocol_url: "",
   connection_type: "",
+  usage_status: "",
+  processor_mfg: "",
+  processor_model: "",
+  ram_mfg: "",
+  ram_type: "",
+  ram_speed: "",
+  ram_slots: "",
+  ram_channel: "",
+  ram_size_gb: "",
+  gpu_onboard: null,
+  storage_mfg: "",
+  storage_type: "",
+  storage_size: "",
+  display_model: "",
+  display_type: "",
+  display_size: "",
+  firmware_platform: "",
+  power_source: "",
+  port_vga: "",
+  port_hdmi: "",
+  port_lan: "",
+  port_wifi: "",
+  port_usb: "",
+  port_bluetooth: "",
   port_rj45: "",
   port_sfp: "",
   port_console: "",
-  input_ports: [],
-  connectivity: [],
+  port_power: "",
   credential_username: "",
   credential_password: "",
 };
@@ -214,11 +261,40 @@ function formFromAsset(asset: Asset, categories: CategoryOption[]): AssetForm {
     speed: asset.speed ?? "",
     protocol_url: asset.protocol_url ?? "",
     connection_type: asset.connection_type ?? "",
+    usage_status: asset.usage_status ?? "",
+    processor_mfg: asset.processor_mfg ?? "",
+    processor_model: asset.processor_model ?? "",
+    ram_mfg: asset.ram_mfg ?? "",
+    ram_type: asset.ram_type ?? "",
+    ram_speed: asset.ram_speed === null ? "" : String(asset.ram_speed),
+    ram_slots: asset.ram_slots === null ? "" : String(asset.ram_slots),
+    ram_channel: asset.ram_channel ?? "",
+    ram_size_gb: asset.ram_size_gb === null ? "" : String(asset.ram_size_gb),
+    gpu_onboard: asset.gpu_onboard,
+    storage_mfg: asset.storage_mfg ?? "",
+    storage_type: asset.storage_type ?? "",
+    // One box, two columns: the integer column when it is a bare number, the
+    // text one otherwise. `normalise` splits them.
+    storage_size:
+      asset.storage_size_gb !== null
+        ? String(asset.storage_size_gb)
+        : (asset.storage_size_text ?? ""),
+    display_model: asset.display_model ?? "",
+    display_type: asset.display_type ?? "",
+    display_size: asset.display_size ?? "",
+    firmware_platform: asset.firmware_platform ?? "",
+    power_source: asset.power_source ?? "",
+    port_vga: asset.port_vga === null ? "" : String(asset.port_vga),
+    port_hdmi: asset.port_hdmi === null ? "" : String(asset.port_hdmi),
+    port_lan: asset.port_lan === null ? "" : String(asset.port_lan),
+    port_wifi: asset.port_wifi === null ? "" : String(asset.port_wifi),
+    port_usb: asset.port_usb === null ? "" : String(asset.port_usb),
+    port_bluetooth:
+      asset.port_bluetooth === null ? "" : String(asset.port_bluetooth),
     port_rj45: asset.port_rj45 === null ? "" : String(asset.port_rj45),
     port_sfp: asset.port_sfp === null ? "" : String(asset.port_sfp),
     port_console: asset.port_console === null ? "" : String(asset.port_console),
-    input_ports: asset.input_ports,
-    connectivity: asset.connectivity,
+    port_power: asset.port_power === null ? "" : String(asset.port_power),
     // Null for a staff member, so this stays empty rather than showing a blank
     // that looks like a stored-but-empty credential.
     credential_username: asset.credentials?.username ?? "",
@@ -226,7 +302,14 @@ function formFromAsset(asset: Asset, categories: CategoryOption[]): AssetForm {
   };
 }
 
-/** Empty box means "not recorded"; the caller has already rejected junk. */
+/**
+ * Empty box means "not recorded", never zero.
+ *
+ * Used for every count the workbook keeps in its own column: ports, RAM speed,
+ * slot count, RAM size. `handleSave` has already rejected anything that is not a
+ * non-negative integer, so a NaN here means the field was not reached rather
+ * than that the admin typed nonsense.
+ */
 function portOrNull(value: string): number | null {
   const trimmed = value.trim();
   if (trimmed === "") return null;
@@ -282,11 +365,37 @@ function toInput(form: AssetForm, includeCredentials: boolean): AssetInput {
     speed: form.speed || null,
     protocol_url: form.protocol_url || null,
     connection_type: (form.connection_type || null) as ConnectionType | null,
+    usage_status: (form.usage_status || null) as UsageStatus | null,
+    processor_mfg: form.processor_mfg || null,
+    processor_model: form.processor_model || null,
+    ram_mfg: form.ram_mfg || null,
+    ram_type: form.ram_type || null,
+    ram_speed: portOrNull(form.ram_speed),
+    ram_slots: portOrNull(form.ram_slots),
+    ram_channel: form.ram_channel || null,
+    ram_size_gb: portOrNull(form.ram_size_gb),
+    gpu_onboard: form.gpu_onboard,
+    storage_mfg: form.storage_mfg || null,
+    storage_type: form.storage_type || null,
+    // One box feeding two columns; `normalise` decides which, so that "512" and
+    // "2x 4TB" both survive the round trip.
+    storage_size_gb: null,
+    storage_size_text: form.storage_size || null,
+    display_model: form.display_model || null,
+    display_type: form.display_type || null,
+    display_size: form.display_size || null,
+    firmware_platform: form.firmware_platform || null,
+    power_source: form.power_source || null,
+    port_vga: portOrNull(form.port_vga),
+    port_hdmi: portOrNull(form.port_hdmi),
+    port_lan: portOrNull(form.port_lan),
+    port_wifi: portOrNull(form.port_wifi),
+    port_usb: portOrNull(form.port_usb),
+    port_bluetooth: portOrNull(form.port_bluetooth),
     port_rj45: portOrNull(form.port_rj45),
     port_sfp: portOrNull(form.port_sfp),
     port_console: portOrNull(form.port_console),
-    input_ports: form.input_ports,
-    connectivity: form.connectivity,
+    port_power: portOrNull(form.port_power),
     credentials: includeCredentials
       ? {
           username: form.credential_username || null,
@@ -339,8 +448,6 @@ const NETWORK_LIKE: ReadonlySet<string> = new Set([
   "IOT",
 ]);
 
-const INPUT_PORTS = ["vga", "hdmi", "lan", "wifi", "usb"] as const;
-const CONNECTIVITY = ["usb", "bt_wireless", "hdmi", "lan", "wifi"] as const;
 const CONNECTION_TYPES = [
   "ethernet",
   "wifi",
@@ -349,45 +456,52 @@ const CONNECTION_TYPES = [
   "other",
 ] as const;
 
-/** One labelled checkbox group over a closed set of values. */
-function CheckboxGroup<T extends string>({
-  idPrefix,
-  label,
-  options,
-  value,
-  onChange,
-}: {
-  idPrefix: string;
+/**
+ * The workbook's `Usage Status` values, in the order it writes them.
+ *
+ * Mirrors `assets_usage_status_check`. A closed set is the point: it is what
+ * makes "in used by user" and "In used by User" unable to both exist.
+ */
+const USAGE_STATUSES = [
+  "In used by User",
+  "Idle",
+  "Shared",
+  "Lent out",
+] as const;
+
+/**
+ * The port counts, per category, as the workbook's own columns name them.
+ *
+ * A count rather than the checkbox list 01100 used: the sheet records `HDMI = 3`
+ * and `VGA = 1` in their own columns, so "HDMI" and "3" are two different facts
+ * and only one of them is a boolean.
+ */
+const DISPLAY_PORTS = [
+  { field: "port_vga", label: "fields.portVga" },
+  { field: "port_hdmi", label: "fields.portHdmi" },
+  { field: "port_lan", label: "fields.portLan" },
+  { field: "port_wifi", label: "fields.portWifi" },
+  { field: "port_usb", label: "fields.portUsb" },
+] as const;
+
+const PERIPHERAL_PORTS = [
+  { field: "port_usb", label: "fields.portUsb" },
+  { field: "port_bluetooth", label: "fields.portBluetooth" },
+  { field: "port_hdmi", label: "fields.portHdmi" },
+  { field: "port_lan", label: "fields.portLan" },
+  { field: "port_wifi", label: "fields.portWifi" },
+] as const;
+
+const NETWORK_PORTS = [
+  { field: "port_rj45", label: "fields.portRj45" },
+  { field: "port_sfp", label: "fields.portSfp" },
+  { field: "port_console", label: "fields.portConsole" },
+  { field: "port_usb", label: "fields.portUsb" },
+  { field: "port_power", label: "fields.portPower" },
+] as const satisfies ReadonlyArray<{
+  field: keyof AssetForm;
   label: string;
-  options: { value: T; label: string }[];
-  value: T[];
-  onChange: (next: T[]) => void;
-}) {
-  return (
-    <div>
-      <p className="mb-1.5 text-sm font-medium text-gray-700 dark:text-gray-400">
-        {label}
-      </p>
-      <div className="flex flex-wrap gap-x-5 gap-y-2">
-        {options.map((option) => (
-          <Checkbox
-            key={option.value}
-            id={`${idPrefix}-${option.value}`}
-            label={option.label}
-            checked={value.includes(option.value)}
-            onChange={(checked) =>
-              onChange(
-                checked
-                  ? [...value, option.value]
-                  : value.filter((v) => v !== option.value),
-              )
-            }
-          />
-        ))}
-      </div>
-    </div>
-  );
-}
+}>;
 
 export default function AssetListPage() {
   const { t } = useTranslation("common", { keyPrefix: "assets" });
@@ -508,23 +622,31 @@ export default function AssetListPage() {
   const isDisplay = parentCode === "DISPLAY";
   const isPeripheral = parentCode === "PERIPHERAL";
   const isNetworkLike = parentCode !== null && NETWORK_LIKE.has(parentCode);
+  /** DISPLAY and PERIPHERAL both record port counts; the columns differ. */
+  const isPorted = isDisplay || isPeripheral;
+  const portFields = isDisplay ? DISPLAY_PORTS : PERIPHERAL_PORTS;
+
+  /**
+   * Where the port-count boxes go: NETWORK-DEVICES keeps them in Specification
+   * beside the storage detail, the other two in Specification as well, so one
+   * fieldset serves all three rather than splitting ports away from the spec.
+   */
+  const portFieldsForCategory = isNetworkLike ? NETWORK_PORTS : portFields;
   // Everything else — an uncategorised asset, UTILITIES, or a code an admin
   // invented later — gets the common fields plus the original generic spec set,
   // so no category ever leaves a tab empty.
   const isGeneric =
     !isComputer && !isDisplay && !isPeripheral && !isNetworkLike;
 
-  const inputPortOptions = useMemo(
-    () => INPUT_PORTS.map((value) => ({ value, label: t(`ports.${value}`) })),
-    [t],
-  );
-  const connectivityOptions = useMemo(
+  const usageStatusOptions = useMemo(
     () =>
-      CONNECTIVITY.map((value) => ({
+      USAGE_STATUSES.map((value) => ({
         value,
-        label: t(`connectivity.${value}`),
+        // The constraint allows no other spelling, so the label is the raw
+        // value rather than a translation that could drift from it.
+        label: value,
       })),
-    [t],
+    [],
   );
   const connectionTypeOptions = useMemo(
     () =>
@@ -606,13 +728,38 @@ export default function AssetListPage() {
       setSaveError(t("errors.priceInvalid"));
       return;
     }
-    // The three port columns are `integer check (>= 0)`. An empty box is "not
-    // recorded"; anything else has to be a whole count, or the column check
-    // refuses the whole save with a message about ports.
-    const badPort = [form.port_rj45, form.port_sfp, form.port_console].some(
-      (value) => value.trim() !== "" && !/^\d+$/.test(value.trim()),
-    );
-    if (badPort) {
+    // Every count column is `integer check (>= 0)`: the ten ports, plus the RAM
+    // columns the workbook keeps as numbers. An empty box is "not recorded";
+    // anything else has to be a whole number, or the column check refuses the
+    // whole save with a message about a port nobody was looking at.
+    //
+    // `storage_size` is deliberately absent: it is a text box on purpose, because
+    // the workbook writes "120GB" and "2x 4TB" under the same heading as "512",
+    // and `normalise` splits the numeric case off into `storage_size_gb`.
+    const countFields: (keyof AssetForm)[] = [
+      "port_vga",
+      "port_hdmi",
+      "port_lan",
+      "port_wifi",
+      "port_usb",
+      "port_bluetooth",
+      "port_rj45",
+      "port_sfp",
+      "port_console",
+      "port_power",
+      "ram_speed",
+      "ram_slots",
+      "ram_size_gb",
+    ];
+    const badCount = countFields.some((field) => {
+      const value = form[field];
+      return (
+        typeof value === "string" &&
+        value.trim() !== "" &&
+        !/^\d+$/.test(value.trim())
+      );
+    });
+    if (badCount) {
       setSaveError(t("errors.portsInvalid"));
       return;
     }
@@ -1165,7 +1312,159 @@ export default function AssetListPage() {
                   />
                 </div>
 
-                {(isComputer || isGeneric) && (
+                {isComputer && (
+                  <fieldset className="space-y-4">
+                    <Legend>{t("fields.computerSpecLegend")}</Legend>
+
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                      <TextField
+                        id="asset-processor-mfg"
+                        label={t("fields.processorMfg")}
+                        value={form.processor_mfg}
+                        onChange={(v) => set("processor_mfg", v)}
+                        placeholder="INTEL"
+                      />
+                      <TextField
+                        id="asset-processor-model"
+                        label={t("fields.processorModel")}
+                        value={form.processor_model}
+                        onChange={(v) => set("processor_model", v)}
+                        placeholder="Ultra 5 225T"
+                      />
+                      <TextField
+                        id="asset-processor-spec"
+                        label={t("fields.processorSpec")}
+                        value={form.processor_spec}
+                        onChange={(v) => set("processor_spec", v)}
+                        placeholder="Intel Core Ultra 5 225T (2.50 GHz)"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                      <TextField
+                        id="asset-ram-mfg"
+                        label={t("fields.ramMfg")}
+                        value={form.ram_mfg}
+                        onChange={(v) => set("ram_mfg", v)}
+                        placeholder="Samsung"
+                      />
+                      <TextField
+                        id="asset-ram-type"
+                        label={t("fields.ramType")}
+                        value={form.ram_type}
+                        onChange={(v) => set("ram_type", v)}
+                        placeholder="DDR5"
+                      />
+                      <TextField
+                        id="asset-ram-speed"
+                        label={t("fields.ramSpeed")}
+                        type="number"
+                        value={form.ram_speed}
+                        onChange={(v) => set("ram_speed", v)}
+                        placeholder="5600"
+                      />
+                      <TextField
+                        id="asset-ram-slots"
+                        label={t("fields.ramSlots")}
+                        type="number"
+                        value={form.ram_slots}
+                        onChange={(v) => set("ram_slots", v)}
+                        placeholder="2"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                      <TextField
+                        id="asset-ram-channel"
+                        label={t("fields.ramChannel")}
+                        value={form.ram_channel}
+                        onChange={(v) => set("ram_channel", v)}
+                        placeholder="Dual Chanel"
+                      />
+                      <TextField
+                        id="asset-ram-size"
+                        label={t("fields.ramSizeGb")}
+                        type="number"
+                        value={form.ram_size_gb}
+                        onChange={(v) => set("ram_size_gb", v)}
+                        placeholder="16"
+                      />
+                      <div>
+                        <Label htmlFor="asset-gpu-onboard">
+                          {t("fields.gpuOnboard")}
+                        </Label>
+                        <div className="flex gap-5 pt-2">
+                          <Checkbox
+                            id="asset-gpu-onboard"
+                            label="Y"
+                            checked={form.gpu_onboard === true}
+                            onChange={(checked) =>
+                              set("gpu_onboard", checked ? true : null)
+                            }
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                      <TextField
+                        id="asset-gpu"
+                        label={t("fields.gpuModel")}
+                        value={form.gpu_model}
+                        onChange={(v) => set("gpu_model", v)}
+                        placeholder="UHD Graphics 770"
+                      />
+                      <TextField
+                        id="asset-storage-mfg"
+                        label={t("fields.storageMfg")}
+                        value={form.storage_mfg}
+                        onChange={(v) => set("storage_mfg", v)}
+                        placeholder="KIOXIA"
+                      />
+                      <TextField
+                        id="asset-storage-type"
+                        label={t("fields.storageType")}
+                        value={form.storage_type}
+                        onChange={(v) => set("storage_type", v)}
+                        placeholder="SSD-NVME"
+                      />
+                    </div>
+
+                    <TextField
+                      id="asset-storage-size"
+                      label={t("fields.storageSize")}
+                      value={form.storage_size}
+                      onChange={(v) => set("storage_size", v)}
+                      placeholder="1024"
+                    />
+
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                      <TextField
+                        id="asset-display-model"
+                        label={t("fields.displayModel")}
+                        value={form.display_model}
+                        onChange={(v) => set("display_model", v)}
+                        placeholder="UA55DU8000"
+                      />
+                      <TextField
+                        id="asset-display-type"
+                        label={t("fields.displayType")}
+                        value={form.display_type}
+                        onChange={(v) => set("display_type", v)}
+                        placeholder="Curve"
+                      />
+                      <TextField
+                        id="asset-display-size"
+                        label={t("fields.displaySize")}
+                        value={form.display_size}
+                        onChange={(v) => set("display_size", v)}
+                        placeholder='55"'
+                      />
+                    </div>
+                  </fieldset>
+                )}
+
+                {isGeneric && (
                   <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                     <TextField
                       id="asset-processor"
@@ -1231,45 +1530,79 @@ export default function AssetListPage() {
                       label={t("fields.capacity")}
                       value={form.capacity}
                       onChange={(v) => set("capacity", v)}
-                      placeholder="1 TB"
+                      placeholder="1200 VA / 720W"
                     />
                     <TextField
                       id="asset-speed"
                       label={t("fields.speed")}
                       value={form.speed}
                       onChange={(v) => set("speed", v)}
-                      placeholder="7200 rpm"
+                      placeholder="400 MB/s"
                     />
                   </div>
                 )}
 
                 {isNetworkLike && (
-                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                    <TextField
-                      id="asset-port-rj45"
-                      label={t("fields.portRj45")}
-                      type="number"
-                      value={form.port_rj45}
-                      onChange={(v) => set("port_rj45", v)}
-                      placeholder="24"
-                    />
-                    <TextField
-                      id="asset-port-sfp"
-                      label={t("fields.portSfp")}
-                      type="number"
-                      value={form.port_sfp}
-                      onChange={(v) => set("port_sfp", v)}
-                      placeholder="4"
-                    />
-                    <TextField
-                      id="asset-port-console"
-                      label={t("fields.portConsole")}
-                      type="number"
-                      value={form.port_console}
-                      onChange={(v) => set("port_console", v)}
-                      placeholder="1"
-                    />
-                  </div>
+                  <>
+                    <fieldset className="space-y-4">
+                      <Legend>{t("fields.storageLegend")}</Legend>
+                      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                        <TextField
+                          id="asset-storage-mfg"
+                          label={t("fields.storageMfg")}
+                          value={form.storage_mfg}
+                          onChange={(v) => set("storage_mfg", v)}
+                        />
+                        <TextField
+                          id="asset-storage-type"
+                          label={t("fields.storageType")}
+                          value={form.storage_type}
+                          onChange={(v) => set("storage_type", v)}
+                        />
+                        <TextField
+                          id="asset-storage-size"
+                          label={t("fields.storageSize")}
+                          value={form.storage_size}
+                          onChange={(v) => set("storage_size", v)}
+                          placeholder="128"
+                        />
+                      </div>
+                    </fieldset>
+
+                    <fieldset className="space-y-4">
+                      <Legend>{t("fields.portLegend")}</Legend>
+                      <div className="grid grid-cols-2 gap-4 sm:grid-cols-5">
+                        {NETWORK_PORTS.map((port) => (
+                          <TextField
+                            key={port.field}
+                            id={`asset-${port.field}`}
+                            label={t(port.label)}
+                            type="number"
+                            value={form[port.field]}
+                            onChange={(v) => set(port.field, v)}
+                          />
+                        ))}
+                      </div>
+                    </fieldset>
+                  </>
+                )}
+
+                {isPorted && (
+                  <fieldset className="space-y-4">
+                    <Legend>{t("fields.portLegend")}</Legend>
+                    <div className="grid grid-cols-2 gap-4 sm:grid-cols-5">
+                      {portFieldsForCategory.map((port) => (
+                        <TextField
+                          key={port.field}
+                          id={`asset-${port.field}`}
+                          label={t(port.label)}
+                          type="number"
+                          value={form[port.field]}
+                          onChange={(v) => set(port.field, v)}
+                        />
+                      ))}
+                    </div>
+                  </fieldset>
                 )}
               </>
             )}
@@ -1335,6 +1668,26 @@ export default function AssetListPage() {
 
                 {isNetworkLike && (
                   <>
+                    {parentCode === "NETWORK_DEVICES" && (
+                      <TextField
+                        id="asset-firmware-platform"
+                        label={t("fields.firmwarePlatform")}
+                        value={form.firmware_platform}
+                        onChange={(v) => set("firmware_platform", v)}
+                        placeholder="CISCO"
+                      />
+                    )}
+
+                    {(parentCode === "IOT" || parentCode === "SERVER") && (
+                      <TextField
+                        id="asset-power-source"
+                        label={t("fields.powerSource")}
+                        value={form.power_source}
+                        onChange={(v) => set("power_source", v)}
+                        placeholder="PoE (Power over Ethernet)"
+                      />
+                    )}
+
                     <div>
                       <Label htmlFor="asset-connection-type">
                         {t("fields.connectionType")} <Optional />
@@ -1386,24 +1739,7 @@ export default function AssetListPage() {
                         onChange={(v) => set("mac_eth", v)}
                       />
                     </div>
-                    <CheckboxGroup
-                      idPrefix="asset-connectivity"
-                      label={t("fields.connectivity")}
-                      options={connectivityOptions}
-                      value={form.connectivity}
-                      onChange={(v) => set("connectivity", v)}
-                    />
                   </>
-                )}
-
-                {isDisplay && (
-                  <CheckboxGroup
-                    idPrefix="asset-input-port"
-                    label={t("fields.inputPorts")}
-                    options={inputPortOptions}
-                    value={form.input_ports}
-                    onChange={(v) => set("input_ports", v)}
-                  />
                 )}
               </>
             )}
@@ -1519,27 +1855,45 @@ export default function AssetListPage() {
                   />
                 </div>
 
-                {/* `usage_status` from the spreadsheet is deliberately not a
-                    column: `available`/`assigned` are the loans' to decide and
-                    `assets_guard_status` refuses a contradicting write, while
-                    `condition` and `maintenance` cover the rest. Read-only here
-                    so the form still shows where the asset stands, with the
-                    status control in the list as the one place to change it. */}
-                {editingId && editingStatus && (
-                  <div className="flex items-center justify-between rounded-lg border border-gray-200 p-4 dark:border-gray-800">
-                    <div>
-                      <p className="text-sm font-medium text-gray-800 dark:text-white/90">
-                        {t("fields.usageStatus")}
-                      </p>
-                      <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-                        {t("fields.usageStatusHint")}
-                      </p>
-                    </div>
-                    <Badge size="sm" color={STATUS_COLOR[editingStatus]}>
-                      {t(`status.${editingStatus}`)}
-                    </Badge>
+                {/* Two different columns, and the form says so. `usage_status` is
+                    the workbook's own `Usage Status` column and is editable here.
+                    `status` is the loan state, which `assignments_sync_asset_status`
+                    and `assets_guard_status` own, so it stays read-only with the
+                    list's control as the one place to change it. "Lent out"
+                    overlaps `assigned` and the triggers do not read
+                    `usage_status`, so the two are not kept in step. */}
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div>
+                    <Label htmlFor="asset-usage-status">
+                      {t("fields.usageStatus")} <Optional />
+                    </Label>
+                    <Select
+                      key={`form-usage-${editingId ?? "new"}`}
+                      id="asset-usage-status"
+                      options={usageStatusOptions}
+                      placeholder={t("fields.none")}
+                      defaultValue={form.usage_status}
+                      onChange={(v) => set("usage_status", v)}
+                    />
                   </div>
-                )}
+
+                  {editingId && editingStatus && (
+                    <div>
+                      <p className="mb-1.5 text-sm font-medium text-gray-700 dark:text-gray-400">
+                        {t("fields.loanStatus")}
+                      </p>
+                      <div className="flex h-[38px] items-center">
+                        <Badge size="sm" color={STATUS_COLOR[editingStatus]}>
+                          {t(`status.${editingStatus}`)}
+                        </Badge>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  {t("fields.usageStatusHint")}
+                </p>
               </>
             )}
           </div>
@@ -1719,6 +2073,21 @@ function TextField({
         placeholder={placeholder}
       />
     </div>
+  );
+}
+
+/**
+ * Group heading inside a Specification fieldset.
+ *
+ * A `<fieldset>` with a `<legend>` rather than a bare paragraph, so the grouping
+ * is announced as one and the legend is what names it. Nothing is submitted from
+ * the element itself.
+ */
+function Legend({ children }: { children: React.ReactNode }) {
+  return (
+    <legend className="text-sm font-semibold text-gray-800 dark:text-white/90">
+      {children}
+    </legend>
   );
 }
 

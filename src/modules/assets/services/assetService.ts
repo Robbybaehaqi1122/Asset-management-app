@@ -38,11 +38,29 @@ export type AssetCondition = "new" | "good" | "fair" | "poor" | "broken";
 export type ConnectionType =
   "ethernet" | "wifi" | "fiber" | "cellular" | "other";
 
-/** Mirrors the `assets_input_ports_check` constraint. DISPLAY only. */
-export type InputPort = "vga" | "hdmi" | "lan" | "wifi" | "usb";
+/**
+ * Mirrors the `assets_usage_status_check` constraint, which is the closed set
+ * the workbook's `Usage Status` column uses.
+ *
+ * Deliberately separate from `AssetStatus`. `status` is the loan state the
+ * triggers own; this is the workbook's own record, which the triggers do not
+ * read. "Lent out" overlaps `status = "assigned"` and the two are not kept in
+ * step — see the migration's comment on the column.
+ */
+export type UsageStatus = "In used by User" | "Idle" | "Shared" | "Lent out";
 
-/** Mirrors the `assets_connectivity_check` constraint. PERIPHERAL only. */
-export type Connectivity = "usb" | "bt_wireless" | "hdmi" | "lan" | "wifi";
+/** The port names the workbook gives a count column to. */
+export type PortName =
+  | "vga"
+  | "hdmi"
+  | "lan"
+  | "wifi"
+  | "usb"
+  | "bluetooth"
+  | "rj45"
+  | "sfp"
+  | "console"
+  | "power";
 
 export type AssetCredentials = {
   username: string | null;
@@ -112,11 +130,52 @@ export type Asset = {
   current_location: string | null;
   protocol_url: string | null;
   connection_type: ConnectionType | null;
+
+  /** The workbook's own `Usage Status`, separate from `status`. */
+  usage_status: UsageStatus | null;
+
+  // COMPUTER: the workbook splits the four free-text boxes above into its own
+  // headings. `processor_spec`, `ram_spec`, `storage_spec` and `display_spec`
+  // remain for the sheets that still use a single box, and the form writes both
+  // so nothing recorded before 01200 is lost.
+  processor_mfg: string | null;
+  processor_model: string | null;
+  ram_mfg: string | null;
+  ram_type: string | null;
+  ram_speed: number | null;
+  ram_slots: number | null;
+  ram_channel: string | null;
+  ram_size_gb: number | null;
+  gpu_onboard: boolean | null;
+  storage_mfg: string | null;
+  storage_type: string | null;
+  storage_size_gb: number | null;
+  /** Set instead of `storage_size_gb` when the size is not a bare number. */
+  storage_size_text: string | null;
+  display_model: string | null;
+  display_type: string | null;
+  display_size: string | null;
+
+  /** NETWORK-DEVICES: the platform name, as opposed to the version below. */
+  firmware_platform: string | null;
+  /** IOT and SERVER. */
+  power_source: string | null;
+
+  /**
+   * Port counts. `01200` dropped `input_ports` and `connectivity`, which held
+   * port *names* in a `text[]`; the workbook holds counts in one column per
+   * port, so "HDMI" and "3" are now two different columns.
+   */
+  port_vga: number | null;
+  port_hdmi: number | null;
+  port_lan: number | null;
+  port_wifi: number | null;
+  port_usb: number | null;
+  port_bluetooth: number | null;
   port_rj45: number | null;
   port_sfp: number | null;
   port_console: number | null;
-  input_ports: InputPort[];
-  connectivity: Connectivity[];
+  port_power: number | null;
 
   created_at: string;
   updated_at: string;
@@ -167,11 +226,39 @@ export type AssetInput = {
   current_location: string | null;
   protocol_url: string | null;
   connection_type: ConnectionType | null;
+  usage_status: UsageStatus | null;
+
+  processor_mfg: string | null;
+  processor_model: string | null;
+  ram_mfg: string | null;
+  ram_type: string | null;
+  ram_speed: number | null;
+  ram_slots: number | null;
+  ram_channel: string | null;
+  ram_size_gb: number | null;
+  gpu_onboard: boolean | null;
+  storage_mfg: string | null;
+  storage_type: string | null;
+  storage_size_gb: number | null;
+  storage_size_text: string | null;
+  display_model: string | null;
+  display_type: string | null;
+  display_size: string | null;
+
+  firmware_platform: string | null;
+  power_source: string | null;
+
+  port_vga: number | null;
+  port_hdmi: number | null;
+  port_lan: number | null;
+  port_wifi: number | null;
+  port_usb: number | null;
+  port_bluetooth: number | null;
   port_rj45: number | null;
   port_sfp: number | null;
   port_console: number | null;
-  input_ports: InputPort[];
-  connectivity: Connectivity[];
+  port_power: number | null;
+
   /** Omit entirely on update to leave the stored credentials untouched. */
   credentials: AssetCredentials | null;
 };
@@ -219,8 +306,15 @@ const ASSET_COLUMNS = `
   os_or_firmware_version, product_key,
   processor_spec, ram_spec, storage_spec, display_spec,
   gpu_model, resolution, panel_size, capacity, speed,
-  current_location, protocol_url, connection_type,
-  port_rj45, port_sfp, port_console, input_ports, connectivity,
+  current_location, protocol_url, connection_type, usage_status,
+  processor_mfg, processor_model,
+  ram_mfg, ram_type, ram_speed, ram_slots, ram_channel, ram_size_gb,
+  gpu_onboard,
+  storage_mfg, storage_type, storage_size_gb, storage_size_text,
+  display_model, display_type, display_size,
+  firmware_platform, power_source,
+  port_vga, port_hdmi, port_lan, port_wifi, port_usb, port_bluetooth,
+  port_rj45, port_sfp, port_console, port_power,
   created_at, updated_at,
   category:categories!assets_category_id_fkey ( id, name ),
   location:locations!assets_location_id_fkey ( id, name ),
@@ -245,9 +339,6 @@ const str = (v: unknown): string | null =>
 
 const num = (v: unknown): number | null =>
   v === null || v === undefined ? null : Number(v);
-
-/** A Postgres `text[]` arrives as a JS array; anything else reads as empty. */
-const arr = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : []);
 
 function mapAsset(row: RawAsset): Asset {
   const category = embedded<RawAsset>(row.category);
@@ -298,11 +389,38 @@ function mapAsset(row: RawAsset): Asset {
     current_location: str(row.current_location),
     protocol_url: str(row.protocol_url),
     connection_type: str(row.connection_type) as ConnectionType | null,
+    usage_status: str(row.usage_status) as UsageStatus | null,
+    processor_mfg: str(row.processor_mfg),
+    processor_model: str(row.processor_model),
+    ram_mfg: str(row.ram_mfg),
+    ram_type: str(row.ram_type),
+    ram_speed: num(row.ram_speed),
+    ram_slots: num(row.ram_slots),
+    ram_channel: str(row.ram_channel),
+    ram_size_gb: num(row.ram_size_gb),
+    gpu_onboard:
+      row.gpu_onboard === null || row.gpu_onboard === undefined
+        ? null
+        : Boolean(row.gpu_onboard),
+    storage_mfg: str(row.storage_mfg),
+    storage_type: str(row.storage_type),
+    storage_size_gb: num(row.storage_size_gb),
+    storage_size_text: str(row.storage_size_text),
+    display_model: str(row.display_model),
+    display_type: str(row.display_type),
+    display_size: str(row.display_size),
+    firmware_platform: str(row.firmware_platform),
+    power_source: str(row.power_source),
+    port_vga: num(row.port_vga),
+    port_hdmi: num(row.port_hdmi),
+    port_lan: num(row.port_lan),
+    port_wifi: num(row.port_wifi),
+    port_usb: num(row.port_usb),
+    port_bluetooth: num(row.port_bluetooth),
     port_rj45: num(row.port_rj45),
     port_sfp: num(row.port_sfp),
     port_console: num(row.port_console),
-    input_ports: arr(row.input_ports) as InputPort[],
-    connectivity: arr(row.connectivity) as Connectivity[],
+    port_power: num(row.port_power),
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
     category: category
@@ -393,6 +511,26 @@ export async function getAssetFilterOptions(): Promise<{
 }
 
 /**
+ * The storage size as an integer, or null when it is not a bare number.
+ *
+ * The workbook writes `512`, `120GB` and `2x 4TB` under one heading, and the
+ * column is an integer, so the numeric case is split off here rather than
+ * rejecting the write and making the admin re-type it.
+ */
+const numberOrNull = (v: string | null): number | null => {
+  const trimmed = v?.trim();
+  if (!trimmed) return null;
+  return /^\d+$/.test(trimmed) ? Number(trimmed) : null;
+};
+
+/** The storage size back as text, for the values `numberOrNull` refused. */
+const nonNumeric = (v: string | null): string | null => {
+  const trimmed = v?.trim();
+  if (!trimmed) return null;
+  return /^\d+$/.test(trimmed) ? null : trimmed;
+};
+
+/**
  * Trim every optional text field, turning a whitespace-only box into NULL.
  *
  * Takes `Omit<AssetInput, "credentials">` rather than the whole input, because
@@ -447,13 +585,38 @@ function normalise(input: Omit<AssetInput, "credentials">) {
     current_location: text(input.current_location),
     protocol_url: text(input.protocol_url),
     connection_type: input.connection_type || null,
+    usage_status: input.usage_status || null,
+    processor_mfg: text(input.processor_mfg),
+    processor_model: text(input.processor_model),
+    ram_mfg: text(input.ram_mfg),
+    ram_type: text(input.ram_type),
+    ram_speed: input.ram_speed,
+    ram_slots: input.ram_slots,
+    ram_channel: text(input.ram_channel),
+    ram_size_gb: input.ram_size_gb,
+    gpu_onboard: input.gpu_onboard,
+    storage_mfg: text(input.storage_mfg),
+    storage_type: text(input.storage_type),
+    // A bare number goes to the integer column and anything else to the text
+    // one, because the workbook writes "120GB" and "2x 4TB" under the same
+    // heading as "512". Exactly one of the pair is ever non-null.
+    storage_size_gb: numberOrNull(input.storage_size_text),
+    storage_size_text: text(nonNumeric(input.storage_size_text)),
+    display_model: text(input.display_model),
+    display_type: text(input.display_type),
+    display_size: text(input.display_size),
+    firmware_platform: text(input.firmware_platform),
+    power_source: text(input.power_source),
+    port_vga: input.port_vga,
+    port_hdmi: input.port_hdmi,
+    port_lan: input.port_lan,
+    port_wifi: input.port_wifi,
+    port_usb: input.port_usb,
+    port_bluetooth: input.port_bluetooth,
     port_rj45: input.port_rj45,
     port_sfp: input.port_sfp,
     port_console: input.port_console,
-    // An empty array is "none selected", stored as NULL rather than `{}`, so it
-    // reads the same as a field the category never had.
-    input_ports: input.input_ports.length ? input.input_ports : null,
-    connectivity: input.connectivity.length ? input.connectivity : null,
+    port_power: input.port_power,
   };
 }
 

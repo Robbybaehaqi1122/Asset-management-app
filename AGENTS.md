@@ -24,7 +24,7 @@ repair, so the two tables the inventory depends on are written by nothing but th
 test fixtures. See The asset inventory, The form switches on a category code, and
 Database.
 
-**All eleven migrations, including `20260927001100`, are applied to the remote**
+**All twelve migrations, including `20260927001200`, are applied to the remote**
 as of 2026-09-29. `db diff --linked` reports `No schema changes found`, and
 `pg_indexes` returns 27 for `public` on both the local and the remote database.
 The 14 `drop column` statements that `db diff --linked` listed while `01100` was
@@ -218,6 +218,7 @@ supabase/
     └── 20260927000900_departments.sql  the departments table + backfill
     └── 20260927001000_asset_inventory.sql  21 columns on assets + credentials
     └── 20260927001100_asset_dynamic_form.sql  categories.code + seed + 13 columns
+    └── 20260927001200_asset_excel_headers.sql  the workbook's headings + port counts
 
 .github/
 ├── ISSUES_KNOWN.md            known problems, grouped by severity
@@ -229,7 +230,7 @@ vercel.json                    SPA rewrite only — no framework, no buildComman
 ## Database
 
 `supabase/migrations/` holds the schema, applied to project
-`dnyszknpinqvcfkmoauz` (Postgres 17.6.1). Eleven migrations, in order:
+`dnyszknpinqvcfkmoauz` (Postgres 17.6.1). Twelve migrations, in order:
 
 | File | Contents |
 |---|---|
@@ -244,8 +245,9 @@ vercel.json                    SPA rewrite only — no framework, no buildComman
 | `20260927000900_departments.sql` | `departments` table, `profiles.department` text -> `department_id` uuid, backfill, rewritten `handle_new_user`; see Departments are reference data |
 | `20260927001000_asset_inventory.sql` | 21 columns on `assets`, `categories.parent_id`, the `asset_credentials` table; see The asset inventory |
 | `20260927001100_asset_dynamic_form.sql` | `categories.code`, 13 per-category columns on `assets`, the category and location seed; see The form switches on a category code |
+| `20260927001200_asset_excel_headers.sql` | the workbook's own per-sheet headings, port counts replacing the two array columns, `usage_status`, the workbook's sub-categories; see The workbook is the specification |
 
-**All eleven are applied to the remote.** `db diff --linked` reports
+**All twelve are applied to the remote.** `db diff --linked` reports
 `No schema changes found`, which is the proof that the checked-in migrations and
 the live database agree. Before the `01100` push it reported fourteen `drop
 column` statements; that was the diff saying the remote was behind the
@@ -396,8 +398,9 @@ triggers, `20260927000300` rls, `20260927000400` drop first-admin grant,
 `20260927000500` status/loan sync, `20260927000600` profiles.email,
 `20260927000700` user-management guards, `20260927000800` must_change_password,
 `20260927000900` departments, `20260927001000` asset_inventory,
-`20260927001100` asset_dynamic_form. Read out of the linked project on
-2026-09-29, which is all eleven and therefore nothing pending. That table, not
+`20260927001100` asset_dynamic_form, `20260927001200` asset_excel_headers. Read
+out of the linked project on 2026-09-29, which is all twelve and therefore
+nothing pending. That table, not
 the schema itself, is what the CLI consults to decide what is pending, and it is
 also the only trustworthy way to confirm a push landed.
 
@@ -931,6 +934,120 @@ from a check constraint** — there is no third axis to keep in step. `#50` aske
 for it a second time and the answer did not change; the form shows the status
 read-only instead.
 
+### The workbook is the specification
+
+`01200` exists because the request changed from "match the spreadsheet's
+concepts" to **"match the spreadsheet's column headers"**, and the second is a
+much bigger job. `IT Hardware Asset Database.xlsx` holds 14 sheets; 7 are the
+category sheets the form switches on, and their row 1 is a title rather than a
+header, so **the headings are on row 2**. The full set is:
+
+| Sheet | Columns | The ones that drove schema |
+|---|---|---|
+| `COMPUTER` | 48 | `Processor_MFG`, RAM maker/type/speed/slot/channel/size, `Onboard (Y/N)`, `Storage_MFG`/`Type`/`Size`, `Model11`/`Type12`/`Size` for the attached display |
+| `DISPLAY` | 30 | `Resolution`, `Panel Size`, and `VGA`/`HDMI`/`LAN`/`WIFI`/`USB` as **counts** |
+| `NETWORK-DEVICES` | 41 | `Firmware` *and* `Firmware Version` as two columns, `RJ45 Port`, `SFP+ Slot`, `Console Port`, `Power Port` |
+| `PERIPHERAL` | 33 | `Mac Address`, `IP Address`, `Capacity`, `Speed`, `USB`, `BT/Wireless`, `HDMI`, `LAN`, `WIFI` as counts |
+| `UTILITIES` | 22 | `Size`; no network columns at all |
+| `IOT` | 37 | `Firmware Version`, `Storage_MFG`/`Type`/`Size`, `Power Source` |
+| `SERVER` | 37 | identical headings to `IOT`, including `Power Source` |
+
+Two of these corrected a mistake rather than adding to it. **`NETWORK-DEVICES`
+carries `RJ45 Port`, `SFP+ Slot`, `Console Port` and `Power Port`**, and
+`NETWORK_LIKE` already shows all three port boxes for that category — so
+`Power Port` was the only genuinely missing one. And the first pass at reading the
+file, which parsed the XML by hand, **missed all four**; the sheet has 41 columns
+and a hand-rolled reader reported 26. openpyxl is the parser that produced the
+table above, and it is the reason to reach for a library rather than a regex
+over `sheet1.xml`.
+
+#### The ports are counts, and 01100 had modelled them as names
+
+`01100` stored `input_ports text[]` and `connectivity text[]` — arrays of port
+*names*, for a checkbox. The workbook holds *numbers in one column per port*:
+`HDMI = 3`, `VGA = 1`, `RJ45 Port = 10`. Those are different facts, and one
+string array cannot hold both. `01200` therefore added ten `port_* integer`
+columns and **dropped the two arrays**, which is the one destructive statement
+in the migration and is why the file guards it: the `do` block counts rows
+carrying array data and raises rather than dropping data on the remote, where
+there is no re-apply path. The count was 0 on the remote when it was written,
+and `assets` was empty, so nothing was lost.
+
+`gpu_onboard` is a `boolean` for the workbook's `Onboard (Y/N)`, which is the one
+Y/N heading in the file.
+
+#### `Storage_Size` is one heading with three shapes
+
+The same column holds `512`, `120GB` (NETWORK-DEVICES), `2x 4TB` and `4x 12TB`
+(SERVER). An integer column cannot carry the last three, so there are two:
+`storage_size_gb integer` and `storage_size_text text`. The form shows **one
+box**, and `normalise` splits it with `/^\d+$/` — exactly one of the pair is ever
+non-null. This is the only place in the module where a single input is written to
+two columns, and it is deliberate rather than an oversight.
+
+#### `Firmware` and `Firmware Version` are not the same heading
+
+`NETWORK-DEVICES` has both: `Firmware` holds a platform name (`CISCO`,
+`FortiGate`) and `Firmware Version` holds `4.1.3.36`. `01100` had one column, and
+it is the version one, so `firmware_platform` is new and the version stays in
+`os_or_firmware_version`.
+
+#### `usage_status` is now a column, and it is still not `status`
+
+`#50` asked for it and `01100` refused it, on the grounds that it duplicated
+`assets.status` and could contradict it. The workbook is the specification, so
+`01200` adds it — with the reasoning intact rather than discarded. It is a
+**separate column from `status`**, the triggers never read it, and the overlap is
+stated in the form:
+
+| | who owns it | what it means |
+|---|---|---|
+| `status` | `assignments_sync_asset_status` and `assets_guard_status` | the loan state, derived from the actual loans and not writable by hand |
+| `usage_status` | a person, through the form | the workbook's own record, a closed set of `In used by User` / `Idle` / `Shared` / `Lent out` |
+
+`Lent out` describes the same real-world situation as `status = 'assigned'`, and
+the two are **not kept in step**. The constraint is the workbook's value set
+verbatim, so a lower-cased spelling is refused with `23514` — the same closed-set
+reasoning as the array check `01100` added, and verified on the local stack.
+
+#### The sub-categories are the workbook's, and the old ones were left alone
+
+`01100` seeded 23 sub-categories that the workbook does not list. `01200` inserts
+the 14 the file actually uses (`PC`, `Notebook`, `Handheld`, `AIO`, `TV`, `MK SET`,
+`Headphone`, `Speaker`, `External Storage`, `Keyboard`, `Bracket TV + Port
+Electric`, `Network Tools`, `AI & Compute`, `Surveillance & Autogate`) and
+**deletes nothing**, because `assets.category_id` may point at an old row and
+`categories.name` is UNIQUE so a rename could collide. The table now holds both
+sets, 37 children in total.
+
+The workbook's only `SERVER` sub-category is `Server`, which is the parent's own
+name, so `categories_name_key` forbids it. An asset with no sub-category stores
+the parent directly on `assets.category_id`, which is the rule the form already
+followed.
+
+#### Two headings are deliberately not columns
+
+- **`Credential - Username` / `Credential - Password`** are in the workbook on
+  NETWORK-DEVICES, IOT and SERVER, and they stay in `asset_credentials`. The
+  reasoning is unchanged and is the strongest of the three: `assets` is readable
+  by every signed-in user, RLS filters rows and not columns, so a device password
+  on `assets` is in every staff member's list response. The form shows them on the
+  admin-only Credentials tab instead, so the capability is present and the
+  exposure is not.
+- **`img_1` / `img_2` / `img_3`** are in six of the seven sheets and are empty in
+  every one of them. They are image attachments, and this project has no
+  Supabase Storage bucket, no upload path and no storage policy. Three text
+  columns holding paths would be a promise the app cannot keep. Adding a bucket is
+  its own piece of work and its own set of RLS decisions.
+
+#### COMPUTER got a real fieldset, and the generic one is still reachable
+
+`COMPUTER` now shows the workbook's 15 spec fields rather than four free-text
+boxes, and keeps `processor_spec` because the sheet's `Specifik` column is a
+distinct heading from `Model` and `Processor_MFG`. A category with no `code` —
+one an admin added after the seed — still gets the generic fieldset, so nothing
+leaves a tab empty.
+
 ### Credentials are a separate table, and it is the only reason the table exists
 
 `assets_select_authenticated` is `using (true)`, so every signed-in user reads
@@ -1050,10 +1167,10 @@ is enough on its own — but do not reach for the duplicate-name example again.
 
 | `code` | shows |
 |---|---|
-| `COMPUTER` | processor, RAM, storage, display, GPU; hostname, four IP/MAC boxes, OS/firmware, product key |
-| `DISPLAY` | resolution, panel size; input ports as checkboxes |
-| `PERIPHERAL` | capacity, speed; hostname, one IP and one MAC, connectivity as checkboxes |
-| `NETWORK_DEVICES`, `SERVER`, `IOT` | RJ45 / SFP / console counts; hostname, four IP/MAC boxes, firmware, connection type, management URL |
+| `COMPUTER` | the workbook's 15 spec fields: processor maker/model/spec, six RAM fields, GPU model and onboard, storage maker/type/size, three display fields; plus hostname, four IP/MAC boxes, OS, product key |
+| `DISPLAY` | resolution, panel size; VGA / HDMI / LAN / WIFI / USB counts |
+| `PERIPHERAL` | capacity, speed; hostname, one IP and one MAC; USB / BT-Wireless / HDMI / LAN / WIFI counts |
+| `NETWORK_DEVICES`, `SERVER`, `IOT` | storage maker/type/size, RJ45 / SFP+ / console / USB / power counts; hostname, four IP/MAC boxes, firmware, connection type, management URL. `NETWORK_DEVICES` adds `Firmware` platform, `IOT` and `SERVER` add `Power Source` |
 | `UTILITIES`, or no code at all | the original generic specification and network fields |
 
 `NETWORK_LIKE` is a `Set` rather than three separate branches because the three
@@ -1069,15 +1186,13 @@ That is why `toInput` sends `category_id || parent_category_id`, and why picking
 new main category clears the sub-category: the chosen child belongs to the parent
 just left.
 
-**Multi-value fields are `text[]` with a closed-set check, not a child table.**
-`input_ports` and `connectivity` are a handful of fixed options that are never
-joined on, so an array is the right shape and a join table would be three extra
-objects per asset. The check (`<@ array[...]`) is what makes "HDMI" and "hdmi"
-impossible, and it is why the form can offer exactly five options without ever
-hitting a constraint error. An empty selection is stored as NULL rather than `{}`,
-so it reads the same as a field that category never had.
+**The port counts are `integer` columns, one per port, not a name array.** This
+is a correction rather than a preference: `01100` modelled them as `text[]` of
+names for a checkbox, and the workbook holds a number in its own column
+(`HDMI = 3`). "HDMI" and "3" are different facts, and an array cannot hold both.
+`01200` added the ten `port_*` columns and dropped the two arrays.
 
-**The three port counts are validated before the save, not after the failure.**
+**Every count is validated before the save, not after the failure.**
 `handleSave` rejects anything that is not `^\d+$`, because the column check would
 otherwise refuse the whole write with a message about ports and no idea which
 box. The rejection is one i18n key, and it is the same shape as the existing
@@ -1784,7 +1899,7 @@ something local, which is itself the bug.
 - i18next is bootstrapped once in `src/i18n/index.ts`, imported by `src/main.tsx`.
   Never re-initialise it.
 - One namespace, `"common"`. One locale, `en`. The file is
-  `src/locales/en/common.json` — add new keys there. It holds 371 leaf keys
+  `src/locales/en/common.json` — add new keys there. It holds 387 leaf keys
   today, under `sidebar`, `header`, `userDropdown`, `auth`, `profile`,
   `mustChangePassword`, `departments`, `users`, and `assets`.
 - **Do not repeat a key inside one object.** JSON resolves a duplicate by taking
@@ -1844,14 +1959,15 @@ These were deliberate. Do not "clean them up" without asking.
 |---|---|
 | `assets.status` is kept in step with the loans by triggers, not by client code | The owner chose the complete fix over the cheap one (#40). A trigger on `assignments` alone leaves `assets.status` directly writable and the contradiction one statement away, so the guard on `assets` is the half that makes the column trustworthy. Same reasoning that already put `set_updated_at` and the maintenance guards in the database |
 | Device credentials live in `asset_credentials`, not on `assets`, and stay plaintext | The split is not optional — a policy filters rows, not columns, so two columns on a table every user can read would put a device password in every staff member's list response. Splitting is the only lever RLS gives. The plaintext part is a known gap, not a preference: the honest fix is `bytea` plus an Edge Function holding the key, and no such key exists here. The form says so and recommends a password manager instead |
-| `usage_status` and `device_condition` are not added to `assets` | `assets.status` and `assets.condition` already cover what those spreadsheet columns say, and both are enforced by check constraints. A third text column would be free to contradict them, which is the inconsistency `00500` was written to remove |
+| `usage_status` is a column, but not a rename of `status` | The workbook is the specification and `Usage Status` is one of its headings, so refusing it twice was not a decision the owner could keep making. It is still a **separate column**, the triggers never read it, and the overlap with `assigned` is stated on the form. See The workbook is the specification |
+| `device_condition` is still not added | `assets.condition` already holds that column, constrained to five values. `01200` added `usage_status` and deliberately did not add this one, because it genuinely is a duplicate rather than a new fact |
 | Sub-category is `categories.parent_id`, not a column on `assets` | A self-reference gives the second level without a second free-text column on every row, and `on delete set null` promotes the children instead of deleting assets |
 | The asset delete is guarded, not hard and not soft | Both foreign keys cascade, so a hard delete takes loan and service history — the same loss the user-delete warning spells out. A guard is cheap here in a way it was not for users: an asset with no history is safe to remove, one with history is worth keeping. Soft delete was rejected because it adds a `status` value the two status guards would then have to be taught about |
 | `status` is not a field on the asset form, and `assigned` is offered nowhere in the module | `available` and `assigned` are derived from the loans and `assets_guard_status` refuses a contradicting write, so a form offering either would offer something the database rejects. `setAssetStatus` takes `Exclude<AssetStatus, "assigned">` so the un-derivable value cannot even be passed |
 | The asset list is readable by every signed-in user, unlike `/users` | Stock belongs to the company rather than one department, and `assets_select_authenticated` is `using (true)`, so gating the read hands every staff member an empty page. Staff lose the Credentials tab and the write actions, and the credential was never in their response |
 | The form switches on `categories.code`, not on the category name | A name is editable, so a rename would silently empty a fieldset. `code` is nullable and unique, survives a rename, and a category without one falls back to the common fields instead of breaking the form. See The form switches on a category code |
 | The switch is on the *main* category, and an asset with no sub-category stores the parent directly | `parent_id is null` is what makes a row a parent. Sub-category only refines the label, so `toInput` sends `category_id \|\| parent_category_id` and a new main category clears the child. One column, two possible meanings resolved by one rule, instead of a second nullable column |
-| `input_ports` and `connectivity` are `text[]` with a `<@ array[...]` check, not a child table | A handful of fixed options that are never joined on. A join table is three extra objects per asset for no query that needs it, and the closed-set check is what makes "HDMI" and "hdmi" impossible. An empty selection is NULL, not `{}`, so it reads the same as a field that category never had |
+| Ports are ten `port_* integer` columns, not a `text[]` of names | `01100` stored port *names* for a checkbox; the workbook stores *counts* in one column per port (`HDMI = 3`). Keeping the array would leave two competing models for one fact — a row could say `input_ports = '{HDMI}'` and `port_hdmi = 1` with nothing to say which is right |
 | `protocol_url` stays on `assets` even though that exposes it to every staff member | The owner chose warning over a credentials-shaped table and over moving the column. A URL embedding `user:pass` is readable by all signed-in users, which the form says out loud and the column comment repeats — the alternative would be a per-category secret table holding a field that is not really a secret |
 | `current_location` is a free-text column that is allowed to diverge from `location_id` | Accepted knowingly, not overlooked: a physical room or desk changes faster than a picker can be kept current, and nothing keeps the two in step. Unlike a `status` contradiction this is not enforced, so the fix, if it ever is needed, is a transition rule and an audit trail rather than a second text column |
 | No first-signup admin grant; the first admin is promoted by hand | The owner chose to close it (#39) over keeping it for convenience. The remote had 0 users with signup open, so the grant was an unclaimed admin for anyone who found the URL. The cost is a fresh project starts read-only — see Promoting the first admin |
@@ -2007,12 +2123,18 @@ not go looking for them unprompted.
 - Don't assume a 200 from PostgREST means the embed is right. A wrong-direction
   self-embed is a 200 with an empty array, which is why this went unnoticed while
   the explicit-hint version 400'd loudly.
-- Don't offer a checkbox option that is not in the column's `<@ array[...]`
-  check, and don't add a fourth free-text column next to a constrained one.
-  The check is the only thing stopping "HDMI" and "hdmi" becoming two values.
-- Don't add `usage_status` to `assets` to satisfy the spreadsheet. `status`,
-  `condition` and `maintenance` already cover it and are enforced; see The form
-  switches on a category code.
+- Don't re-add a port-name array beside the `port_*` counts, and don't add a
+  fourth free-text column next to a constrained one. Two models for one fact is
+  the problem; the count columns are the model the workbook uses.
+- Don't read the workbook's XML with a regex to decide its shape. A hand-rolled
+  reader reported 26 columns for `NETWORK-DEVICES` and missed four port columns
+  that exist. `openpyxl` is what reads it correctly.
+- Don't put a device password on `assets` to match the workbook's
+  `Credential - Password` heading. It stays in `asset_credentials`; the form
+  shows the field on the admin-only Credentials tab. See The asset inventory.
+- Don't write the `usage_status` and `status` columns as if they were one thing.
+  The triggers own `status` and never read `usage_status`; "Lent out" and
+  `assigned` describe the same situation and are deliberately not kept in step.
 - Don't add an INSERT policy on `profiles`, and don't read `role` from
   `raw_user_meta_data` in `handle_new_user`. Both are privilege-escalation paths.
 - Don't move `must_change_password` into the browser create step to "keep the
