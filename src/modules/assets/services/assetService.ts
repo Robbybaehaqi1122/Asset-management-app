@@ -510,6 +510,23 @@ export async function getAssets(): Promise<Asset[]> {
  * and locations. Same split as `getDepartmentOptions` — no counts, no gating,
  * because both reads are `using (true)`.
  */
+/**
+ * The unit the asset inventory belongs to.
+ *
+ * `01400` put a `department` on every category so the reference data can grow
+ * past the IT inventory, and the asset form's category picker reads all of them.
+ * Without this filter an HSSE category would appear in the asset form's dropdown
+ * for everyone, which is the opposite of what the unit filter is for.
+ *
+ * Hard-coded rather than configurable because the inventory *is* the IT one: the
+ * seed came from the IT hardware workbook and the form's fieldsets were built
+ * from those seven sheets. A category from another unit has no fieldset, so an
+ * asset filed under one would silently get the generic fields. The thing to change
+ * when HSSE assets are actually being tracked is this constant **and** the
+ * fieldset groups, not this alone.
+ */
+const ASSET_DEPARTMENT = "IT";
+
 export async function getAssetFilterOptions(): Promise<{
   categories: CategoryOption[];
   locations: LocationOption[];
@@ -518,6 +535,9 @@ export async function getAssetFilterOptions(): Promise<{
     supabase
       .from("categories")
       .select("id, name, parent_id, code")
+      // Filtered in the query rather than in JS, so the rows never reach the
+      // browser at all.
+      .eq("department", ASSET_DEPARTMENT)
       .order("name", { ascending: true }),
     supabase
       .from("locations")

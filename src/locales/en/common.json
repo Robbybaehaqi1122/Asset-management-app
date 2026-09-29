@@ -190,6 +190,11 @@
     "locationsHint": "An area is a registered site; a room is a specific place inside it. A location may be just an area, which is why the room can be left empty.",
     "noCode": "No code",
     "noRoom": "Whole area",
+    "departments": {
+      "IT": "IT",
+      "HSSE": "HSSE"
+    },
+    "emptyForDepartment": "No categories for {name} yet. Add the first one below.",
     "expandAll": "Expand all",
     "collapseAll": "Collapse all",
     "expandLabel": "Show the sub-categories of {name}",
@@ -216,6 +221,9 @@
     "fields": {
       "name": "Name",
       "namePlaceholder": "e.g. Monitor",
+      "department": "Department",
+      "departmentFilter": "Filter categories by department",
+      "departmentHint": "Which unit owns this category. A sub-category always belongs to the same department as its parent, and two departments may each have a category with the same name.",
       "parent": "Parent category",
       "noParent": "None — this is a main category",
       "parentHint": "Leave empty for a main category. A sub-category's parent decides which fields the asset form shows.",
@@ -238,6 +246,9 @@
       "nameRequired": "A name is required.",
       "areaRequired": "An area is required.",
       "duplicate": "An entry with that name already exists. Names are case-sensitive, so check the spelling.",
+      "duplicateInUnit": "This department already has a category with that name. Another department may still use the same name.",
+      "crossDepartment": "A sub-category must belong to the same department as its parent. Pick a parent from the department selected above.",
+      "moveWithChildren": "This category still has sub-categories, so it cannot move to another department on its own. Move or clear them first.",
       "categoryInUse": "This category still has {subCategories} sub-categor(y/ies) and {assets} asset(s) pointing at it. Move them first.",
       "locationInUse": "This location still has {count} asset(s) pointing at it. Move them first."
     }

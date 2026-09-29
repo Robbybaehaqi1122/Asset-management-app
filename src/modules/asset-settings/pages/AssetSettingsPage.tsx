@@ -40,6 +40,8 @@ import {
   updateLocation,
   CategoryInUseError,
   LocationInUseError,
+  DEFAULT_DEPARTMENT,
+  DEPARTMENTS,
 } from "../services/settingService";
 import type { CategoryRow, LocationRow } from "../services/settingService";
 
@@ -74,6 +76,7 @@ type CategoryForm = {
   description: string;
   parent_id: string;
   code: string;
+  department: string;
 };
 
 type LocationForm = {
@@ -87,6 +90,7 @@ const EMPTY_CATEGORY: CategoryForm = {
   description: "",
   parent_id: "",
   code: "",
+  department: DEFAULT_DEPARTMENT,
 };
 
 const EMPTY_LOCATION: LocationForm = {
@@ -101,6 +105,7 @@ export default function AssetSettingsPage() {
   const isAdmin = useIsAdmin();
 
   const [tab, setTab] = useState<Tab>("categories");
+  const [department, setDepartment] = useState<string>(DEFAULT_DEPARTMENT);
   const [categories, setCategories] = useState<CategoryRow[]>([]);
   const [locations, setLocations] = useState<LocationRow[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -163,38 +168,47 @@ export default function AssetSettingsPage() {
     };
   }, [reloadToken]);
 
-  /** Top-level categories only, because a sub-category is the second level. */
-  const parentChoices = useMemo(
-    () =>
-      categories
-        .filter((row) => !row.parentId)
-        .map((row) => ({ value: row.id, label: row.name })),
-    [categories],
+  /**
+   * Only the parents of the unit on screen, both for the list and for the parent
+   * picker in the modal.
+   *
+   * **The picker is filtered, not just the table**, because a sub-category must
+   * be filed under a parent from its own unit —
+   * `categories_parent_name_key` and `guard_category_parent` both enforce that, so
+   * offering a cross-unit parent would only produce a `23514` the admin has to
+   * decode.
+   */
+  const departmentCategories = useMemo(
+    () => categories.filter((row) => row.department === department),
+    [categories, department],
   );
 
+  const departmentParents = useMemo(
+    () => departmentCategories.filter((row) => !row.parentId),
+    [departmentCategories],
+  );
+
+  const parentChoices = useMemo(
+    () => departmentParents.map((row) => ({ value: row.id, label: row.name })),
+    [departmentParents],
+  );
+
+  /** The sub-categories grouped under the parent, for the unit on screen. */
   const subCategoriesByParent = useMemo(() => {
     const map = new Map<string, CategoryRow[]>();
-    for (const row of categories) {
+    for (const row of departmentCategories) {
       if (!row.parentId) continue;
       const list = map.get(row.parentId) ?? [];
       list.push(row);
       map.set(row.parentId, list);
     }
     return map;
-  }, [categories]);
+  }, [departmentCategories]);
 
-  const topLevelCategories = useMemo(
-    () => categories.filter((row) => !row.parentId),
-    [categories],
-  );
-
-  /** Only the parents that actually have children, so a toggle is never a lie. */
-  const collapsibleIds = useMemo(
+  const departmentOptions = useMemo(
     () =>
-      topLevelCategories
-        .filter((row) => (subCategoriesByParent.get(row.id) ?? []).length > 0)
-        .map((row) => row.id),
-    [topLevelCategories, subCategoriesByParent],
+      DEPARTMENTS.map((value) => ({ value, label: t(`departments.${value}`) })),
+    [t],
   );
 
   /**
@@ -212,6 +226,15 @@ export default function AssetSettingsPage() {
    */
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(
     () => new Set(),
+  );
+
+  /** Only the parents that actually have children, so a toggle is never a lie. */
+  const collapsibleIds = useMemo(
+    () =>
+      departmentParents
+        .filter((row) => (subCategoriesByParent.get(row.id) ?? []).length > 0)
+        .map((row) => row.id),
+    [departmentParents, subCategoriesByParent],
   );
 
   const toggleCollapsed = useCallback((id: string) => {
@@ -239,7 +262,9 @@ export default function AssetSettingsPage() {
   const handleOpenCreateCategory = () => {
     setSaveError(null);
     setEditingCategoryId(null);
-    setCategoryForm(EMPTY_CATEGORY);
+    // Prefilled with the unit on screen, so a new category lands in the list the
+    // admin is looking at rather than in IT by default.
+    setCategoryForm({ ...EMPTY_CATEGORY, department });
     categoryModal.openModal();
   };
 
@@ -253,6 +278,7 @@ export default function AssetSettingsPage() {
       // Only a top-level category carries a code, and the database refuses it on
       // a child, so the box is cleared rather than sent back as-is.
       code: row.parentId ? "" : (row.code ?? ""),
+      department: row.department,
     });
     categoryModal.openModal();
   };
@@ -270,29 +296,24 @@ export default function AssetSettingsPage() {
     setIsSaving(true);
     setSaveError(null);
     try {
+      const input = {
+        name,
+        description: categoryForm.description,
+        parent_id: categoryForm.parent_id || null,
+        code: code || null,
+        department: categoryForm.department,
+      };
       if (editingCategoryId) {
-        await updateCategory(editingCategoryId, {
-          name,
-          description: categoryForm.description,
-          parent_id: categoryForm.parent_id || null,
-          code: code || null,
-        });
+        await updateCategory(editingCategoryId, input);
         setNotice(t("categoryUpdated", { name }));
       } else {
-        await createCategory({
-          name,
-          description: categoryForm.description,
-          parent_id: categoryForm.parent_id || null,
-          code: code || null,
-        });
+        await createCategory(input);
         setNotice(t("categoryCreated", { name }));
       }
       categoryModal.closeModal();
       reload();
     } catch (error) {
-      setSaveError(
-        isDuplicateError(error) ? t("errors.duplicate") : t("errors.save"),
-      );
+      setSaveError(describeCategoryError(error, t));
     } finally {
       setIsSaving(false);
     }
@@ -507,7 +528,23 @@ export default function AssetSettingsPage() {
                       {t("categoriesHint")}
                     </p>
                   </div>
-                  <div className="flex shrink-0 items-center gap-3 self-start sm:self-auto">
+                  <div className="flex flex-wrap items-center gap-3 self-start sm:self-auto">
+                    {/* A `Select` rather than a second row of tabs: the page
+                        already has a Categories/Locations tab bar, and a third
+                        one underneath it reads as a control on the tabs rather
+                        than a filter on the table. A dropdown also leaves room
+                        for a third unit without another row appearing. */}
+                    <div className="w-full sm:w-44">
+                      <Select
+                        key={`department-filter-${department}`}
+                        id="category-department-filter"
+                        aria-label={t("fields.departmentFilter")}
+                        options={departmentOptions}
+                        defaultValue={department}
+                        onChange={(v) => setDepartment(v)}
+                      />
+                    </div>
+
                     {/* Only rendered when there is something to collapse, so the
                         button is never a control with nothing to act on. */}
                     {collapsibleIds.length > 0 && (
@@ -533,61 +570,81 @@ export default function AssetSettingsPage() {
                   </div>
                 </div>
 
-                <div className="overflow-x-auto">
-                  <Table className="min-w-[760px]">
-                    <TableHeader>
-                      <TableRow className="border-b border-gray-200 dark:border-gray-800">
-                        <TableCell
-                          isHeader
-                          className="px-6 py-3 text-start text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
-                        >
-                          {t("table.category")}
-                        </TableCell>
-                        <TableCell
-                          isHeader
-                          className="px-4 py-3 text-start text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
-                        >
-                          {t("table.code")}
-                        </TableCell>
-                        <TableCell
-                          isHeader
-                          className="px-4 py-3 text-start text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
-                        >
-                          {t("table.subCategories")}
-                        </TableCell>
-                        <TableCell
-                          isHeader
-                          className="px-4 py-3 text-start text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
-                        >
-                          {t("table.assets")}
-                        </TableCell>
-                        <TableCell
-                          isHeader
-                          className="px-6 py-3 text-end text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
-                        >
-                          {t("table.actions")}
-                        </TableCell>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {topLevelCategories.map((parent) => {
-                        const children =
-                          subCategoriesByParent.get(parent.id) ?? [];
-                        return (
-                          <CategoryGroup
-                            key={parent.id}
-                            parent={parent}
-                            children={children}
-                            isCollapsed={collapsedIds.has(parent.id)}
-                            onToggle={() => toggleCollapsed(parent.id)}
-                            onEdit={handleOpenEditCategory}
-                            onDelete={handleOpenDelete}
-                          />
-                        );
+                {/* The empty state names the unit it is about, because "no
+                    categories" and "no categories in this unit" are different
+                    facts and only one of them is a problem. */}
+                {departmentParents.length === 0 ? (
+                  <div className="flex flex-col items-start gap-4 p-6">
+                    <p className="text-sm text-gray-500 dark:text-gray-400">
+                      {t("emptyForDepartment", {
+                        name: t(`departments.${department}`),
                       })}
-                    </TableBody>
-                  </Table>
-                </div>
+                    </p>
+                    <Button
+                      variant="outline"
+                      onClick={handleOpenCreateCategory}
+                      startIcon={<PlusIcon className="size-4" />}
+                    >
+                      {t("addCategory")}
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <Table className="min-w-[760px]">
+                      <TableHeader>
+                        <TableRow className="border-b border-gray-200 dark:border-gray-800">
+                          <TableCell
+                            isHeader
+                            className="px-6 py-3 text-start text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
+                          >
+                            {t("table.category")}
+                          </TableCell>
+                          <TableCell
+                            isHeader
+                            className="px-4 py-3 text-start text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
+                          >
+                            {t("table.code")}
+                          </TableCell>
+                          <TableCell
+                            isHeader
+                            className="px-4 py-3 text-start text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
+                          >
+                            {t("table.subCategories")}
+                          </TableCell>
+                          <TableCell
+                            isHeader
+                            className="px-4 py-3 text-start text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
+                          >
+                            {t("table.assets")}
+                          </TableCell>
+                          <TableCell
+                            isHeader
+                            className="px-6 py-3 text-end text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
+                          >
+                            {t("table.actions")}
+                          </TableCell>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {departmentParents.map((parent) => {
+                          const children =
+                            subCategoriesByParent.get(parent.id) ?? [];
+                          return (
+                            <CategoryGroup
+                              key={parent.id}
+                              parent={parent}
+                              children={children}
+                              isCollapsed={collapsedIds.has(parent.id)}
+                              onToggle={() => toggleCollapsed(parent.id)}
+                              onEdit={handleOpenEditCategory}
+                              onDelete={handleOpenDelete}
+                            />
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </div>
+                )}
               </section>
             )}
 
@@ -711,6 +768,28 @@ export default function AssetSettingsPage() {
           </h3>
 
           <div className="mt-5 space-y-4">
+            <div>
+              <Label htmlFor="setting-category-department">
+                {t("fields.department")}{" "}
+                <span className="text-error-500">*</span>
+              </Label>
+              <Select
+                // Keyed on the row being edited: `Select` reads `defaultValue`
+                // once, so a modal reused for a second category would keep
+                // showing the first one's choice.
+                key={`setting-department-${editingCategoryId ?? "new"}`}
+                id="setting-category-department"
+                options={departmentOptions}
+                defaultValue={categoryForm.department}
+                onChange={(v) =>
+                  setCategoryForm((prev) => ({ ...prev, department: v }))
+                }
+              />
+              <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                {t("fields.departmentHint")}
+              </p>
+            </div>
+
             <div>
               <Label htmlFor="setting-category-name">
                 {t("fields.name")} <span className="text-error-500">*</span>
@@ -1181,16 +1260,52 @@ function Panel({ children }: { children: ReactNode }) {
 }
 
 /**
- * `23505` is `unique_violation`, the only code these inserts raise from a
- * uniqueness angle. Matched on the code rather than Postgres's wording, because
- * the wording names whichever constraint tripped, including the primary key, and
- * would not translate.
+ * Turns a save failure into something the admin can act on.
+ *
+ * The three cases worth naming are all reachable from this form, and each would
+ * otherwise surface as one generic "could not save":
+ *
+ * - `23505` — the name already exists **within this unit**. Now that uniqueness
+ *   is per-department, the same name is fine in another unit, so the message says
+ *   which unit rather than implying the name is taken globally.
+ * - `23514` with the cross-department message — a sub-category filed under a
+ *   parent from another unit. The form filters the parent picker to the unit, so
+ *   this is a race or a stale modal, and saying so beats a generic failure.
+ * - `23514` from the department-change guard — a parent moved between units
+ *   while it still has sub-categories.
  */
+function describeCategoryError(
+  error: unknown,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): string {
+  if (isDuplicateError(error)) return t("errors.duplicateInUnit");
+  if (isCheckViolation(error)) {
+    const message = errorMessage(error);
+    if (message.includes("same department")) return t("errors.crossDepartment");
+    if (message.includes("sub-categories first"))
+      return t("errors.moveWithChildren");
+  }
+  return t("errors.save");
+}
+
+/** `23505` is `unique_violation`. Matched on the code, not the wording. */
 function isDuplicateError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as { code?: string }).code === "23505"
-  );
+  return postgresCode(error) === "23505";
+}
+
+/** `23514` is `check_violation`, which is what every guard in here raises. */
+function isCheckViolation(error: unknown): boolean {
+  return postgresCode(error) === "23514";
+}
+
+function postgresCode(error: unknown): string | undefined {
+  return typeof error === "object" && error !== null && "code" in error
+    ? ((error as { code?: string }).code ?? undefined)
+    : undefined;
+}
+
+function errorMessage(error: unknown): string {
+  return typeof error === "object" && error !== null && "message" in error
+    ? String((error as { message?: unknown }).message)
+    : "";
 }

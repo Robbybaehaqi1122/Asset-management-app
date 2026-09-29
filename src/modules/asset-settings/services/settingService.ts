@@ -66,6 +66,13 @@ export type CategoryRow = {
   parentId: string | null;
   /** The fieldset key, only ever set on a top-level category. */
   code: string | null;
+  /**
+   * The unit that owns this category. Free text in the database and a closed list
+   * here, because the two drift: a unit added to this list but not to the column
+   * default still works for new rows, and one added to the database but not here
+   * would be invisible in the filter.
+   */
+  department: string;
   created_at: string;
   /** How many assets point at this row. Zero makes a delete safe. */
   assetCount: number;
@@ -84,10 +91,30 @@ export type LocationRow = {
 };
 
 const CATEGORY_COLUMNS =
-  "id, name, description, parent_id, code, created_at, assets!assets_category_id_fkey(count)";
+  "id, name, description, parent_id, code, department, created_at, assets!assets_category_id_fkey(count)";
 
 const LOCATION_COLUMNS =
   "id, area_name, room_name, notes, created_at, assets!assets_location_id_fkey(count)";
+
+/**
+ * The units a category can belong to.
+ *
+ * **This is a list, and the database column is free text.** That is deliberate:
+ * the request named IT / HSSE / GA and "dll", so a `check` constraint would be
+ * wrong the first time somebody spelled a unit differently, and a Postgres enum
+ * would need a migration to extend. The cost is that this constant is the one
+ * place a new unit has to be added, and the comment on `categories.department`
+ * says the same thing.
+ *
+ * The values are what the filter shows, so a unit present in the database but
+ * missing here would simply not be selectable.
+ */
+export const DEPARTMENTS = ["IT", "HSSE"] as const;
+
+export type DepartmentName = (typeof DEPARTMENTS)[number];
+
+/** The unit the screen opens on, and the one the existing seed belongs to. */
+export const DEFAULT_DEPARTMENT: DepartmentName = "IT";
 
 /**
  * Every category, top-level and sub, in one flat read.
@@ -115,6 +142,7 @@ export async function getCategories(): Promise<CategoryRow[]> {
     description: (row.description as string | null) ?? null,
     parentId: (row.parent_id as string | null) ?? null,
     code: (row.code as string | null) ?? null,
+    department: String(row.department ?? ""),
     created_at: String(row.created_at),
     assetCount: embeddedCount(row.assets),
     subCategoryCount: 0,
@@ -167,6 +195,12 @@ export type CategoryInput = {
    * `categories_code_only_on_parents` refuses it on a sub-category.
    */
   code?: string | null;
+  /**
+   * The owning unit. Required by the form, and defaulted here rather than left
+   * to the column so a caller that forgets gets the unit the existing data is
+   * in rather than an error.
+   */
+  department?: string;
 };
 
 export type LocationInput = {
@@ -191,6 +225,7 @@ export async function createCategory(
       description: trimmed(input.description),
       parent_id: input.parent_id || null,
       code: trimmed(input.code),
+      department: input.department?.trim() || DEFAULT_DEPARTMENT,
     })
     .select("id, name")
     .maybeSingle();
@@ -204,10 +239,14 @@ export async function createCategory(
 /**
  * Update one category.
  *
- * `parent_id` and `code` are sent as given rather than omitted, because moving a
- * row between levels and clearing its fieldset key are both things the form
- * offers. `guard_category_parent` refuses a third level and
- * `categories_code_only_on_parents` refuses a code on a child.
+ * `parent_id`, `code` and `department` are sent as given rather than omitted,
+ * because moving a row between levels, clearing its fieldset key, and moving it
+ * between units are all things the form offers.
+ *
+ * Two database rules hold this back and are worth knowing before the form is
+ * changed: `guard_category_parent` refuses a sub-category filed under a parent
+ * from another unit, and `categories_guard_department_change` refuses moving a
+ * parent that still has sub-categories. Both raise `23514`.
  */
 export async function updateCategory(
   categoryId: string,
@@ -220,6 +259,7 @@ export async function updateCategory(
       description: trimmed(input.description),
       parent_id: input.parent_id || null,
       code: trimmed(input.code),
+      department: input.department?.trim() || DEFAULT_DEPARTMENT,
     })
     .eq("id", categoryId)
     .select("id, name")
