@@ -24,7 +24,7 @@ repair, so the two tables the inventory depends on are written by nothing but th
 test fixtures. See The asset inventory, The form switches on a category code, and
 Database.
 
-**All twelve migrations, including `20260927001200`, are applied to the remote**
+**All thirteen migrations, including `20260927001300`, are applied to the remote**
 as of 2026-09-29. `db diff --linked` reports `No schema changes found`, and
 `pg_indexes` returns 27 for `public` on both the local and the remote database.
 The 14 `drop column` statements that `db diff --linked` listed while `01100` was
@@ -187,6 +187,8 @@ src/
 │       ├── users/             the user-management feature: pages/ services/
 │       │                      see User management
 │       ├── departments/       the department feature: list + create, feeds the pickers
+│       ├── asset-settings/    the reference-data editor: pages/ services/
+│       │                      see Asset settings manages the reference data
 │       └── assets/            the asset inventory: pages/ services/
 │                              see The asset inventory
 ├── layout/                    AppLayout AppSidebar AppHeader Backdrop
@@ -219,6 +221,7 @@ supabase/
     └── 20260927001000_asset_inventory.sql  21 columns on assets + credentials
     └── 20260927001100_asset_dynamic_form.sql  categories.code + seed + 13 columns
     └── 20260927001200_asset_excel_headers.sql  the workbook's headings + port counts
+    └── 20260927001300_asset_settings.sql  locations area+room, category guards
 
 .github/
 ├── ISSUES_KNOWN.md            known problems, grouped by severity
@@ -230,7 +233,7 @@ vercel.json                    SPA rewrite only — no framework, no buildComman
 ## Database
 
 `supabase/migrations/` holds the schema, applied to project
-`dnyszknpinqvcfkmoauz` (Postgres 17.6.1). Twelve migrations, in order:
+`dnyszknpinqvcfkmoauz` (Postgres 17.6.1). Thirteen migrations, in order:
 
 | File | Contents |
 |---|---|
@@ -246,8 +249,9 @@ vercel.json                    SPA rewrite only — no framework, no buildComman
 | `20260927001000_asset_inventory.sql` | 21 columns on `assets`, `categories.parent_id`, the `asset_credentials` table; see The asset inventory |
 | `20260927001100_asset_dynamic_form.sql` | `categories.code`, 13 per-category columns on `assets`, the category and location seed; see The form switches on a category code |
 | `20260927001200_asset_excel_headers.sql` | the workbook's own per-sheet headings, port counts replacing the two array columns, `usage_status`, the workbook's sub-categories; see The workbook is the specification |
+| `20260927001300_asset_settings.sql` | `locations.name` -> `area_name` + `room_name` + `notes`, the category delete guard, the no-third-level guard; see Asset settings manages the reference data |
 
-**All twelve are applied to the remote.** `db diff --linked` reports
+**All thirteen are applied to the remote.** `db diff --linked` reports
 `No schema changes found`, which is the proof that the checked-in migrations and
 the live database agree. Before the `01100` push it reported fourteen `drop
 column` statements; that was the diff saying the remote was behind the
@@ -398,9 +402,9 @@ triggers, `20260927000300` rls, `20260927000400` drop first-admin grant,
 `20260927000500` status/loan sync, `20260927000600` profiles.email,
 `20260927000700` user-management guards, `20260927000800` must_change_password,
 `20260927000900` departments, `20260927001000` asset_inventory,
-`20260927001100` asset_dynamic_form, `20260927001200` asset_excel_headers. Read
-out of the linked project on 2026-09-29, which is all twelve and therefore
-nothing pending. That table, not
+`20260927001100` asset_dynamic_form, `20260927001200` asset_excel_headers,
+`20260927001300` asset_settings. Read out of the linked project on 2026-09-29,
+which is all thirteen and therefore nothing pending. That table, not
 the schema itself, is what the CLI consults to decide what is pending, and it is
 also the only trustworthy way to confirm a push landed.
 
@@ -1246,12 +1250,10 @@ filter state to survive a reload.
   Until that lands, `guard_maintenance_assignment` and the delete guard's refusal
   are both only reachable from SQL. The status control offers `maintenance`, which
   is legitimately a person's judgement, but there is no work order behind it yet.
-- **Categories and locations have no admin UI either.** They were already
-  reference tables with no management screen, and the inventory only reads them.
-  `categories.parent_id` exists but nothing creates a sub-category from the app.
-  `01100` now *seeds* both — 7 parent categories, 23 sub-categories, 3 locations —
-  so a fresh install is usable, but a hand-added category with no `code` is the
-  fallback path, not a feature gap.
+- **Categories and locations now have an admin UI**, in `src/modules/asset-settings/`.
+  That entry is stale in the sense that it is no longer true; it is kept only so
+  the gap it describes is not re-raised. See Asset settings manages the reference
+  data for what replaced it and why the tables were not recreated.
 - **No `useIsAdmin` gate on the read**, deliberately, unlike both other modules.
 - **The dynamic form has not been driven in a browser.** It was verified at the
   database layer (15 assertions on the constraints, the RLS split and the seed)
@@ -1262,6 +1264,119 @@ filter state to survive a reload.
   switching a sub-category does not lose the values the old main category owned.
   A REST-level round trip does not cover any of those, which is why this is listed
   rather than claimed as done.
+
+## Asset settings manages the reference data
+
+`src/modules/asset-settings/` is issue #51: the admin screen behind the asset
+form's category and location pickers.
+
+### The three tables were not created, and that was the whole finding
+
+The issue asked for `asset_categories`, `asset_sub_categories` and
+`asset_locations`. **All three already existed** under other names —
+`categories` (holding both levels through `parent_id`) and `locations` — and
+`assets.category_id` and `assets.location_id` already reference them. Creating a
+parallel set would have been a second source of truth for two facts the database
+already owns, which is the same argument that removed `profiles.department` as
+free text and that keeps `usage_status` a separate column rather than a rename.
+
+Two of the three were therefore not a table at all:
+
+- **`asset_sub_categories` is `categories WHERE parent_id IS NOT NULL`.** The form
+  already resolves a sub-category's parent from one flat read.
+- **`categories.description` already existed**, so that column needed no
+  migration either.
+
+What `01300` *does* change is `locations`, and it is the real work of the
+migration.
+
+### `area_name` + `room_name`, and why `room_name` is nullable
+
+The request asked for `room_name text not null`. It is nullable here, because an
+area is a legitimate value on its own — a laptop assigned to a site has no room,
+and a `not null` room forces the field to hold "N/A", which is a null written as
+a string and is worse than a null. This is the same reasoning as `comment on
+public.assets.storage_size_text` and as the `location` column in
+`20260927000600_profiles_email.sql`.
+
+`locations.name` is **dropped**, not left beside the new pair: three columns for
+two facts is the problem this project keeps refusing to add, and every caller read
+`name` today, so leaving it would let the two disagree with nothing saying which
+is right. `address` is likewise folded into `notes` — the same field under a
+vaguer name, read by nothing.
+
+The three rows `01100` seeded (`Head Office`, `Server Room`, `Gudang IT`) become
+`area_name` with a null `room_name`. "Server Room" reads as a room by name, but
+nothing in the seed says which area it sits in, so inventing a parent for it
+would be a guess in a migration.
+
+**Two indexes, not one, and the second is not optional.** The natural uniqueness
+is `(area_name, room_name)`, but `null` is distinct from every other `null` in a
+Postgres unique index, so two room-less rows for the same area would both be
+allowed. `locations_area_only_key` is a partial unique index over `area_name`
+where `room_name is null`, and that is what actually stops it. Verified on the
+local stack: a second `Jakarta HO` with a null room is refused, while a second
+*named* room in `Patimban` is allowed, because those are two different places.
+
+The display string is **assembled in the client**, not stored:
+`LocationOption.name` in `assetService.ts` is `"Patimban / Customs Building"`, or
+just the area when there is no room. A picker wants one line of text and the
+database should hold the two facts.
+
+### The category delete guard, and the one the application also needs
+
+`assets.category_id` is `on delete set null`, exactly like
+`profiles.department_id` was, and for the same reason — a deleted reference
+should degrade into "not set" rather than break an unrelated write. The cost is
+identical and documented under Departments are reference data: **the database will
+happily delete a category that still has assets in it and silently un-assign every
+one of them.**
+
+So `01300` adds `categories_guard_delete`, a `before delete` trigger that counts
+sub-categories and assets and raises `23514`. It is `security definer` and pins
+`search_path`, both for the reasons the other guards do. The cross-table count
+cannot be a foreign key, and it cannot be an RLS policy either, because the
+client is the only thing that knows which rows the caller may see — so
+`deleteCategory` in `settingService.ts` *also* asks first and throws
+`CategoryInUseError` with both counts. The trigger is what holds for any caller
+including a service-role delete; the application check is what produces a message
+naming what is in the way.
+
+### `guard_category_parent` exists because a third level would break the fieldset
+
+The form switches its fieldset on the **main** category's code, resolved by one
+hop: an asset with a sub-category stores the child, and the child's `parent_id`
+is the main category. A third level would make that lookup point at *another
+child*, and the form would silently pick the wrong fieldset rather than fail. The
+trigger refuses a sub-category whose parent is itself a sub-category.
+
+`categories_code_only_on_parents` is the companion: a sub-category must not carry
+a `code`, because the form only honours one on a parent. Note the direction — a
+**parent with no code stays legal**, since that is the documented fallback for a
+category an admin added after the seed.
+
+### Writes are admin-only, and that departs from the request
+
+The issue asked for "read & write for authenticated users". Writes are admin-only
+here, matching `assets_write_admin` and the existing policies on both tables.
+Reference data is read by every staff member — the asset form's pickers need it —
+and written by admins alone; a staff member who could edit it could silently
+re-point every asset in a category.
+
+The screen is gated the way `/users` and `/departments` are: `useIsAdmin()` in
+the page, no second route guard. RLS is the boundary; the gate is only there so
+staff are not shown a screen that cannot work. The sidebar entry carries
+`adminOnly` **on the sub-item** rather than on the group, because the group mixes
+the open-to-everyone asset inventory with this admin-only screen, and `NavSubItem`
+gained an `adminOnly` field to carry it.
+
+### The self-embed trap applies here too
+
+`getCategories` reads `categories` flat and joins `parent_id` in memory, for the
+reason `getAssetFilterOptions` does: `parent:categories!categories_parent_id_fkey`
+is the documented hint for that FK and PostgREST refuses it with `PGRST200`, while
+the accepted forms resolve the *inbound* direction and return an empty array
+instead of the parent. Do not "simplify" this into an embed.
 
 ## User management
 
@@ -1899,9 +2014,9 @@ something local, which is itself the bug.
 - i18next is bootstrapped once in `src/i18n/index.ts`, imported by `src/main.tsx`.
   Never re-initialise it.
 - One namespace, `"common"`. One locale, `en`. The file is
-  `src/locales/en/common.json` — add new keys there. It holds 387 leaf keys
+  `src/locales/en/common.json` — add new keys there. It holds 457 leaf keys
   today, under `sidebar`, `header`, `userDropdown`, `auth`, `profile`,
-  `mustChangePassword`, `departments`, `users`, and `assets`.
+  `mustChangePassword`, `departments`, `assetSettings`, `users`, and `assets`.
 - **Do not repeat a key inside one object.** JSON resolves a duplicate by taking
   the last one, silently, and `require()` will not complain. `users.fields` and
   `users.emailManagedElsewhere` both existed twice for a while; the two copies
@@ -1963,6 +2078,11 @@ These were deliberate. Do not "clean them up" without asking.
 | `device_condition` is still not added | `assets.condition` already holds that column, constrained to five values. `01200` added `usage_status` and deliberately did not add this one, because it genuinely is a duplicate rather than a new fact |
 | Sub-category is `categories.parent_id`, not a column on `assets` | A self-reference gives the second level without a second free-text column on every row, and `on delete set null` promotes the children instead of deleting assets |
 | The asset delete is guarded, not hard and not soft | Both foreign keys cascade, so a hard delete takes loan and service history — the same loss the user-delete warning spells out. A guard is cheap here in a way it was not for users: an asset with no history is safe to remove, one with history is worth keeping. Soft delete was rejected because it adds a `status` value the two status guards would then have to be taught about |
+| Reference data is `categories` and `locations`, not `asset_*` copies | The issue asked for `asset_categories`, `asset_sub_categories` and `asset_locations`; all three already existed under the existing names and `assets.category_id` / `assets.location_id` already reference them. A parallel set would be a second source of truth for two facts the database owns. `asset_sub_categories` is `categories WHERE parent_id IS NOT NULL`, not a table |
+| `locations.room_name` is nullable, and `name` is dropped | An area is a legitimate value on its own, and a `not null` room forces "N/A" — a null written as a string. `name` is dropped rather than kept beside the pair, so the two cannot disagree with nothing saying which is right. The display string is assembled client-side, because a picker wants one line and the database should hold the two facts |
+| The category delete is refused by a trigger *and* by the app | `assets.category_id` is `on delete set null`, so the database would silently un-assign every asset in the category. `categories_guard_delete` holds for any caller; `deleteCategory` also asks, so the admin is told the counts rather than just getting a refusal code. Same pattern as `DepartmentInUseError` |
+| Writes on both reference tables are admin-only | The issue asked for "read & write for authenticated". Staff read them because the asset form's pickers need the data, but a staff write could re-point every asset in a category. Matches `assets_write_admin` and the existing policies |
+| `NavSubItem` has `adminOnly` and the sidebar filters it | The Asset Management group mixes an open-to-everyone screen (the inventory) with an admin-only one, so the flag cannot live on the group. A group whose every sub-item is admin-only is dropped entirely rather than rendered as a dead row for staff |
 | `status` is not a field on the asset form, and `assigned` is offered nowhere in the module | `available` and `assigned` are derived from the loans and `assets_guard_status` refuses a contradicting write, so a form offering either would offer something the database rejects. `setAssetStatus` takes `Exclude<AssetStatus, "assigned">` so the un-derivable value cannot even be passed |
 | The asset list is readable by every signed-in user, unlike `/users` | Stock belongs to the company rather than one department, and `assets_select_authenticated` is `using (true)`, so gating the read hands every staff member an empty page. Staff lose the Credentials tab and the write actions, and the credential was never in their response |
 | The form switches on `categories.code`, not on the category name | A name is editable, so a rename would silently empty a fieldset. `code` is nullable and unique, survives a rename, and a category without one falls back to the common fields instead of breaking the form. See The form switches on a category code |
@@ -2112,6 +2232,23 @@ not go looking for them unprompted.
 - Don't switch the asset form on `categories.name`. A name is editable, and a
   rename would silently empty a fieldset. Switch on `code`, and add a code to a
   category rather than teaching the form its name.
+- Don't create a second set of reference tables as `asset_categories`,
+  `asset_sub_categories` and `asset_locations`. `categories` and `locations` are
+  those tables, and `assets.category_id` / `assets.location_id` already reference
+  them. See Asset settings manages the reference data.
+- Don't add `room_name text not null` to `locations`. An area is a legitimate
+  value on its own, and a not-null room forces the field to hold "N/A", which is
+  a null written as a string.
+- Don't rely on a `(area_name, room_name)` unique index alone to stop two
+  room-less rows for the same area: `null` is distinct from `null` in a Postgres
+  unique index, and `locations_area_only_key` is the partial index that actually
+  refuses the duplicate.
+- Don't let a category be deleted while it still has assets or sub-categories.
+  `assets.category_id` is `on delete set null`, so the database will do it and
+  say nothing. `categories_guard_delete` holds; `deleteCategory` asks.
+- Don't allow a third category level, and don't put a `code` on a sub-category.
+  The form resolves the main category by one hop through `parent_id`, so a third
+  level silently selects the wrong fieldset.
 - Don't self-embed `categories` to reach a category's own parent.
   `parent:categories!categories_parent_id_fkey` — the documented hint for that
   exact FK — fails with `PGRST200` on both the local stack and the remote,

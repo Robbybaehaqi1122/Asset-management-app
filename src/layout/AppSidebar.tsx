@@ -17,6 +17,17 @@ type NavSubItem = {
   key?: string;
   path: string;
   target?: string;
+  /**
+   * Hidden from users who are not admins.
+   *
+   * On a sub-item rather than the group, because a group can mix an
+   * open-to-everyone screen with an admin-only one: the asset inventory is
+   * readable by every signed-in user while the reference-data editor is not, and
+   * marking the group would take the inventory away from staff. Same fail-closed
+   * reading as `NavItem.adminOnly` — the entry is absent until the profile has
+   * arrived — and, like it, not an access control.
+   */
+  adminOnly?: boolean;
 };
 
 type MenuGroup = "main" | "others";
@@ -59,7 +70,20 @@ const navItems: NavItem[] = [
     // is one: this marks the group, the screen lives under it. The group with an
     // open submenu is derived from the active route, so navigating into Asset IT
     // opens it on its own.
-    subItems: [{ name: "Asset IT", key: "assetIt", path: "/assets" }],
+    //
+    // Asset Settings carries `adminOnly` on the *sub-item* rather than on the
+    // group: the inventory itself is readable by every signed-in user, and hiding
+    // the whole group from staff would take that away. The sub-item is where the
+    // admin-only screen lives, so that is where the flag goes.
+    subItems: [
+      { name: "Asset IT", key: "assetIt", path: "/assets" },
+      {
+        name: "Asset Settings",
+        key: "assetSettings",
+        path: "/asset-settings",
+        adminOnly: true,
+      },
+    ],
   },
   {
     icon: <GroupIcon fontSize={24} />,
@@ -98,8 +122,27 @@ const AppSidebar: React.FC = () => {
   // untuk melacak submenu sama antara turunannya dan pemetaan di bawah. Kalau
   // di-filter di dalam `map`, indeks item setelahnya bergeser dan state submenu
   // akan menunjuk item yang salah.
+  //
+  // Sub-item ikut disaring supaya `adminOnly` di level itu berarti sesuatu.
+  // Disaring di sini, bukan saat render submenu, supaya grup dengan satu
+  // sub-item saja untuk staff tidak pernah muncul lalu kosong.
   const visibleNavItems = useMemo(
-    () => navItems.filter((nav) => !nav.adminOnly || isAdmin),
+    () =>
+      navItems
+        .filter((nav) => !nav.adminOnly || isAdmin)
+        .map((nav) =>
+          nav.subItems
+            ? {
+                ...nav,
+                subItems: nav.subItems.filter(
+                  (sub) => !sub.adminOnly || isAdmin,
+                ),
+              }
+            : nav,
+        )
+        // A group whose every sub-item is admin-only would render as a dead row
+        // for a staff member, which is a worse affordance than hiding it.
+        .filter((nav) => !nav.adminOnly && (nav.subItems?.length ?? 1) > 0),
     [isAdmin],
   );
 

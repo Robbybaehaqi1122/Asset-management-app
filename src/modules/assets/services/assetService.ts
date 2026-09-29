@@ -72,6 +72,21 @@ export type AssetRef = {
   name: string;
 };
 
+/**
+ * A location, with the two halves `01300` split `locations.name` into.
+ *
+ * `name` is the display string the pickers show, assembled here rather than
+ * stored: the database holds an area and an optional room because that is what
+ * the workbook records, and a picker wants one line of text. A location with no
+ * room is just the area.
+ */
+export type LocationOption = {
+  id: string;
+  areaName: string;
+  roomName: string | null;
+  name: string;
+};
+
 export type CategoryOption = AssetRef & {
   /** The parent category, when this row is a sub-category. */
   parentId: string | null;
@@ -463,7 +478,7 @@ export async function getAssets(): Promise<Asset[]> {
  */
 export async function getAssetFilterOptions(): Promise<{
   categories: CategoryOption[];
-  locations: AssetRef[];
+  locations: LocationOption[];
 }> {
   const [categories, locations] = await Promise.all([
     supabase
@@ -472,8 +487,9 @@ export async function getAssetFilterOptions(): Promise<{
       .order("name", { ascending: true }),
     supabase
       .from("locations")
-      .select("id, name")
-      .order("name", { ascending: true }),
+      .select("id, area_name, room_name")
+      .order("area_name", { ascending: true })
+      .order("room_name", { ascending: true, nullsFirst: true }),
   ]);
 
   if (categories.error) throw categories.error;
@@ -503,10 +519,20 @@ export async function getAssetFilterOptions(): Promise<{
         code: str(row.code),
       };
     }),
-    locations: ((locations.data ?? []) as AssetRef[]).map((row) => ({
-      id: row.id,
-      name: row.name,
-    })),
+    locations: ((locations.data ?? []) as RawAsset[]).map((row) => {
+      const areaName = String(row.area_name);
+      const roomName = str(row.room_name);
+      return {
+        id: String(row.id),
+        areaName,
+        roomName,
+        // "Patimban / Customs Building", or just "Patimban" when the location is
+        // an area with no room recorded. `01300` split one `name` column into
+        // two because the workbook records two, and a picker still wants a
+        // single line of text.
+        name: roomName ? `${areaName} / ${roomName}` : areaName,
+      };
+    }),
   };
 }
 

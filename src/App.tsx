@@ -3,6 +3,7 @@ import RequireAuth from "@/components/auth/RequireAuth";
 import { Route, BrowserRouter as Router, Routes } from "react-router";
 import { ScrollToTop } from "./components/common/ScrollToTop";
 import AppLayout from "./layout/AppLayout";
+import AssetSettingsPage from "./modules/asset-settings/pages/AssetSettingsPage";
 import AssetListPage from "./modules/assets/pages/AssetListPage";
 import DepartmentListPage from "./modules/departments/pages/DepartmentListPage";
 import UserListPage from "./modules/users/pages/UserListPage";
@@ -37,6 +38,11 @@ export default function App() {
                   Yang admin-only di dalamnya adalah kredensial: RLS menyembunyikan
                   barisnya, sehingga staff tidak pernah menerimanya di respons. */}
               <Route path="/assets" element={<AssetListPage />} />
+              {/* Master data yang jadi sumber dropdown form aset. Dasarnya bukan
+                  tabel baru: `categories` (dua level lewat `parent_id`) dan
+                  `locations` sudah jadi referensi, dan `assets.category_id` /
+                  `assets.location_id` sudah menunjuk ke sana. */}
+              <Route path="/asset-settings" element={<AssetSettingsPage />} />
               <Route path="/blank" element={<Blank />} />
             </Route>
           </Route>

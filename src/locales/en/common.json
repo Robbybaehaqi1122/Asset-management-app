@@ -9,7 +9,8 @@
       "userManagement": "User Management",
       "userList": "User List",
       "department": "Departement",
-      "assetIt": "Asset IT"
+      "assetIt": "Asset IT",
+      "assetSettings": "Asset Settings"
     }
   },
   "header": {
@@ -155,6 +156,86 @@
       "create": "The department could not be created. Please try again.",
       "delete": "The department could not be deleted. Please try again.",
       "inUse": "{name} still has {count} person/people in it. Move them to another department first."
+    }
+  },
+  "assetSettings": {
+    "pageTitle": "Asset Settings",
+    "pageDescription": "The categories and locations the asset form offers",
+    "subtitle": "The asset screen reads these tables for its dropdowns, so anything added here is available immediately when adding or editing an asset.",
+    "checkingAccess": "Checking your access…",
+    "noAccess": "This page is only available to administrators.",
+    "tabsLabel": "Reference data",
+    "loading": "Loading…",
+    "dismiss": "Dismiss",
+    "cancel": "Cancel",
+    "save": "Save",
+    "saving": "Saving…",
+    "deleting": "Deleting…",
+    "deleteConfirm": "Delete",
+    "deleteTitle": "Delete this entry?",
+    "deleteBody": "{name} will be removed from the list of options.",
+    "deleteInUse": "Move the things pointing at it first — deleting it would leave them without one.",
+    "deleteLabel": "Delete {name}",
+    "editLabel": "Edit {name}",
+    "optional": "optional",
+    "tabs": {
+      "categories": "Categories",
+      "locations": "Locations"
+    },
+    "addCategory": "Add category",
+    "editCategoryTitle": "Edit category",
+    "addLocation": "Add location",
+    "editLocationTitle": "Edit location",
+    "categoriesHint": "A sub-category belongs to one category above it. The code on a category is what the asset form uses to decide which fields to show, so an existing category should not have its code changed casually.",
+    "locationsHint": "An area is a registered site; a room is a specific place inside it. A location may be just an area, which is why the room can be left empty.",
+    "noCode": "No code",
+    "noRoom": "Whole area",
+    "subCategory": "Sub-category",
+    "subCategoryCount": "{count} sub-categor(y/ies)",
+    "assetCount": "{count} asset(s)",
+    "categoryCreated": "{name} was added.",
+    "categoryUpdated": "{name} was updated.",
+    "categoryDeleted": "{name} was deleted.",
+    "locationCreated": "{name} was added.",
+    "locationUpdated": "{name} was updated.",
+    "locationDeleted": "{name} was deleted.",
+    "table": {
+      "category": "Category",
+      "code": "Code",
+      "subCategories": "Sub-categories",
+      "area": "Area",
+      "room": "Room",
+      "notes": "Notes",
+      "assets": "Assets",
+      "actions": "Actions"
+    },
+    "fields": {
+      "name": "Name",
+      "namePlaceholder": "e.g. Monitor",
+      "parent": "Parent category",
+      "noParent": "None — this is a main category",
+      "parentHint": "Leave empty for a main category. A sub-category's parent decides which fields the asset form shows.",
+      "code": "Code",
+      "codeHint": "The asset form switches its fields on this. Leave empty and the asset form falls back to the common fields; it is not available for a sub-category.",
+      "description": "Description",
+      "descriptionPlaceholder": "What this category covers",
+      "area": "Area",
+      "areaPlaceholder": "e.g. Patimban",
+      "room": "Room",
+      "roomPlaceholder": "e.g. Customs Building",
+      "roomHint": "Leave empty when the location is a whole area rather than a room inside one.",
+      "notes": "Notes",
+      "notesPlaceholder": "Anything worth recording about this location"
+    },
+    "errors": {
+      "load": "The reference data could not be loaded.",
+      "save": "The change could not be saved. Please try again.",
+      "delete": "The entry could not be deleted. Please try again.",
+      "nameRequired": "A name is required.",
+      "areaRequired": "An area is required.",
+      "duplicate": "An entry with that name already exists. Names are case-sensitive, so check the spelling.",
+      "categoryInUse": "This category still has {subCategories} sub-categor(y/ies) and {assets} asset(s) pointing at it. Move them first.",
+      "locationInUse": "This location still has {count} asset(s) pointing at it. Move them first."
     }
   },
   "users": {
