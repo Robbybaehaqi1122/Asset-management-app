@@ -96,6 +96,12 @@ export type CategoryOption = AssetRef & {
    * admin added after the seed, which gets the common fields only.
    */
   code: string | null;
+  /**
+   * The unit this category belongs to. The form filters its pickers on it, and
+   * `assets_sync_department` copies it onto the asset, so a client cannot put an
+   * HSSE category on an asset and call it IT.
+   */
+  department: string;
 };
 
 export type Asset = {
@@ -109,8 +115,19 @@ export type Asset = {
 
   category_id: string | null;
   location_id: string | null;
+  /**
+   * The owning unit, copied from the category by `assets_sync_department`. Never
+   * written by the client: the trigger overwrites it, so this is a read-only
+   * mirror of the category's unit that a query can filter on without a join.
+   */
+  department: string;
 
   purchase_date: string | null;
+  /** HSSE only. The four fields `01500` added; null on an IT asset. */
+  expiration_date: string | null;
+  last_inspection_date: string | null;
+  next_inspection_date: string | null;
+  calibration_cert_no: string | null;
   purchase_price: number | null;
   supplier: string | null;
   po_number: string | null;
@@ -210,6 +227,11 @@ export type AssetInput = {
   category_id: string | null;
   location_id: string | null;
   purchase_date: string | null;
+  /** HSSE only. The four fields `01500` added. */
+  expiration_date: string | null;
+  last_inspection_date: string | null;
+  next_inspection_date: string | null;
+  calibration_cert_no: string | null;
   purchase_price: number | null;
   supplier: string | null;
   po_number: string | null;
@@ -334,6 +356,9 @@ const ASSET_COLUMNS = `
   os_or_firmware_version, product_key,
   processor_spec, ram_spec, storage_spec, display_spec,
   gpu_model, resolution, panel_size, capacity, speed,
+  department,
+  expiration_date, last_inspection_date, next_inspection_date,
+  calibration_cert_no,
   current_location, protocol_url, connection_type, usage_status,
   processor_mfg, processor_model,
   ram_mfg, ram_type, ram_speed, ram_slots, ram_channel, ram_size_gb,
@@ -397,7 +422,12 @@ function mapAsset(row: RawAsset): Asset {
     condition: row.condition as AssetCondition,
     category_id: str(row.category_id),
     location_id: str(row.location_id),
+    department: String(row.department ?? "IT"),
     purchase_date: str(row.purchase_date),
+    expiration_date: str(row.expiration_date),
+    last_inspection_date: str(row.last_inspection_date),
+    next_inspection_date: str(row.next_inspection_date),
+    calibration_cert_no: str(row.calibration_cert_no),
     purchase_price:
       row.purchase_price === null || row.purchase_price === undefined
         ? null
@@ -506,27 +536,30 @@ export async function getAssets(): Promise<Asset[]> {
 }
 
 /**
- * The pickers for the filter bar and the form: categories with their parents,
- * and locations. Same split as `getDepartmentOptions` — no counts, no gating,
- * because both reads are `using (true)`.
- */
-/**
- * The unit the asset inventory belongs to.
+ * The units the asset form offers, in the order they appear.
  *
- * `01400` put a `department` on every category so the reference data can grow
- * past the IT inventory, and the asset form's category picker reads all of them.
- * Without this filter an HSSE category would appear in the asset form's dropdown
- * for everyone, which is the opposite of what the unit filter is for.
+ * Two units so far, and the list is the one place a third would be added — the
+ * same trade `DEPARTMENTS` in the settings module makes, and for the same reason:
+ * `categories.department` is free text, so a closed set would refuse a unit the
+ * moment somebody spelled it differently.
  *
- * Hard-coded rather than configurable because the inventory *is* the IT one: the
- * seed came from the IT hardware workbook and the form's fieldsets were built
- * from those seven sheets. A category from another unit has no fieldset, so an
- * asset filed under one would silently get the generic fields. The thing to change
- * when HSSE assets are actually being tracked is this constant **and** the
- * fieldset groups, not this alone.
+ * Deliberately separate from `DEPARTMENTS` in `settingService.ts`. They cover the
+ * same values today, but they answer two different questions — "which units have
+ * categories" and "which unit is this asset in" — and sharing one constant would
+ * make the asset form depend on a reference-data list it does not need.
  */
-const ASSET_DEPARTMENT = "IT";
+export const ASSET_DEPARTMENTS = ["IT", "HSSE"] as const;
 
+/**
+ * The pickers for the filter bar and the form: every category with its parents
+ * and its unit, plus locations. Same split as `getDepartmentOptions` — no
+ * counts, no gating, because both reads are `using (true)`.
+ *
+ * **Every unit is returned, not just this one.** `01500` gave the asset form a
+ * unit selector, so filtering the rows in SQL by one department would leave the
+ * other unit's pickers permanently empty. The form does the filtering, from
+ * `CategoryOption.department`.
+ */
 export async function getAssetFilterOptions(): Promise<{
   categories: CategoryOption[];
   locations: LocationOption[];
@@ -534,10 +567,7 @@ export async function getAssetFilterOptions(): Promise<{
   const [categories, locations] = await Promise.all([
     supabase
       .from("categories")
-      .select("id, name, parent_id, code")
-      // Filtered in the query rather than in JS, so the rows never reach the
-      // browser at all.
-      .eq("department", ASSET_DEPARTMENT)
+      .select("id, name, parent_id, code, department")
       .order("name", { ascending: true }),
     supabase
       .from("locations")
@@ -571,6 +601,7 @@ export async function getAssetFilterOptions(): Promise<{
         parentId,
         parentName: parentId ? (nameById.get(parentId) ?? null) : null,
         code: str(row.code),
+        department: String(row.department ?? ""),
       };
     }),
     locations: ((locations.data ?? []) as RawAsset[]).map((row) => {
@@ -628,6 +659,13 @@ function normalise(input: Omit<AssetInput, "credentials">) {
     category_id: input.category_id || null,
     location_id: input.location_id || null,
     purchase_date: input.purchase_date || null,
+    // The four HSSE fields are sent as `YYYY-MM-DD`, which is what a `date`
+    // column wants and what a native date input produces. An empty box is
+    // "not recorded", not today's date.
+    expiration_date: input.expiration_date || null,
+    last_inspection_date: input.last_inspection_date || null,
+    next_inspection_date: input.next_inspection_date || null,
+    calibration_cert_no: text(input.calibration_cert_no),
     purchase_price:
       input.purchase_price === null || Number.isNaN(input.purchase_price)
         ? null

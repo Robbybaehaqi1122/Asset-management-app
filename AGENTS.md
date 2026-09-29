@@ -24,7 +24,7 @@ repair, so the two tables the inventory depends on are written by nothing but th
 test fixtures. See The asset inventory, The form switches on a category code, and
 Database.
 
-**All fourteen migrations, including `20260927001400`, are applied to the remote**
+**All fifteen migrations, including `20260927001500`, are applied to the remote**
 as of 2026-09-29. `db diff --linked` reports `No schema changes found`, and
 `pg_indexes` returns 27 for `public` on both the local and the remote database.
 The 14 `drop column` statements that `db diff --linked` listed while `01100` was
@@ -223,6 +223,7 @@ supabase/
     └── 20260927001200_asset_excel_headers.sql  the workbook's headings + port counts
     └── 20260927001300_asset_settings.sql  locations area+room, category guards
     └── 20260927001400_asset_category_department.sql  categories.department
+    └── 20260927001500_asset_hsse_fields.sql  HSSE expiry/inspection/calibration
 
 .github/
 ├── ISSUES_KNOWN.md            known problems, grouped by severity
@@ -234,7 +235,7 @@ vercel.json                    SPA rewrite only — no framework, no buildComman
 ## Database
 
 `supabase/migrations/` holds the schema, applied to project
-`dnyszknpinqvcfkmoauz` (Postgres 17.6.1). Fourteen migrations, in order:
+`dnyszknpinqvcfkmoauz` (Postgres 17.6.1). Fifteen migrations, in order:
 
 | File | Contents |
 |---|---|
@@ -252,8 +253,9 @@ vercel.json                    SPA rewrite only — no framework, no buildComman
 | `20260927001200_asset_excel_headers.sql` | the workbook's own per-sheet headings, port counts replacing the two array columns, `usage_status`, the workbook's sub-categories; see The workbook is the specification |
 | `20260927001300_asset_settings.sql` | `locations.name` -> `area_name` + `room_name` + `notes`, the category delete guard, the no-third-level guard; see Asset settings manages the reference data |
 | `20260927001400_asset_category_department.sql` | `categories.department`, uniqueness per unit replacing the global one, the cross-unit and move-with-children guards; see Categories belong to a unit |
+| `20260927001500_asset_hsse_fields.sql` | the four HSSE columns and the `assets.department` trigger that keeps the unit in step with the category; see The asset form switches on the unit |
 
-**All fourteen are applied to the remote.** `db diff --linked` reports
+**All fifteen are applied to the remote.** `db diff --linked` reports
 `No schema changes found`, which is the proof that the checked-in migrations and
 the live database agree. Before the `01100` push it reported fourteen `drop
 column` statements; that was the diff saying the remote was behind the
@@ -405,9 +407,9 @@ triggers, `20260927000300` rls, `20260927000400` drop first-admin grant,
 `20260927000700` user-management guards, `20260927000800` must_change_password,
 `20260927000900` departments, `20260927001000` asset_inventory,
 `20260927001100` asset_dynamic_form, `20260927001200` asset_excel_headers,
-`20260927001300` asset_settings, `20260927001400` asset_category_department.
-Read out of the linked project on 2026-09-29, which is all fourteen and therefore
-nothing pending. That table, not
+`20260927001300` asset_settings, `20260927001400` asset_category_department,
+`20260927001500` asset_hsse_fields. Read out of the linked project on
+2026-09-29, which is all fifteen and therefore nothing pending. That table, not
 the schema itself, is what the CLI consults to decide what is pending, and it is
 also the only trustworthy way to confirm a push landed.
 
@@ -1361,6 +1363,75 @@ table, because a sub-category must be filed under a parent from its own unit.
 `categories_parent_name_key` and `guard_category_parent` both enforce that, so
 offering a cross-unit parent would only produce a `23514` the admin has to decode.
 
+### The asset form switches on the unit
+
+`01500` is the second axis on the asset form. Until now the fieldset was chosen by
+the **main category's code**; it is now chosen by the **unit** first and the
+category within it, because HSSE categories have no code and would otherwise fall
+through to `isGeneric` and be handed the IT fields.
+
+### Only four columns are new
+
+The request listed a full set of "common" fields for the HSSE form. Fifteen of them
+already exist: `asset_code`, `name`, `category_id`, `location_id`,
+`purchase_date`, `condition`, `asset_pic`, `serial_number`, `manufacture`,
+`model_name`, `model_type`, `short_name`, `description` and `capacity`. So the
+migration adds four — `expiration_date`, `last_inspection_date`,
+`next_inspection_date` and `calibration_cert_no` — and the form reuses the rest.
+
+**Plain columns, not a `jsonb specifications` blob.** The request offered
+`jsonb` as the flexible option. It is the wrong shape for four fields whose types
+are already known: a free-form column accepts `"31/12/2026"` beside a real date
+with nothing to object, and it makes "expire within 30 days" unindexable. The
+reasoning is the one already recorded for `usage_status` and `locations.name`.
+Verified on the local stack: a non-date `expiration_date` is refused.
+
+`next_inspection_date` is a **separate column rather than derived** from the last
+one plus an interval, because the interval is a policy rather than a fact, and
+policies change without a migration being the right place to record it.
+
+### The asset's unit is derived, and the trigger overwrites rather than refuses
+
+`assets.department` exists so the list can filter by unit without a join, and
+`assets_sync_department` copies the category's unit onto it. **The client never
+writes it.**
+
+Overwriting was the decision over raising on a mismatch, and the reason is
+specific: a client cannot distinguish "the caller did not send this column" from
+"the caller sent the default", so an honest insert that omits `department` and
+points at an HSSE category would be refused for a disagreement nobody made.
+Overwriting makes disagreement impossible by construction, for every writer
+including a service-role one.
+
+**The trigger fires on `update of category_id, department` — both.** The first
+version fired on `category_id` only, and `update assets set department = 'IT'`
+then wrote straight past it; the local-stack check caught it, because an `UPDATE OF`
+list only fires when the named column appears in the SET list. A column that is
+only ever meant to be derived still has to be named, or nothing stops a direct
+write to it. That is the same mechanism as `profiles_protect_email` being
+`before update of email` and `profiles_guard_last_admin` being `of role`.
+
+### Switching unit clears the category pickers
+
+The chosen category belongs to the unit it was chosen in. Keeping it would leave a
+`COMPUTER` id in a form showing HSSE fields, and the trigger would then quietly
+file the asset under IT. So `handleChangeDepartment` clears both the parent and the
+sub-category, the same reason the sub-category is cleared when a parent changes.
+
+**Hiding is not clearing.** An IT asset whose fields are hidden keeps them in the
+database as NULL-or-value; if the unit is later switched back to IT, the form starts
+from empty rather than restoring them. That is the accepted behaviour, and it is
+the reason nothing in `handleChangeDepartment` writes to the IT fields.
+
+### The category pickers are filtered by unit in the UI *and* the unit is derived in the database
+
+The form's `parentOptions` and `childOptions` both filter on
+`CategoryOption.department`, and `getAssetFilterOptions` now returns **every** unit
+rather than only IT — a SQL-side filter would have left the other unit's pickers
+permanently empty. Together with the trigger that is the "both" option rather than
+either half: the UI makes the wrong pair hard to pick, and the trigger makes it
+impossible to store.
+
 ### The category list collapses, and the state is a `Set` of ids
 
 Each parent row carries a chevron that hides its sub-categories, plus one
@@ -2130,7 +2201,7 @@ something local, which is itself the bug.
 - i18next is bootstrapped once in `src/i18n/index.ts`, imported by `src/main.tsx`.
   Never re-initialise it.
 - One namespace, `"common"`. One locale, `en`. The file is
-  `src/locales/en/common.json` — add new keys there. It holds 471 leaf keys
+  `src/locales/en/common.json` — add new keys there. It holds 480 leaf keys
   today, under `sidebar`, `header`, `userDropdown`, `auth`, `profile`,
   `mustChangePassword`, `departments`, `assetSettings`, `users`, and `assets`.
 - **Do not repeat a key inside one object.** JSON resolves a duplicate by taking
@@ -2200,6 +2271,9 @@ These were deliberate. Do not "clean them up" without asking.
 | Writes on both reference tables are admin-only | The issue asked for "read & write for authenticated". Staff read them because the asset form's pickers need the data, but a staff write could re-point every asset in a category. Matches `assets_write_admin` and the existing policies |
 | `NavSubItem` has `adminOnly` and the sidebar filters it | The Asset Management group mixes an open-to-everyone screen (the inventory) with an admin-only one, so the flag cannot live on the group. A group whose every sub-item is admin-only is dropped entirely rather than rendered as a dead row for staff. The emptiness test is "does it still have any sub-items", **not** "is it adminOnly" — the latter also drops admin-only groups for an admin, which is how User Management went missing the first time this was written |
 | `categories.department` is the owning unit, and uniqueness is per unit | A unit filter needs a category's identity to be its name *within its unit*; the global `UNIQUE (name)` is what stopped HSSE having a `Monitor` while IT had one. Two partial unique indexes replace it, and the two guards keep a child from being filed under a parent in another unit |
+| `assets.department` is derived from the category, never written by the client | It exists so the list can filter by unit without a join. `assets_sync_department` overwrites rather than raising, because a client cannot tell "the column was not sent" from "the default was sent", and an honest insert that omitted it would otherwise be refused. The trigger is on `update of category_id, department` — both, because an `UPDATE OF` list only fires for a column actually in the SET list |
+| The four HSSE fields are typed columns, not a `jsonb specifications` blob | Their types are already known, so a free-form column would accept `"31/12/2026"` beside a real date with nothing to object, and would make "expire within 30 days" unindexable. Verified: a non-date `expiration_date` is refused |
+| `next_inspection_date` is stored, not derived from the last one | The interval between inspections is a policy, not a fact, and policies change without a migration being the right place to record it |
 | `status` is not a field on the asset form, and `assigned` is offered nowhere in the module | `available` and `assigned` are derived from the loans and `assets_guard_status` refuses a contradicting write, so a form offering either would offer something the database rejects. `setAssetStatus` takes `Exclude<AssetStatus, "assigned">` so the un-derivable value cannot even be passed |
 | The asset list is readable by every signed-in user, unlike `/users` | Stock belongs to the company rather than one department, and `assets_select_authenticated` is `using (true)`, so gating the read hands every staff member an empty page. Staff lose the Credentials tab and the write actions, and the credential was never in their response |
 | The form switches on `categories.code`, not on the category name | A name is editable, so a rename would silently empty a fieldset. `code` is nullable and unique, survives a rename, and a category without one falls back to the common fields instead of breaking the form. See The form switches on a category code |
@@ -2372,6 +2446,9 @@ not go looking for them unprompted.
   room-less rows for the same area: `null` is distinct from `null` in a Postgres
   unique index, and `locations_area_only_key` is the partial index that actually
   refuses the duplicate.
+- Don't write `assets.department` from the client. It is derived from the category
+  by `assets_sync_department`, and a value that disagrees with the category is a
+  bug rather than a variant.
 - Don't let a category be deleted while it still has assets or sub-categories.
   `assets.category_id` is `on delete set null`, so the database will do it and
   say nothing. `categories_guard_delete` holds; `deleteCategory` asks.

@@ -29,6 +29,7 @@ import {
   getAssetFilterOptions,
   setAssetStatus,
   updateAsset,
+  ASSET_DEPARTMENTS,
   AssetInUseError,
 } from "../services/assetService";
 import type {
@@ -70,6 +71,13 @@ type AssetForm = {
   name: string;
   description: string;
   condition: AssetCondition;
+  /**
+   * UI-only: the owning unit. It decides which categories the pickers offer and
+   * which fieldset the Specification and Network tabs show. It is *not* sent as
+   * the asset's unit — `assets_sync_department` derives that from the category,
+   * so the two cannot disagree.
+   */
+  department: string;
   /** UI-only: the main category. `category_id` holds the chosen sub-category. */
   parent_category_id: string;
   category_id: string;
@@ -138,6 +146,11 @@ type AssetForm = {
   port_power: string;
   credential_username: string;
   credential_password: string;
+  // HSSE only. Null on an IT asset, and never shown for one.
+  expiration_date: string;
+  last_inspection_date: string;
+  next_inspection_date: string;
+  calibration_cert_no: string;
 };
 
 const EMPTY_FORM: AssetForm = {
@@ -145,6 +158,7 @@ const EMPTY_FORM: AssetForm = {
   name: "",
   description: "",
   condition: "good",
+  department: ASSET_DEPARTMENTS[0],
   parent_category_id: "",
   category_id: "",
   location_id: "",
@@ -210,6 +224,10 @@ const EMPTY_FORM: AssetForm = {
   port_power: "",
   credential_username: "",
   credential_password: "",
+  expiration_date: "",
+  last_inspection_date: "",
+  next_inspection_date: "",
+  calibration_cert_no: "",
 };
 
 /** Credentials are omitted when the tab was never opened on an existing asset. */
@@ -223,6 +241,10 @@ function formFromAsset(asset: Asset, categories: CategoryOption[]): AssetForm {
     name: asset.name,
     description: asset.description ?? "",
     condition: asset.condition,
+    // The unit comes off the asset, which got it from its category by trigger, so
+    // editing an asset opens on the unit it actually belongs to.
+    department:
+      asset.department || category?.department || ASSET_DEPARTMENTS[0],
     // A sub-category's parent is what the fieldset switches on; a top-level
     // category is its own parent.
     parent_category_id: category ? (category.parentId ?? category.id) : "",
@@ -299,6 +321,10 @@ function formFromAsset(asset: Asset, categories: CategoryOption[]): AssetForm {
     // that looks like a stored-but-empty credential.
     credential_username: asset.credentials?.username ?? "",
     credential_password: asset.credentials?.password ?? "",
+    expiration_date: asset.expiration_date ?? "",
+    last_inspection_date: asset.last_inspection_date ?? "",
+    next_inspection_date: asset.next_inspection_date ?? "",
+    calibration_cert_no: asset.calibration_cert_no ?? "",
   };
 }
 
@@ -332,6 +358,13 @@ function toInput(form: AssetForm, includeCredentials: boolean): AssetInput {
     location_id: form.location_id || null,
     current_location: form.current_location || null,
     purchase_date: form.purchase_date || null,
+    // Sent as the raw `YYYY-MM-DD` a native date input produces, and only for
+    // HSSE: the fieldset does not render them for IT, so they arrive empty and
+    // normalise turns that into NULL rather than blanking a stored value.
+    expiration_date: form.expiration_date || null,
+    last_inspection_date: form.last_inspection_date || null,
+    next_inspection_date: form.next_inspection_date || null,
+    calibration_cert_no: form.calibration_cert_no || null,
     // An empty box is "not recorded", not zero. NaN means the box holds
     // something that is not a number, which the column check would refuse.
     purchase_price:
@@ -592,19 +625,63 @@ export default function AssetListPage() {
   const parentOptions = useMemo(
     () =>
       categories
-        .filter((option) => option.parentId === null)
+        .filter(
+          (option) =>
+            option.parentId === null &&
+            // Only the unit on screen. `assets_sync_department` derives the
+            // asset's unit from the category, so offering a cross-unit category
+            // here would only produce a fieldset that does not match the label.
+            option.department === form.department,
+        )
         .map((option) => ({ value: option.id, label: option.name })),
-    [categories],
+    [categories, form.department],
   );
 
   /** The sub-category picker: children of whatever main category is chosen. */
   const childOptions = useMemo(
     () =>
       categories
-        .filter((option) => option.parentId === form.parent_category_id)
+        .filter(
+          (option) =>
+            option.parentId === form.parent_category_id &&
+            option.department === form.department,
+        )
         .map((option) => ({ value: option.id, label: option.name })),
-    [categories, form.parent_category_id],
+    [categories, form.parent_category_id, form.department],
   );
+
+  /**
+   * The HSSE fieldset, chosen by unit rather than by a category `code`.
+   *
+   * HSSE categories have no `code` — the fieldset switch has never honoured one
+   * on a category an admin added — so without this they would fall through to
+   * `isGeneric` and be given the IT fields, which is the opposite of the point.
+   */
+  const isHsse = form.department === "HSSE";
+
+  const departmentOptions = useMemo(
+    () =>
+      ASSET_DEPARTMENTS.map((value) => ({
+        value,
+        label: t(`units.${value}`),
+      })),
+    [t],
+  );
+
+  /**
+   * Switching unit clears the category pickers.
+   *
+   * The chosen category belongs to the unit it was chosen in, so keeping it would
+   * leave a COMPUTER id sitting in a form showing HSSE fields — and
+   * `assets_sync_department` would then quietly file the asset under IT. The
+   * sub-category is cleared for the same reason it is when a parent changes: it
+   * belongs to the parent that was just left.
+   */
+  const handleChangeDepartment = (value: string) => {
+    set("department", value);
+    set("parent_category_id", "");
+    set("category_id", "");
+  };
 
   /**
    * The fieldset is chosen by the *main* category's `code`, never by its name.
@@ -1214,22 +1291,44 @@ export default function AssetListPage() {
                   />
                 </div>
 
-                <div>
-                  <Label htmlFor="asset-condition">
-                    {t("fields.condition")}
-                  </Label>
-                  {/* `key` is load-bearing: `Select` keeps its selection in
-                      `useState(defaultValue)`, so without it the box would keep
-                      showing the previously edited asset's condition. */}
-                  <Select
-                    key={`cond-${editingId ?? "new"}`}
-                    id="asset-condition"
-                    options={(
-                      ["new", "good", "fair", "poor", "broken"] as const
-                    ).map((c) => ({ value: c, label: t(`condition.${c}`) }))}
-                    defaultValue={form.condition}
-                    onChange={(v) => set("condition", v as AssetCondition)}
-                  />
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  {/* The unit, above the categories it filters. Keyed by its own
+                      value because `Select` reads `defaultValue` once and would
+                      otherwise show the unit loaded at mount. */}
+                  <div>
+                    <Label htmlFor="asset-department">
+                      {t("fields.department")}{" "}
+                      <span className="text-error-500">*</span>
+                    </Label>
+                    <Select
+                      key={`dept-${editingId ?? "new"}`}
+                      id="asset-department"
+                      options={departmentOptions}
+                      defaultValue={form.department}
+                      onChange={handleChangeDepartment}
+                    />
+                    <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                      {t("fields.departmentHint")}
+                    </p>
+                  </div>
+
+                  <div>
+                    <Label htmlFor="asset-condition">
+                      {t("fields.condition")}
+                    </Label>
+                    {/* `key` is load-bearing: `Select` keeps its selection in
+                        `useState(defaultValue)`, so without it the box would keep
+                        showing the previously edited asset's condition. */}
+                    <Select
+                      key={`cond-${editingId ?? "new"}`}
+                      id="asset-condition"
+                      options={(
+                        ["new", "good", "fair", "poor", "broken"] as const
+                      ).map((c) => ({ value: c, label: t(`condition.${c}`) }))}
+                      defaultValue={form.condition}
+                      onChange={(v) => set("condition", v as AssetCondition)}
+                    />
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -1292,454 +1391,545 @@ export default function AssetListPage() {
 
             {section === "specification" && (
               <>
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                  <TextField
-                    id="asset-manufacture"
-                    label={t("fields.manufacture")}
-                    value={form.manufacture}
-                    onChange={(v) => set("manufacture", v)}
-                  />
-                  <TextField
-                    id="asset-model-name"
-                    label={t("fields.modelName")}
-                    value={form.model_name}
-                    onChange={(v) => set("model_name", v)}
-                  />
-                  <TextField
-                    id="asset-model-type"
-                    label={t("fields.modelType")}
-                    value={form.model_type}
-                    onChange={(v) => set("model_type", v)}
-                  />
-                </div>
-
-                {isComputer && (
+                {/* HSSE gets its own fieldset and none of the IT ones. The three
+                    common fields below (make, model, type) are shown for both
+                    units because `01500` found they already exist on `assets` and
+                    do not have to be duplicated per unit. */}
+                {isHsse && (
                   <fieldset className="space-y-4">
-                    <Legend>{t("fields.computerSpecLegend")}</Legend>
+                    <Legend>{t("fields.hsseLegend")}</Legend>
 
                     <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                      <TextField
-                        id="asset-processor-mfg"
-                        label={t("fields.processorMfg")}
-                        value={form.processor_mfg}
-                        onChange={(v) => set("processor_mfg", v)}
-                        placeholder="INTEL"
-                      />
-                      <TextField
-                        id="asset-processor-model"
-                        label={t("fields.processorModel")}
-                        value={form.processor_model}
-                        onChange={(v) => set("processor_model", v)}
-                        placeholder="Ultra 5 225T"
-                      />
-                      <TextField
-                        id="asset-processor-spec"
-                        label={t("fields.processorSpec")}
-                        value={form.processor_spec}
-                        onChange={(v) => set("processor_spec", v)}
-                        placeholder="Intel Core Ultra 5 225T (2.50 GHz)"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-                      <TextField
-                        id="asset-ram-mfg"
-                        label={t("fields.ramMfg")}
-                        value={form.ram_mfg}
-                        onChange={(v) => set("ram_mfg", v)}
-                        placeholder="Samsung"
-                      />
-                      <TextField
-                        id="asset-ram-type"
-                        label={t("fields.ramType")}
-                        value={form.ram_type}
-                        onChange={(v) => set("ram_type", v)}
-                        placeholder="DDR5"
-                      />
-                      <TextField
-                        id="asset-ram-speed"
-                        label={t("fields.ramSpeed")}
-                        type="number"
-                        value={form.ram_speed}
-                        onChange={(v) => set("ram_speed", v)}
-                        placeholder="5600"
-                      />
-                      <TextField
-                        id="asset-ram-slots"
-                        label={t("fields.ramSlots")}
-                        type="number"
-                        value={form.ram_slots}
-                        onChange={(v) => set("ram_slots", v)}
-                        placeholder="2"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                      <TextField
-                        id="asset-ram-channel"
-                        label={t("fields.ramChannel")}
-                        value={form.ram_channel}
-                        onChange={(v) => set("ram_channel", v)}
-                        placeholder="Dual Chanel"
-                      />
-                      <TextField
-                        id="asset-ram-size"
-                        label={t("fields.ramSizeGb")}
-                        type="number"
-                        value={form.ram_size_gb}
-                        onChange={(v) => set("ram_size_gb", v)}
-                        placeholder="16"
-                      />
                       <div>
-                        <Label htmlFor="asset-gpu-onboard">
-                          {t("fields.gpuOnboard")}
+                        <Label htmlFor="asset-expiration">
+                          {t("fields.expirationDate")} <Optional />
                         </Label>
-                        <div className="flex gap-5 pt-2">
-                          <Checkbox
-                            id="asset-gpu-onboard"
-                            label="Y"
-                            checked={form.gpu_onboard === true}
-                            onChange={(checked) =>
-                              set("gpu_onboard", checked ? true : null)
-                            }
-                          />
-                        </div>
+                        <Input
+                          id="asset-expiration"
+                          type="date"
+                          value={form.expiration_date}
+                          onChange={(event) =>
+                            set("expiration_date", event.target.value)
+                          }
+                        />
+                      </div>
+                      <div>
+                        <Label htmlFor="asset-last-inspection">
+                          {t("fields.lastInspectionDate")} <Optional />
+                        </Label>
+                        <Input
+                          id="asset-last-inspection"
+                          type="date"
+                          value={form.last_inspection_date}
+                          onChange={(event) =>
+                            set("last_inspection_date", event.target.value)
+                          }
+                        />
+                      </div>
+                      <div>
+                        <Label htmlFor="asset-next-inspection">
+                          {t("fields.nextInspectionDate")} <Optional />
+                        </Label>
+                        <Input
+                          id="asset-next-inspection"
+                          type="date"
+                          value={form.next_inspection_date}
+                          onChange={(event) =>
+                            set("next_inspection_date", event.target.value)
+                          }
+                        />
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                       <TextField
-                        id="asset-gpu"
-                        label={t("fields.gpuModel")}
-                        value={form.gpu_model}
-                        onChange={(v) => set("gpu_model", v)}
-                        placeholder="UHD Graphics 770"
+                        id="asset-calibration-cert"
+                        label={t("fields.calibrationCertNo")}
+                        value={form.calibration_cert_no}
+                        onChange={(v) => set("calibration_cert_no", v)}
+                        placeholder="CERT/HSSE/2026/0042"
                       />
                       <TextField
-                        id="asset-storage-mfg"
-                        label={t("fields.storageMfg")}
-                        value={form.storage_mfg}
-                        onChange={(v) => set("storage_mfg", v)}
-                        placeholder="KIOXIA"
-                      />
-                      <TextField
-                        id="asset-storage-type"
-                        label={t("fields.storageType")}
-                        value={form.storage_type}
-                        onChange={(v) => set("storage_type", v)}
-                        placeholder="SSD-NVME"
+                        id="asset-hsse-capacity"
+                        label={t("fields.capacity")}
+                        value={form.capacity}
+                        onChange={(v) => set("capacity", v)}
+                        placeholder="5 kg"
                       />
                     </div>
 
-                    <TextField
-                      id="asset-storage-size"
-                      label={t("fields.storageSize")}
-                      value={form.storage_size}
-                      onChange={(v) => set("storage_size", v)}
-                      placeholder="1024"
-                    />
-
-                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                      <TextField
-                        id="asset-display-model"
-                        label={t("fields.displayModel")}
-                        value={form.display_model}
-                        onChange={(v) => set("display_model", v)}
-                        placeholder="UA55DU8000"
-                      />
-                      <TextField
-                        id="asset-display-type"
-                        label={t("fields.displayType")}
-                        value={form.display_type}
-                        onChange={(v) => set("display_type", v)}
-                        placeholder="Curve"
-                      />
-                      <TextField
-                        id="asset-display-size"
-                        label={t("fields.displaySize")}
-                        value={form.display_size}
-                        onChange={(v) => set("display_size", v)}
-                        placeholder='55"'
-                      />
-                    </div>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      {t("fields.hsseHint")}
+                    </p>
                   </fieldset>
                 )}
 
-                {isGeneric && (
-                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                    <TextField
-                      id="asset-processor"
-                      label={t("fields.processorSpec")}
-                      value={form.processor_spec}
-                      onChange={(v) => set("processor_spec", v)}
-                      placeholder="Apple M3 Pro"
-                    />
-                    <TextField
-                      id="asset-ram"
-                      label={t("fields.ramSpec")}
-                      value={form.ram_spec}
-                      onChange={(v) => set("ram_spec", v)}
-                      placeholder="18 GB"
-                    />
-                    <TextField
-                      id="asset-storage"
-                      label={t("fields.storageSpec")}
-                      value={form.storage_spec}
-                      onChange={(v) => set("storage_spec", v)}
-                      placeholder="512 GB NVMe"
-                    />
-                    <TextField
-                      id="asset-display"
-                      label={t("fields.displaySpec")}
-                      value={form.display_spec}
-                      onChange={(v) => set("display_spec", v)}
-                      placeholder="14.2 inch Liquid Retina XDR"
-                    />
-                    <TextField
-                      id="asset-gpu"
-                      label={t("fields.gpuModel")}
-                      value={form.gpu_model}
-                      onChange={(v) => set("gpu_model", v)}
-                      placeholder="RTX 4060"
-                    />
-                  </div>
-                )}
-
-                {isDisplay && (
-                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                    <TextField
-                      id="asset-resolution"
-                      label={t("fields.resolution")}
-                      value={form.resolution}
-                      onChange={(v) => set("resolution", v)}
-                      placeholder="1920 x 1080"
-                    />
-                    <TextField
-                      id="asset-panel-size"
-                      label={t("fields.panelSize")}
-                      value={form.panel_size}
-                      onChange={(v) => set("panel_size", v)}
-                      placeholder='24"'
-                    />
-                  </div>
-                )}
-
-                {isPeripheral && (
-                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                    <TextField
-                      id="asset-capacity"
-                      label={t("fields.capacity")}
-                      value={form.capacity}
-                      onChange={(v) => set("capacity", v)}
-                      placeholder="1200 VA / 720W"
-                    />
-                    <TextField
-                      id="asset-speed"
-                      label={t("fields.speed")}
-                      value={form.speed}
-                      onChange={(v) => set("speed", v)}
-                      placeholder="400 MB/s"
-                    />
-                  </div>
-                )}
-
-                {isNetworkLike && (
+                {!isHsse && (
                   <>
-                    <fieldset className="space-y-4">
-                      <Legend>{t("fields.storageLegend")}</Legend>
-                      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                        <TextField
-                          id="asset-storage-mfg"
-                          label={t("fields.storageMfg")}
-                          value={form.storage_mfg}
-                          onChange={(v) => set("storage_mfg", v)}
-                        />
-                        <TextField
-                          id="asset-storage-type"
-                          label={t("fields.storageType")}
-                          value={form.storage_type}
-                          onChange={(v) => set("storage_type", v)}
-                        />
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                      <TextField
+                        id="asset-manufacture"
+                        label={t("fields.manufacture")}
+                        value={form.manufacture}
+                        onChange={(v) => set("manufacture", v)}
+                      />
+                      <TextField
+                        id="asset-model-name"
+                        label={t("fields.modelName")}
+                        value={form.model_name}
+                        onChange={(v) => set("model_name", v)}
+                      />
+                      <TextField
+                        id="asset-model-type"
+                        label={t("fields.modelType")}
+                        value={form.model_type}
+                        onChange={(v) => set("model_type", v)}
+                      />
+                    </div>
+
+                    {isComputer && (
+                      <fieldset className="space-y-4">
+                        <Legend>{t("fields.computerSpecLegend")}</Legend>
+
+                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                          <TextField
+                            id="asset-processor-mfg"
+                            label={t("fields.processorMfg")}
+                            value={form.processor_mfg}
+                            onChange={(v) => set("processor_mfg", v)}
+                            placeholder="INTEL"
+                          />
+                          <TextField
+                            id="asset-processor-model"
+                            label={t("fields.processorModel")}
+                            value={form.processor_model}
+                            onChange={(v) => set("processor_model", v)}
+                            placeholder="Ultra 5 225T"
+                          />
+                          <TextField
+                            id="asset-processor-spec"
+                            label={t("fields.processorSpec")}
+                            value={form.processor_spec}
+                            onChange={(v) => set("processor_spec", v)}
+                            placeholder="Intel Core Ultra 5 225T (2.50 GHz)"
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                          <TextField
+                            id="asset-ram-mfg"
+                            label={t("fields.ramMfg")}
+                            value={form.ram_mfg}
+                            onChange={(v) => set("ram_mfg", v)}
+                            placeholder="Samsung"
+                          />
+                          <TextField
+                            id="asset-ram-type"
+                            label={t("fields.ramType")}
+                            value={form.ram_type}
+                            onChange={(v) => set("ram_type", v)}
+                            placeholder="DDR5"
+                          />
+                          <TextField
+                            id="asset-ram-speed"
+                            label={t("fields.ramSpeed")}
+                            type="number"
+                            value={form.ram_speed}
+                            onChange={(v) => set("ram_speed", v)}
+                            placeholder="5600"
+                          />
+                          <TextField
+                            id="asset-ram-slots"
+                            label={t("fields.ramSlots")}
+                            type="number"
+                            value={form.ram_slots}
+                            onChange={(v) => set("ram_slots", v)}
+                            placeholder="2"
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                          <TextField
+                            id="asset-ram-channel"
+                            label={t("fields.ramChannel")}
+                            value={form.ram_channel}
+                            onChange={(v) => set("ram_channel", v)}
+                            placeholder="Dual Chanel"
+                          />
+                          <TextField
+                            id="asset-ram-size"
+                            label={t("fields.ramSizeGb")}
+                            type="number"
+                            value={form.ram_size_gb}
+                            onChange={(v) => set("ram_size_gb", v)}
+                            placeholder="16"
+                          />
+                          <div>
+                            <Label htmlFor="asset-gpu-onboard">
+                              {t("fields.gpuOnboard")}
+                            </Label>
+                            <div className="flex gap-5 pt-2">
+                              <Checkbox
+                                id="asset-gpu-onboard"
+                                label="Y"
+                                checked={form.gpu_onboard === true}
+                                onChange={(checked) =>
+                                  set("gpu_onboard", checked ? true : null)
+                                }
+                              />
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                          <TextField
+                            id="asset-gpu"
+                            label={t("fields.gpuModel")}
+                            value={form.gpu_model}
+                            onChange={(v) => set("gpu_model", v)}
+                            placeholder="UHD Graphics 770"
+                          />
+                          <TextField
+                            id="asset-storage-mfg"
+                            label={t("fields.storageMfg")}
+                            value={form.storage_mfg}
+                            onChange={(v) => set("storage_mfg", v)}
+                            placeholder="KIOXIA"
+                          />
+                          <TextField
+                            id="asset-storage-type"
+                            label={t("fields.storageType")}
+                            value={form.storage_type}
+                            onChange={(v) => set("storage_type", v)}
+                            placeholder="SSD-NVME"
+                          />
+                        </div>
+
                         <TextField
                           id="asset-storage-size"
                           label={t("fields.storageSize")}
                           value={form.storage_size}
                           onChange={(v) => set("storage_size", v)}
-                          placeholder="128"
+                          placeholder="1024"
                         />
-                      </div>
-                    </fieldset>
 
-                    <fieldset className="space-y-4">
-                      <Legend>{t("fields.portLegend")}</Legend>
-                      <div className="grid grid-cols-2 gap-4 sm:grid-cols-5">
-                        {NETWORK_PORTS.map((port) => (
+                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                           <TextField
-                            key={port.field}
-                            id={`asset-${port.field}`}
-                            label={t(port.label)}
-                            type="number"
-                            value={form[port.field]}
-                            onChange={(v) => set(port.field, v)}
+                            id="asset-display-model"
+                            label={t("fields.displayModel")}
+                            value={form.display_model}
+                            onChange={(v) => set("display_model", v)}
+                            placeholder="UA55DU8000"
                           />
-                        ))}
-                      </div>
-                    </fieldset>
-                  </>
-                )}
+                          <TextField
+                            id="asset-display-type"
+                            label={t("fields.displayType")}
+                            value={form.display_type}
+                            onChange={(v) => set("display_type", v)}
+                            placeholder="Curve"
+                          />
+                          <TextField
+                            id="asset-display-size"
+                            label={t("fields.displaySize")}
+                            value={form.display_size}
+                            onChange={(v) => set("display_size", v)}
+                            placeholder='55"'
+                          />
+                        </div>
+                      </fieldset>
+                    )}
 
-                {isPorted && (
-                  <fieldset className="space-y-4">
-                    <Legend>{t("fields.portLegend")}</Legend>
-                    <div className="grid grid-cols-2 gap-4 sm:grid-cols-5">
-                      {portFieldsForCategory.map((port) => (
+                    {isGeneric && (
+                      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                         <TextField
-                          key={port.field}
-                          id={`asset-${port.field}`}
-                          label={t(port.label)}
-                          type="number"
-                          value={form[port.field]}
-                          onChange={(v) => set(port.field, v)}
+                          id="asset-processor"
+                          label={t("fields.processorSpec")}
+                          value={form.processor_spec}
+                          onChange={(v) => set("processor_spec", v)}
+                          placeholder="Apple M3 Pro"
                         />
-                      ))}
-                    </div>
-                  </fieldset>
+                        <TextField
+                          id="asset-ram"
+                          label={t("fields.ramSpec")}
+                          value={form.ram_spec}
+                          onChange={(v) => set("ram_spec", v)}
+                          placeholder="18 GB"
+                        />
+                        <TextField
+                          id="asset-storage"
+                          label={t("fields.storageSpec")}
+                          value={form.storage_spec}
+                          onChange={(v) => set("storage_spec", v)}
+                          placeholder="512 GB NVMe"
+                        />
+                        <TextField
+                          id="asset-display"
+                          label={t("fields.displaySpec")}
+                          value={form.display_spec}
+                          onChange={(v) => set("display_spec", v)}
+                          placeholder="14.2 inch Liquid Retina XDR"
+                        />
+                        <TextField
+                          id="asset-gpu"
+                          label={t("fields.gpuModel")}
+                          value={form.gpu_model}
+                          onChange={(v) => set("gpu_model", v)}
+                          placeholder="RTX 4060"
+                        />
+                      </div>
+                    )}
+
+                    {isDisplay && (
+                      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                        <TextField
+                          id="asset-resolution"
+                          label={t("fields.resolution")}
+                          value={form.resolution}
+                          onChange={(v) => set("resolution", v)}
+                          placeholder="1920 x 1080"
+                        />
+                        <TextField
+                          id="asset-panel-size"
+                          label={t("fields.panelSize")}
+                          value={form.panel_size}
+                          onChange={(v) => set("panel_size", v)}
+                          placeholder='24"'
+                        />
+                      </div>
+                    )}
+
+                    {isPeripheral && (
+                      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                        <TextField
+                          id="asset-capacity"
+                          label={t("fields.capacity")}
+                          value={form.capacity}
+                          onChange={(v) => set("capacity", v)}
+                          placeholder="1200 VA / 720W"
+                        />
+                        <TextField
+                          id="asset-speed"
+                          label={t("fields.speed")}
+                          value={form.speed}
+                          onChange={(v) => set("speed", v)}
+                          placeholder="400 MB/s"
+                        />
+                      </div>
+                    )}
+
+                    {isNetworkLike && (
+                      <>
+                        <fieldset className="space-y-4">
+                          <Legend>{t("fields.storageLegend")}</Legend>
+                          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                            <TextField
+                              id="asset-storage-mfg"
+                              label={t("fields.storageMfg")}
+                              value={form.storage_mfg}
+                              onChange={(v) => set("storage_mfg", v)}
+                            />
+                            <TextField
+                              id="asset-storage-type"
+                              label={t("fields.storageType")}
+                              value={form.storage_type}
+                              onChange={(v) => set("storage_type", v)}
+                            />
+                            <TextField
+                              id="asset-storage-size"
+                              label={t("fields.storageSize")}
+                              value={form.storage_size}
+                              onChange={(v) => set("storage_size", v)}
+                              placeholder="128"
+                            />
+                          </div>
+                        </fieldset>
+
+                        <fieldset className="space-y-4">
+                          <Legend>{t("fields.portLegend")}</Legend>
+                          <div className="grid grid-cols-2 gap-4 sm:grid-cols-5">
+                            {NETWORK_PORTS.map((port) => (
+                              <TextField
+                                key={port.field}
+                                id={`asset-${port.field}`}
+                                label={t(port.label)}
+                                type="number"
+                                value={form[port.field]}
+                                onChange={(v) => set(port.field, v)}
+                              />
+                            ))}
+                          </div>
+                        </fieldset>
+                      </>
+                    )}
+
+                    {isPorted && (
+                      <fieldset className="space-y-4">
+                        <Legend>{t("fields.portLegend")}</Legend>
+                        <div className="grid grid-cols-2 gap-4 sm:grid-cols-5">
+                          {portFieldsForCategory.map((port) => (
+                            <TextField
+                              key={port.field}
+                              id={`asset-${port.field}`}
+                              label={t(port.label)}
+                              type="number"
+                              value={form[port.field]}
+                              onChange={(v) => set(port.field, v)}
+                            />
+                          ))}
+                        </div>
+                      </fieldset>
+                    )}
+                  </>
                 )}
               </>
             )}
 
             {section === "network" && (
               <>
-                {(isComputer || isNetworkLike || isGeneric) && (
+                {/* An HSSE item has no hostname, address, MAC or firmware, so the
+                    whole network tab is empty for one. The tab is still rendered
+                    — `Select` and the tab strip are not conditional — because a
+                    tab that appears and disappears is worse than an empty one,
+                    and the explanation says why rather than leaving a blank
+                    panel. */}
+                {isHsse ? (
+                  <p className="rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-500 dark:border-gray-800 dark:bg-white/3 dark:text-gray-400">
+                    {t("fields.hsseNoNetwork")}
+                  </p>
+                ) : (
                   <>
-                    <TextField
-                      id="asset-hostname"
-                      label={t("fields.hostname")}
-                      value={form.hostname}
-                      onChange={(v) => set("hostname", v)}
-                      placeholder="mbp-01"
-                    />
-                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                      <TextField
-                        id="asset-ip-wifi"
-                        label={t("fields.ipWifi")}
-                        value={form.ip_wifi}
-                        onChange={(v) => set("ip_wifi", v)}
-                      />
-                      <TextField
-                        id="asset-ip-eth"
-                        label={t("fields.ipEth")}
-                        value={form.ip_eth}
-                        onChange={(v) => set("ip_eth", v)}
-                      />
-                      <TextField
-                        id="asset-mac-wifi"
-                        label={t("fields.macWifi")}
-                        value={form.mac_wifi}
-                        onChange={(v) => set("mac_wifi", v)}
-                      />
-                      <TextField
-                        id="asset-mac-eth"
-                        label={t("fields.macEth")}
-                        value={form.mac_eth}
-                        onChange={(v) => set("mac_eth", v)}
-                      />
-                    </div>
-                    <TextField
-                      id="asset-os"
-                      label={
-                        isComputer
-                          ? t("fields.osOrFirmware")
-                          : t("fields.firmwareVersion")
-                      }
-                      value={form.os_or_firmware_version}
-                      onChange={(v) => set("os_or_firmware_version", v)}
-                    />
-                  </>
-                )}
+                    {(isComputer || isNetworkLike || isGeneric) && (
+                      <>
+                        <TextField
+                          id="asset-hostname"
+                          label={t("fields.hostname")}
+                          value={form.hostname}
+                          onChange={(v) => set("hostname", v)}
+                          placeholder="mbp-01"
+                        />
+                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                          <TextField
+                            id="asset-ip-wifi"
+                            label={t("fields.ipWifi")}
+                            value={form.ip_wifi}
+                            onChange={(v) => set("ip_wifi", v)}
+                          />
+                          <TextField
+                            id="asset-ip-eth"
+                            label={t("fields.ipEth")}
+                            value={form.ip_eth}
+                            onChange={(v) => set("ip_eth", v)}
+                          />
+                          <TextField
+                            id="asset-mac-wifi"
+                            label={t("fields.macWifi")}
+                            value={form.mac_wifi}
+                            onChange={(v) => set("mac_wifi", v)}
+                          />
+                          <TextField
+                            id="asset-mac-eth"
+                            label={t("fields.macEth")}
+                            value={form.mac_eth}
+                            onChange={(v) => set("mac_eth", v)}
+                          />
+                        </div>
+                        <TextField
+                          id="asset-os"
+                          label={
+                            isComputer
+                              ? t("fields.osOrFirmware")
+                              : t("fields.firmwareVersion")
+                          }
+                          value={form.os_or_firmware_version}
+                          onChange={(v) => set("os_or_firmware_version", v)}
+                        />
+                      </>
+                    )}
 
-                {(isComputer || isGeneric) && (
-                  <TextField
-                    id="asset-product-key"
-                    label={t("fields.productKey")}
-                    value={form.product_key}
-                    onChange={(v) => set("product_key", v)}
-                  />
-                )}
-
-                {isNetworkLike && (
-                  <>
-                    {parentCode === "NETWORK_DEVICES" && (
+                    {(isComputer || isGeneric) && (
                       <TextField
-                        id="asset-firmware-platform"
-                        label={t("fields.firmwarePlatform")}
-                        value={form.firmware_platform}
-                        onChange={(v) => set("firmware_platform", v)}
-                        placeholder="CISCO"
+                        id="asset-product-key"
+                        label={t("fields.productKey")}
+                        value={form.product_key}
+                        onChange={(v) => set("product_key", v)}
                       />
                     )}
 
-                    {(parentCode === "IOT" || parentCode === "SERVER") && (
-                      <TextField
-                        id="asset-power-source"
-                        label={t("fields.powerSource")}
-                        value={form.power_source}
-                        onChange={(v) => set("power_source", v)}
-                        placeholder="PoE (Power over Ethernet)"
-                      />
-                    )}
+                    {isNetworkLike && (
+                      <>
+                        {parentCode === "NETWORK_DEVICES" && (
+                          <TextField
+                            id="asset-firmware-platform"
+                            label={t("fields.firmwarePlatform")}
+                            value={form.firmware_platform}
+                            onChange={(v) => set("firmware_platform", v)}
+                            placeholder="CISCO"
+                          />
+                        )}
 
-                    <div>
-                      <Label htmlFor="asset-connection-type">
-                        {t("fields.connectionType")} <Optional />
-                      </Label>
-                      <Select
-                        key={`form-conn-${editingId ?? "new"}`}
-                        id="asset-connection-type"
-                        options={connectionTypeOptions}
-                        placeholder={t("fields.none")}
-                        defaultValue={form.connection_type}
-                        onChange={(v) => set("connection_type", v)}
-                      />
-                    </div>
-                    <TextField
-                      id="asset-protocol-url"
-                      label={t("fields.protocolUrl")}
-                      value={form.protocol_url}
-                      onChange={(v) => set("protocol_url", v)}
-                      placeholder="https://10.0.0.2"
-                    />
-                    {/* Said plainly on the form: this column is on `assets`,
+                        {(parentCode === "IOT" || parentCode === "SERVER") && (
+                          <TextField
+                            id="asset-power-source"
+                            label={t("fields.powerSource")}
+                            value={form.power_source}
+                            onChange={(v) => set("power_source", v)}
+                            placeholder="PoE (Power over Ethernet)"
+                          />
+                        )}
+
+                        <div>
+                          <Label htmlFor="asset-connection-type">
+                            {t("fields.connectionType")} <Optional />
+                          </Label>
+                          <Select
+                            key={`form-conn-${editingId ?? "new"}`}
+                            id="asset-connection-type"
+                            options={connectionTypeOptions}
+                            placeholder={t("fields.none")}
+                            defaultValue={form.connection_type}
+                            onChange={(v) => set("connection_type", v)}
+                          />
+                        </div>
+                        <TextField
+                          id="asset-protocol-url"
+                          label={t("fields.protocolUrl")}
+                          value={form.protocol_url}
+                          onChange={(v) => set("protocol_url", v)}
+                          placeholder="https://10.0.0.2"
+                        />
+                        {/* Said plainly on the form: this column is on `assets`,
                         which every signed-in user can read, so a URL carrying a
                         device password is readable by all staff. */}
-                    <p className="rounded-lg border border-warning-200 bg-warning-50 p-3 text-xs text-warning-700 dark:border-warning-500/20 dark:bg-warning-500/10 dark:text-warning-400">
-                      {t("fields.protocolUrlHint")}
-                    </p>
-                  </>
-                )}
+                        <p className="rounded-lg border border-warning-200 bg-warning-50 p-3 text-xs text-warning-700 dark:border-warning-500/20 dark:bg-warning-500/10 dark:text-warning-400">
+                          {t("fields.protocolUrlHint")}
+                        </p>
+                      </>
+                    )}
 
-                {isPeripheral && (
-                  <>
-                    <TextField
-                      id="asset-hostname"
-                      label={t("fields.hostname")}
-                      value={form.hostname}
-                      onChange={(v) => set("hostname", v)}
-                    />
-                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                      <TextField
-                        id="asset-ip-eth"
-                        label={t("fields.ipAddress")}
-                        value={form.ip_eth}
-                        onChange={(v) => set("ip_eth", v)}
-                      />
-                      <TextField
-                        id="asset-mac-eth"
-                        label={t("fields.macAddress")}
-                        value={form.mac_eth}
-                        onChange={(v) => set("mac_eth", v)}
-                      />
-                    </div>
+                    {isPeripheral && (
+                      <>
+                        <TextField
+                          id="asset-hostname"
+                          label={t("fields.hostname")}
+                          value={form.hostname}
+                          onChange={(v) => set("hostname", v)}
+                        />
+                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                          <TextField
+                            id="asset-ip-eth"
+                            label={t("fields.ipAddress")}
+                            value={form.ip_eth}
+                            onChange={(v) => set("ip_eth", v)}
+                          />
+                          <TextField
+                            id="asset-mac-eth"
+                            label={t("fields.macAddress")}
+                            value={form.mac_eth}
+                            onChange={(v) => set("mac_eth", v)}
+                          />
+                        </div>
+                      </>
+                    )}
                   </>
                 )}
               </>
