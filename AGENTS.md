@@ -1341,6 +1341,26 @@ fieldset, so an asset filed under one would silently get the generic fields. Whe
 HSSE assets are actually tracked, the thing to change is this constant **and** the
 fieldset groups — not this alone.
 
+### The unit filter sits in the tab strip, not the table toolbar
+
+The request was for it beside the Categories/Locations tabs, and that is where it
+stays. In the toolbar it collided with the Collapse and Add buttons on a phone:
+that row already carries three controls and the sentence beside it takes whatever
+space is left. The row is `flex-wrap` with `justify-between`, so the tabs sit left
+and the selector drops to a full-width line underneath on a narrow screen rather
+than becoming two cramped bars.
+
+**The selector is hidden while Locations is on screen.** It filters the category
+list and nothing else, so showing it over Locations would be a control that looks
+like it does something and does not. It is keyed by the current value, because
+`Select` reads `defaultValue` once and would otherwise keep showing the unit
+loaded at mount.
+
+**The parent picker in the modal is filtered to the unit on screen**, not just the
+table, because a sub-category must be filed under a parent from its own unit.
+`categories_parent_name_key` and `guard_category_parent` both enforce that, so
+offering a cross-unit parent would only produce a `23514` the admin has to decode.
+
 ### The category list collapses, and the state is a `Set` of ids
 
 Each parent row carries a chevron that hides its sub-categories, plus one

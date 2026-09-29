@@ -480,29 +480,52 @@ export default function AssetSettingsPage() {
             {t("subtitle")}
           </p>
 
-          <div
-            role="tablist"
-            aria-label={t("tabsLabel")}
-            className="mt-5 inline-flex gap-1 rounded-lg bg-gray-100 p-1 dark:bg-white/5"
-          >
-            {TABS.map((key) => (
-              <button
-                key={key}
-                type="button"
-                role="tab"
-                id={`asset-settings-tab-${key}`}
-                aria-selected={tab === key}
-                aria-controls={`asset-settings-panel-${key}`}
-                onClick={() => setTab(key)}
-                className={
-                  tab === key
-                    ? "rounded-md bg-white px-4 py-2 text-sm font-medium text-gray-900 shadow-theme-xs dark:bg-white/10 dark:text-white"
-                    : "rounded-md px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
-                }
-              >
-                {t(`tabs.${key}`)}
-              </button>
-            ))}
+          {/* The tab strip and the unit selector share one row, and on a phone
+              the row wraps rather than becoming two full-width bars. The
+              selector is here rather than in the table toolbar because it filters
+              the table, not the page, and on a narrow screen the toolbar is where
+              it collided with the Collapse and Add buttons. */}
+          <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
+            <div
+              role="tablist"
+              aria-label={t("tabsLabel")}
+              className="inline-flex gap-1 rounded-lg bg-gray-100 p-1 dark:bg-white/5"
+            >
+              {TABS.map((key) => (
+                <button
+                  key={key}
+                  type="button"
+                  role="tab"
+                  id={`asset-settings-tab-${key}`}
+                  aria-selected={tab === key}
+                  aria-controls={`asset-settings-panel-${key}`}
+                  onClick={() => setTab(key)}
+                  className={
+                    tab === key
+                      ? "rounded-md bg-white px-4 py-2 text-sm font-medium text-gray-900 shadow-theme-xs dark:bg-white/10 dark:text-white"
+                      : "rounded-md px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                  }
+                >
+                  {t(`tabs.${key}`)}
+                </button>
+              ))}
+            </div>
+
+            {/* Only while Categories is on screen. It filters the category list
+                and nothing else, so leaving it visible over Locations would be a
+                control that appears to do something and does not. */}
+            {tab === "categories" && (
+              <div className="w-full sm:w-48">
+                <Select
+                  key={`department-filter-${department}`}
+                  id="category-department-filter"
+                  aria-label={t("fields.departmentFilter")}
+                  options={departmentOptions}
+                  defaultValue={department}
+                  onChange={(v) => setDepartment(v)}
+                />
+              </div>
+            )}
           </div>
         </div>
 
@@ -529,22 +552,6 @@ export default function AssetSettingsPage() {
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-3 self-start sm:self-auto">
-                    {/* A `Select` rather than a second row of tabs: the page
-                        already has a Categories/Locations tab bar, and a third
-                        one underneath it reads as a control on the tabs rather
-                        than a filter on the table. A dropdown also leaves room
-                        for a third unit without another row appearing. */}
-                    <div className="w-full sm:w-44">
-                      <Select
-                        key={`department-filter-${department}`}
-                        id="category-department-filter"
-                        aria-label={t("fields.departmentFilter")}
-                        options={departmentOptions}
-                        defaultValue={department}
-                        onChange={(v) => setDepartment(v)}
-                      />
-                    </div>
-
                     {/* Only rendered when there is something to collapse, so the
                         button is never a control with nothing to act on. */}
                     {collapsibleIds.length > 0 && (
