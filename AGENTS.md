@@ -1266,9 +1266,10 @@ filter state to survive a reload.
   rather than claimed as done.
 - **`/asset-settings` has not been opened in a browser either.** The 10 database
   assertions and the RLS split are verified; the two tabs, the three modals and
-  the disabled-delete states are only build-verified. Note that two bugs shipped
-  from here to the browser uncaught — the dropped `locations.name` in the asset
-  read, and a sidebar predicate that removed User Management for admins — so
+  the disabled-delete states are only build-verified. Three bugs shipped from here
+  to the browser uncaught — the dropped `locations.name` in the asset read, a
+  sidebar predicate that removed User Management for admins, and a table whose
+  cells had no padding at all so the text sat flush against the card border — so
   treat the first click-through as the real test.
 
 ## Asset settings manages the reference data
@@ -2188,6 +2189,18 @@ not go looking for them unprompted.
   `Dashboard.tsx` and `Blank.tsx` is currently hardcoded English, so the rule is
   inconsistently applied; be consistent within the file you touch.
 - Don't pass a key path as the i18next namespace argument.
+- **Don't render a `TableCell` without padding.** The primitive is a bare `<td>`
+  with no padding of its own — `cn(className)` and nothing else — so a cell with
+  no `className` puts its text flush against the card border and the row has no
+  separator. Every cell in `AssetListPage` carries explicit `px-* py-*`, and the
+  row carries `border-b`; copy that. Two related traps in the same primitive:
+  `TableCell` defaults to `<td>`, so a header cell needs `isHeader` or a `<td>`
+  lands inside `<thead>` and the browser repairs the markup unpredictably; and
+  `px-*` plus `ps-*` on one element resolve by **stylesheet order**, not by the
+  order they are written, so write `py-3 ps-9 pe-4` rather than stacking them.
+- Don't put a long sentence and a button in the same `sm:flex-row
+  sm:justify-between` without `shrink-0` on the button. The text is the flexible
+  element and takes the shrink, until the button's own label wraps onto two lines.
 - Don't hardcode hex colors in `className`. The one exception is
   `src/icons/google.svg`, which is a multi-colour brand logo; see the Decisions
   table.

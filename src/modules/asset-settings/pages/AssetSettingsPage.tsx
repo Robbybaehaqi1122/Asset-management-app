@@ -442,28 +442,58 @@ export default function AssetSettingsPage() {
                 role="tabpanel"
                 aria-labelledby="asset-settings-tab-categories"
               >
+                {/* The hint is the flexible part and the button is not: a long
+                    sentence beside a short label used to squeeze the button until
+                    its own label wrapped onto two lines. `sm:shrink-0` pins the
+                    button's natural width. */}
                 <div className="flex flex-col gap-4 border-b border-gray-200 p-6 sm:flex-row sm:items-center sm:justify-between dark:border-gray-800">
-                  <p className="text-sm text-gray-500 dark:text-gray-400">
+                  <p className="text-sm text-gray-500 sm:pe-6 dark:text-gray-400">
                     {t("categoriesHint")}
                   </p>
                   <Button
                     variant="outline"
                     onClick={handleOpenCreateCategory}
                     startIcon={<PlusIcon className="size-4" />}
+                    className="shrink-0 self-start sm:self-auto"
                   >
                     {t("addCategory")}
                   </Button>
                 </div>
 
                 <div className="overflow-x-auto">
-                  <Table>
+                  <Table className="min-w-[760px]">
                     <TableHeader>
-                      <TableRow>
-                        <TableCell>{t("table.category")}</TableCell>
-                        <TableCell>{t("table.code")}</TableCell>
-                        <TableCell>{t("table.subCategories")}</TableCell>
-                        <TableCell>{t("table.assets")}</TableCell>
-                        <TableCell>{t("table.actions")}</TableCell>
+                      <TableRow className="border-b border-gray-200 dark:border-gray-800">
+                        <TableCell
+                          isHeader
+                          className="px-6 py-3 text-start text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
+                        >
+                          {t("table.category")}
+                        </TableCell>
+                        <TableCell
+                          isHeader
+                          className="px-4 py-3 text-start text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
+                        >
+                          {t("table.code")}
+                        </TableCell>
+                        <TableCell
+                          isHeader
+                          className="px-4 py-3 text-start text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
+                        >
+                          {t("table.subCategories")}
+                        </TableCell>
+                        <TableCell
+                          isHeader
+                          className="px-4 py-3 text-start text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
+                        >
+                          {t("table.assets")}
+                        </TableCell>
+                        <TableCell
+                          isHeader
+                          className="px-6 py-3 text-end text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
+                        >
+                          {t("table.actions")}
+                        </TableCell>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -495,43 +525,76 @@ export default function AssetSettingsPage() {
                 aria-labelledby="asset-settings-tab-locations"
               >
                 <div className="flex flex-col gap-4 border-b border-gray-200 p-6 sm:flex-row sm:items-center sm:justify-between dark:border-gray-800">
-                  <p className="text-sm text-gray-500 dark:text-gray-400">
+                  <p className="text-sm text-gray-500 sm:pe-6 dark:text-gray-400">
                     {t("locationsHint")}
                   </p>
                   <Button
                     variant="outline"
                     onClick={handleOpenCreateLocation}
                     startIcon={<PlusIcon className="size-4" />}
+                    className="shrink-0 self-start sm:self-auto"
                   >
                     {t("addLocation")}
                   </Button>
                 </div>
 
                 <div className="overflow-x-auto">
-                  <Table>
+                  <Table className="min-w-[760px]">
                     <TableHeader>
-                      <TableRow>
-                        <TableCell>{t("table.area")}</TableCell>
-                        <TableCell>{t("table.room")}</TableCell>
-                        <TableCell>{t("table.notes")}</TableCell>
-                        <TableCell>{t("table.assets")}</TableCell>
-                        <TableCell>{t("table.actions")}</TableCell>
+                      <TableRow className="border-b border-gray-200 dark:border-gray-800">
+                        <TableCell
+                          isHeader
+                          className="px-6 py-3 text-start text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
+                        >
+                          {t("table.area")}
+                        </TableCell>
+                        <TableCell
+                          isHeader
+                          className="px-4 py-3 text-start text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
+                        >
+                          {t("table.room")}
+                        </TableCell>
+                        <TableCell
+                          isHeader
+                          className="px-4 py-3 text-start text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
+                        >
+                          {t("table.notes")}
+                        </TableCell>
+                        <TableCell
+                          isHeader
+                          className="px-4 py-3 text-start text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
+                        >
+                          {t("table.assets")}
+                        </TableCell>
+                        <TableCell
+                          isHeader
+                          className="px-6 py-3 text-end text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
+                        >
+                          {t("table.actions")}
+                        </TableCell>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {locations.map((row) => (
-                        <TableRow key={row.id}>
-                          <TableCell>{row.area_name}</TableCell>
-                          <TableCell>{row.room_name ?? t("noRoom")}</TableCell>
-                          <TableCell>
+                        <TableRow
+                          key={row.id}
+                          className="border-b border-gray-100 last:border-0 hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-white/3"
+                        >
+                          <TableCell className="px-6 py-3 text-sm font-medium text-gray-800 dark:text-white/90">
+                            {row.area_name}
+                          </TableCell>
+                          <TableCell className="px-4 py-3 text-sm text-gray-600 dark:text-gray-300">
+                            {row.room_name ?? t("noRoom")}
+                          </TableCell>
+                          <TableCell className="px-4 py-3 text-sm">
                             <span className="text-gray-500 dark:text-gray-400">
                               {row.notes ?? "—"}
                             </span>
                           </TableCell>
-                          <TableCell>
+                          <TableCell className="px-4 py-3 text-sm text-gray-600 dark:text-gray-300">
                             {t("assetCount", { count: row.assetCount })}
                           </TableCell>
-                          <TableCell>
+                          <TableCell className="px-6 py-3 text-end">
                             <RowActions
                               editLabel={t("editLabel", {
                                 name: row.area_name,
@@ -836,8 +899,8 @@ function CategoryGroup({
 
   return (
     <>
-      <TableRow>
-        <TableCell>
+      <TableRow className="border-b border-gray-100 hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-white/3">
+        <TableCell className="px-6 py-3">
           <span className="font-medium text-gray-800 dark:text-white/90">
             {parent.name}
           </span>
@@ -847,7 +910,7 @@ function CategoryGroup({
             </span>
           )}
         </TableCell>
-        <TableCell>
+        <TableCell className="px-4 py-3">
           {parent.code ? (
             <Badge size="sm" color="info">
               {parent.code}
@@ -858,11 +921,13 @@ function CategoryGroup({
             </span>
           )}
         </TableCell>
-        <TableCell>
+        <TableCell className="px-4 py-3 text-sm text-gray-600 dark:text-gray-300">
           {t("subCategoryCount", { count: parent.subCategoryCount })}
         </TableCell>
-        <TableCell>{t("assetCount", { count: parent.assetCount })}</TableCell>
-        <TableCell>
+        <TableCell className="px-4 py-3 text-sm text-gray-600 dark:text-gray-300">
+          {t("assetCount", { count: parent.assetCount })}
+        </TableCell>
+        <TableCell className="px-6 py-3 text-end">
           <RowActions
             editLabel={t("editLabel", { name: parent.name })}
             deleteLabel={t("deleteLabel", { name: parent.name })}
@@ -881,25 +946,36 @@ function CategoryGroup({
       </TableRow>
 
       {children.map((child) => (
-        <TableRow key={child.id}>
-          <TableCell>
-            <span className="ps-6 text-gray-700 dark:text-gray-300">
+        <TableRow
+          key={child.id}
+          className="border-b border-gray-100 last:border-0 hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-white/3"
+        >
+          {/* `ps-9` rather than stacking on `px-6`: Tailwind emits both as
+              `padding-inline-start` and the later-declared one in the stylesheet
+              wins, so two logical-direction utilities on one element resolve by
+              stylesheet order rather than by the order written here. */}
+          <TableCell className="py-3 ps-9 pe-4">
+            <span className="text-gray-700 dark:text-gray-300">
               {child.name}
             </span>
             {child.description && (
-              <span className="mt-0.5 block ps-6 text-xs text-gray-500 dark:text-gray-400">
+              <span className="mt-0.5 block ps-9 text-xs text-gray-500 dark:text-gray-400">
                 {child.description}
               </span>
             )}
           </TableCell>
-          <TableCell>
+          <TableCell className="px-4 py-3">
             <span className="text-xs text-gray-400 dark:text-gray-500">
               {t("subCategory")}
             </span>
           </TableCell>
-          <TableCell>—</TableCell>
-          <TableCell>{t("assetCount", { count: child.assetCount })}</TableCell>
-          <TableCell>
+          <TableCell className="px-4 py-3 text-sm text-gray-400 dark:text-gray-500">
+            —
+          </TableCell>
+          <TableCell className="px-4 py-3 text-sm text-gray-600 dark:text-gray-300">
+            {t("assetCount", { count: child.assetCount })}
+          </TableCell>
+          <TableCell className="px-6 py-3 text-end">
             <RowActions
               editLabel={t("editLabel", { name: child.name })}
               deleteLabel={t("deleteLabel", { name: child.name })}
