@@ -224,6 +224,7 @@ supabase/
     └── 20260927001300_asset_settings.sql  locations area+room, category guards
     └── 20260927001400_asset_category_department.sql  categories.department
     └── 20260927001500_asset_hsse_fields.sql  HSSE expiry/inspection/calibration
+    └── 20260927001600_asset_current_locations.sql  current_locations + the FK
 
 .github/
 ├── ISSUES_KNOWN.md            known problems, grouped by severity
@@ -254,13 +255,16 @@ vercel.json                    SPA rewrite only — no framework, no buildComman
 | `20260927001300_asset_settings.sql` | `locations.name` -> `area_name` + `room_name` + `notes`, the category delete guard, the no-third-level guard; see Asset settings manages the reference data |
 | `20260927001400_asset_category_department.sql` | `categories.department`, uniqueness per unit replacing the global one, the cross-unit and move-with-children guards; see Categories belong to a unit |
 | `20260927001500_asset_hsse_fields.sql` | the four HSSE columns and the `assets.department` trigger that keeps the unit in step with the category; see The asset form switches on the unit |
+| `20260927001600_asset_current_locations.sql` | `current_locations` as a deliberate copy of `locations`, `assets.current_location_id`, the free-text backfill, and the drop of the old column; see Current locations is reference data |
 
 **All fifteen are applied to the remote.** `db diff --linked` reports
 `No schema changes found`, which is the proof that the checked-in migrations and
-the live database agree. Before the `01100` push it reported fourteen `drop
+the live database agree — **and that will stop being true once `01600` is in the
+files but not on the remote.** Before the `01100` push it reported fourteen `drop
 column` statements; that was the diff saying the remote was behind the
 checked-in files, the normal state between authoring a migration and pushing it,
-not drift and not something to repair by hand.
+not drift and not something to repair by hand. `01600` will produce the same
+reading until it is pushed.
 
 Read the ledger rather than trusting the CLI's wording, because this file
 previously claimed `00900` was still unpushed when it had already been applied.
@@ -278,10 +282,15 @@ the twenty-seventh, `categories_code_key`, and the remote was one short until it
 was pushed. Postgres creates the index for a primary key or a unique constraint
 itself, which is why none of the 14 are in the migration files.
 
-There are now **8 tables** in `public`, not 6: `01000` added `asset_credentials`.
-Two earlier claims that this file made about "6 tables" were true when written and
-are listed in the table rows above for `001` and `003` — those describe what those
-two files did, not the current schema.
+There are now **9 tables** in `public`, not 6: `01000` added `asset_credentials` and
+`01600` added `current_locations`. Two earlier claims that this file made about
+"6 tables" were true when written and are listed in the table rows above for `001`
+and `003` — those describe what those two files did, not the current schema.
+
+**`01600` is authored and verified locally, and is NOT yet pushed.** The fifteen
+migrations through `01500` are on the remote; `01600` is the pending one, so
+`db diff --linked` will list its `drop column` until it is pushed. That is the
+same "remote is behind the files" reading the `01100` push produced, not drift.
 
 ### The CLI is not a dependency
 
@@ -918,18 +927,18 @@ is the same reasoning recorded for `profiles.email` and `profiles.department`.
 | `notes` | `assets.description` exists. |
 | `category`, `location` | `assets.category_id` and `assets.location_id` are already uuid FKs to `categories` and `locations`. |
 | `sub_category` | `categories.parent_id`, added by the same migration, rather than free text on every row. |
-| `current_location` | Reversed by `01100` — see below. |
+| `current_location` | Reversed by `01100`, then again by `01600` — see below. |
 | `device_condition` | `assets.condition`, already constrained to five values. |
 | `usage_status` | Still absent. See below. |
 
-**`current_location` is the one that changed its mind.** `01000` refused it
+**`current_location` is the one that changed its mind twice.** `01000` refused it
 because a second location beside `location_id`, with nothing keeping the two in
 step, is the kind of drift that needs a transition rule and an audit trail rather
 than a nullable text column. `01100` adds it anyway, on request: a physical room
 or desk changes faster than a picker can be kept current, and the honest cost is
-that the two can now disagree. The column comment says so where the schema is
-read, and the form's own field label is the free-text box rather than a picker.
-Reverting to the `01000` position is a drop-column migration, not an edit.
+that the two can now disagree. `01600` then made it a real reference row rather
+than a note, because it is now *managed* the way a location is — see Current
+locations is reference data. The free-text column and its picker are both gone.
 
 **`usage_status` is the one worth arguing about.** The spreadsheet's column mixes
 two axes: "In Use" and "Idle" are loan state, "Good" is condition, and "Service"
@@ -1144,10 +1153,19 @@ Identity, Specification, Network, Credentials, Administration, with Identity
 open. The issue's grouping was followed.
 
 - **`Input type="date"` rather than the `DatePicker` primitive.** `DatePicker`
-  wraps flatpickr, which owns its input and hands back hook objects rather than a
-  value, so it does not fit a controlled form. A native date input is controlled
-  and produces the `YYYY-MM-DD` the `date` column wants. The primitive is still
-  one of the 13 and is not dead — it is just the wrong shape for this field.
+   wraps flatpickr, which owns its input and hands back hook objects rather than a
+   value, so it does not fit a controlled form. A native date input is controlled
+   and produces the `YYYY-MM-DD` the `date` column wants. The primitive is still
+   one of the 13 and is not dead — it is just the wrong shape for this field.
+   Because the form relies on the **native** picker, never re-add the template's
+   blanket `::-webkit-calendar-picker-indicator { display: none }` rule to
+   `index.css` — in Chrome hiding the indicator also stops the popup from
+   opening when the field is clicked. `appearance: auto` is restored for
+   `input[type=date|time|datetime-local|month|week]` at the bottom of
+   `index.css`, outside any cascade layer so it beats the `appearance-none`
+   utility both `Input` and `CalendarEventModal` put on the element. That rule
+   and the four `type="date"` inputs in the asset form are what make "click opens
+   a calendar" true.
 - **`Select` and `Switch` need a `key`.** Both keep their selection in
   `useState(defaultValue)`, which reads it once. Reused across a modal that edits
   different rows, the second asset would show the first asset's choice. Every
@@ -1226,14 +1244,10 @@ price check.
   column comment repeats it where the schema is read. Do not "fix" this by quietly
   moving the column.
 
-**`current_location` was added on request and can diverge from `location_id`.**
-The spreadsheet's `current_location` is a free-text room or desk; `location_id` is
-the registered location. Nothing keeps the two in step — the same kind of
-inconsistency that made the delete guard necessary, and unlike `status` this one
-is not enforced at all. It was added anyway, because a physical location changes
-faster than a picker can be kept current, and the column comment says so at the
-point where someone reads the schema. If it starts causing arguments, the fix is
-a transition rule and an audit trail, not a second nullable text column.
+**`current_location` is now a real foreign key, in a table of its own.** See
+Current locations is reference data below. It is still independent of
+`location_id`, and the two still can disagree — that is the design, not an
+oversight.
 
 ### The list is readable by everyone, and that is the opposite of `/users`
 
@@ -1291,9 +1305,14 @@ the IT inventory. Four decisions, and the third is the one that was not asked fo
 **The name is a deliberate collision, and it is a trap.** `departments` already
 exists in this schema and `profiles.department_id` points at it: that is the
 department of a *person*. `categories.department` is the unit that owns a
-*category*. Both may hold "IT" and nothing joins them, so the column comment says
-so where the schema is read. A reader who assumes they are the same thing will be
-wrong, and nothing will tell them.
+*category*. Both may hold "IT", the column comment says so where the schema is
+read, and a reader who assumes they are one thing will be wrong — **nothing in the
+database joins them**. The two have since been coupled at the *UI* level anyway,
+by owner request: `getCategoryUnits` in `settingService.ts` feeds the unit
+dropdown from the `departments` table in addition to the pinned pair, so a
+department created in User Management appears here. The database stays honest
+about the two meanings; the screen conflates them deliberately, and this section
+is where the reader is told.
 
 **Uniqueness moved from global to per-unit.** `categories_name_key` was
 `UNIQUE (name)` **globally**, which is exactly what stops HSSE having a `Monitor`
@@ -1326,37 +1345,93 @@ quietly broken rather than loudly wrong:
   Worth knowing that this means **no seeded parent can be moved** — all seven
   have children.
 
-**`DEPARTMENTS` in `settingService.ts` is a list and the column is free text.** A
-`check` constraint would be wrong the first time somebody spelled a unit
-differently, and an enum needs a migration to extend, so the column is free text
-and the list lives in the form. The cost is that the list is the one place a new
-unit has to be added, and a unit in the database but missing from the list is
-simply not selectable. The column comment says the same thing.
+**The unit list comes from two sources, and `categories.department` is still free
+text.** A `check` constraint would be wrong the first time somebody spelled a unit
+differently, and an enum needs a migration to extend, so the column stays free
+text. The selectable list is `getCategoryUnits`: the pinned `IT` / `HSSE` pair
+(`PINNED_DEPARTMENTS`) unioned with the rows of the `departments` table. The pair
+is pinned because the asset routes serve only them — see below; every other unit
+is whatever User Management's department list holds, so creating a department
+there grows this filter, and deleting it there shrinks it.
 
-**The asset form is filtered to `IT`, and that is not a filter you can forget.**
-`getAssetFilterOptions` reads all categories, so without
-`ASSET_DEPARTMENT = "IT"` an HSSE category would appear in the asset form's
-dropdown for everyone. It is a constant rather than a setting because the
-inventory *is* the IT one: the seed came from the IT hardware workbook and the
-fieldsets were built from those seven sheets. A category from another unit has no
-fieldset, so an asset filed under one would silently get the generic fields. When
-HSSE assets are actually tracked, the thing to change is this constant **and** the
-fieldset groups — not this alone.
+### Current locations is reference data
+
+`01600` is issue #52. `assets.current_location` was a free-text column from
+`01100` until now, with a dropdown over `locations` bolted on in the client. The
+request was to manage current locations beside locations, and that makes it the
+same *kind* of thing as a location rather than a note about one — so it got its
+own table and a real foreign key.
+
+**Two questions, two tables, and the split is the whole design.** `location_id` is
+where the asset is *registered*; `current_location_id` is where it physically *is*
+right now. An asset registered at one site and sitting in another room is the
+normal case, not a data-entry error. So the two stay independent, both are `on
+delete set null`, and **nothing keeps them in step** — which is intentional, and
+the reason a current location could not simply be a column on `locations` either.
+
+**The table is a deliberate copy of `locations`, and that is the finding.** Same
+columns (`area_name`, `room_name`, `notes`, `created_at`, `updated_at`), same two
+unique indexes including the partial one for room-less rows, same `set_updated_at`
+trigger, same `authenticated`-read / `admin`-write policy split, same explicit
+`revoke … from anon`. The reason to duplicate rather than to share is that a
+single table with a "which kind is this" column cannot express "this asset is
+registered at A and currently at B" — the row would have to belong to both, and
+every query joining it would have to disambiguate. Two tables make the independent
+fact independent.
+
+**The backfill carries each free-text value across as an area, with no room.** The
+old column held values like `Gedung B` and `Lantai 3`. Inventing an area for them
+would be a guess written into a migration, so each distinct non-blank value became
+one row with `room_name = null`, trimmed. A blank string is not data and becomes
+`NULL`. Verified on the local stack by applying `01600` on top of `01500` *with*
+fixtures: the padded value `  Gedung B  ` came back as `Gedung B` and linked, the
+plain value linked, and the blank one did not become a row.
+
+**The `drop column` is the one destructive statement, and it is guarded.** The
+`do` block raises if any non-blank `current_location` has no
+`current_location_id` after the backfill, so a partial backfill cannot silently
+drop data on the remote, where there is no re-apply path. This is the same
+reasoning `01200` guards its array drop.
+
+**The delete is refused in the application, for the same reason
+`LocationInUseError` exists.** `assets.current_location_id` is `on delete set
+null`, so the database would happily delete a place that assets are sitting in
+and silently un-set every one of them. `deleteCurrentLocation` counts first and
+throws `CurrentLocationInUseError`, and the row's action button is `disabled` with
+the count as its title.
+
+**One modal and one table row component, not two of each.** The two tables are the
+same shape, so `AssetSettingsPage` extracts `PlaceRow` for the row and drives the
+shared location modal off a single `placeKind` flag. The alternative was a copy of
+the five cells and a copy of the form, and a copy is where a padding fix ends up
+applied to one table and not the other.
+
+**The form filters its category pickers to the page's unit, which is fixed.**
+`getAssetFilterOptions` returns **every** unit; the form narrows to the one the
+route chose, from `CategoryOption.department`. The routes are fixed in `App.tsx`
+— `/assets` for IT and `/assets-hsse` for HSSE — driven by `ASSET_DEPARTMENTS` in
+`assetService.ts`. That pair is a **closed** set: the asset settings unit filter
+may grow past it (a department created in User Management surfaces there), but a
+unit beyond IT/HSSE has categories and **no asset form until a route is added
+here**. The fieldsets were built from the IT hardware workbook's seven sheets,
+and a category from a unit outside the routed pair would silently get the generic
+fields, which is why the routes are not derived from the category list.
 
 ### The unit filter sits in the tab strip, not the table toolbar
 
-The request was for it beside the Categories/Locations tabs, and that is where it
+The request was for it beside the Categories/Locations/Current locations tabs,
+and that is where it
 stays. In the toolbar it collided with the Collapse and Add buttons on a phone:
 that row already carries three controls and the sentence beside it takes whatever
 space is left. The row is `flex-wrap` with `justify-between`, so the tabs sit left
 and the selector drops to a full-width line underneath on a narrow screen rather
 than becoming two cramped bars.
 
-**The selector is hidden while Locations is on screen.** It filters the category
-list and nothing else, so showing it over Locations would be a control that looks
-like it does something and does not. It is keyed by the current value, because
-`Select` reads `defaultValue` once and would otherwise keep showing the unit
-loaded at mount.
+**The selector is hidden while either place table is on screen.** It filters the
+category list and nothing else, so showing it over Locations or Current locations
+would be a control that looks like it does something and does not. It is keyed by
+the current value, because `Select` reads `defaultValue` once and would otherwise
+keep showing the unit loaded at mount.
 
 **The parent picker in the modal is filtered to the unit on screen**, not just the
 table, because a sub-category must be filed under a parent from its own unit.
@@ -1369,6 +1444,41 @@ offering a cross-unit parent would only produce a `23514` the admin has to decod
 the **main category's code**; it is now chosen by the **unit** first and the
 category within it, because HSSE categories have no code and would otherwise fall
 through to `isGeneric` and be handed the IT fields.
+
+#### The tab strip is per unit too, and that reverses an earlier argument
+
+`HSSE_HIDDEN_SECTIONS` drops **Network** and **Credentials** for HSSE, so an HSSE
+form has three tabs (Identity, Inspection, Administration) against IT's five.
+`sectionLabelKey` also renames Specification to **Inspection** on that unit, while
+the section *id* stays `specification` so the panel condition, the tab element id
+and `aria-labelledby` do not have to move with the label.
+
+**This reverses a decision that was in the code, and the reversal is deliberate.**
+The Network tab used to be rendered for HSSE and filled with a "there is no
+hostname, address, MAC or firmware here" note, on the stated reasoning that *a tab
+which appears and disappears is worse than an empty one*. That reasoning holds
+**within** one unit, where the strip shifts as you move between panels and a
+vanishing tab feels broken. It does **not** hold **across** units: the tab was
+empty for every single HSSE row, not for a transient state, and a form whose tab
+count depends on which department you are looking at is harder to learn than one
+that is simply shorter. The condition moved from *is this panel empty* to *does
+this unit have the concept at all*.
+
+**`usage_status` is hidden for HSSE and the column stays.** Its four values —
+`In used by User` / `Idle` / `Shared` / `Lent out` — are the IT hardware
+workbook's own column and describe how a computer is being lent out, which is not
+a question a fire extinguisher raises. Nothing is dropped from the database and
+no migration moved: the column is still written by IT, still readable by SQL, and
+still has its own `check` constraint.
+
+**The `loanStatus` badge next to it stays for both units**, which is the
+distinction worth keeping straight. It renders `assets.status`, not
+`usage_status`, and `assigned` is derived from the loans by
+`assignments_sync_asset_status` — a hard hat genuinely can be issued to someone,
+so it is a real fact about an HSSE item. Hiding it would have hidden the one
+column in that block that is true for both units. They sat in the same grid, so
+splitting them was necessary; hiding the whole block would have taken the badge
+with it.
 
 ### Only four columns are new
 
@@ -2270,17 +2380,18 @@ These were deliberate. Do not "clean them up" without asking.
 | The category delete is refused by a trigger *and* by the app | `assets.category_id` is `on delete set null`, so the database would silently un-assign every asset in the category. `categories_guard_delete` holds for any caller; `deleteCategory` also asks, so the admin is told the counts rather than just getting a refusal code. Same pattern as `DepartmentInUseError` |
 | Writes on both reference tables are admin-only | The issue asked for "read & write for authenticated". Staff read them because the asset form's pickers need the data, but a staff write could re-point every asset in a category. Matches `assets_write_admin` and the existing policies |
 | `NavSubItem` has `adminOnly` and the sidebar filters it | The Asset Management group mixes an open-to-everyone screen (the inventory) with an admin-only one, so the flag cannot live on the group. A group whose every sub-item is admin-only is dropped entirely rather than rendered as a dead row for staff. The emptiness test is "does it still have any sub-items", **not** "is it adminOnly" — the latter also drops admin-only groups for an admin, which is how User Management went missing the first time this was written |
-| `categories.department` is the owning unit, and uniqueness is per unit | A unit filter needs a category's identity to be its name *within its unit*; the global `UNIQUE (name)` is what stopped HSSE having a `Monitor` while IT had one. Two partial unique indexes replace it, and the two guards keep a child from being filed under a parent in another unit |
+| `categories.department` is the owning unit, and uniqueness is per unit | A unit filter needs a category's identity to be its name *within its unit*; the global `UNIQUE (name)` is what stopped HSSE having a `Monitor` while IT had one. Two partial unique indexes replace it, and the two guards keep a child from being filed under a parent in another unit. By owner request the filter's values now also come from the `departments` table (`getCategoryUnits`), so User Management's departments and this unit filter are coupled on the screen — still not in the database |
 | `assets.department` is derived from the category, never written by the client | It exists so the list can filter by unit without a join. `assets_sync_department` overwrites rather than raising, because a client cannot tell "the column was not sent" from "the default was sent", and an honest insert that omitted it would otherwise be refused. The trigger is on `update of category_id, department` — both, because an `UPDATE OF` list only fires for a column actually in the SET list |
 | The four HSSE fields are typed columns, not a `jsonb specifications` blob | Their types are already known, so a free-form column would accept `"31/12/2026"` beside a real date with nothing to object, and would make "expire within 30 days" unindexable. Verified: a non-date `expiration_date` is refused |
 | `next_inspection_date` is stored, not derived from the last one | The interval between inspections is a policy, not a fact, and policies change without a migration being the right place to record it |
+| HSSE gets three tabs, not five; `usage_status` is hidden for it; the specification tab is renamed **Inspection** | An HSSE item has no network and no device login, and a tab that is empty for every single row of a whole unit is noise rather than a safety net. The earlier "empty tab is better than a vanishing tab" argument holds within a unit and not across units. `usage_status` is the IT workbook's own column and describes computer lending; the `loanStatus` badge stays because it renders `assets.status`, which is true for both units. See The asset form switches on the unit |
 | `status` is not a field on the asset form, and `assigned` is offered nowhere in the module | `available` and `assigned` are derived from the loans and `assets_guard_status` refuses a contradicting write, so a form offering either would offer something the database rejects. `setAssetStatus` takes `Exclude<AssetStatus, "assigned">` so the un-derivable value cannot even be passed |
 | The asset list is readable by every signed-in user, unlike `/users` | Stock belongs to the company rather than one department, and `assets_select_authenticated` is `using (true)`, so gating the read hands every staff member an empty page. Staff lose the Credentials tab and the write actions, and the credential was never in their response |
 | The form switches on `categories.code`, not on the category name | A name is editable, so a rename would silently empty a fieldset. `code` is nullable and unique, survives a rename, and a category without one falls back to the common fields instead of breaking the form. See The form switches on a category code |
 | The switch is on the *main* category, and an asset with no sub-category stores the parent directly | `parent_id is null` is what makes a row a parent. Sub-category only refines the label, so `toInput` sends `category_id \|\| parent_category_id` and a new main category clears the child. One column, two possible meanings resolved by one rule, instead of a second nullable column |
 | Ports are ten `port_* integer` columns, not a `text[]` of names | `01100` stored port *names* for a checkbox; the workbook stores *counts* in one column per port (`HDMI = 3`). Keeping the array would leave two competing models for one fact — a row could say `input_ports = '{HDMI}'` and `port_hdmi = 1` with nothing to say which is right |
 | `protocol_url` stays on `assets` even though that exposes it to every staff member | The owner chose warning over a credentials-shaped table and over moving the column. A URL embedding `user:pass` is readable by all signed-in users, which the form says out loud and the column comment repeats — the alternative would be a per-category secret table holding a field that is not really a secret |
-| `current_location` is a free-text column that is allowed to diverge from `location_id` | Accepted knowingly, not overlooked: a physical room or desk changes faster than a picker can be kept current, and nothing keeps the two in step. Unlike a `status` contradiction this is not enforced, so the fix, if it ever is needed, is a transition rule and an audit trail rather than a second text column |
+| `current_locations` is a separate table from `locations`, and `assets.current_location_id` is still independent of `location_id` | Two different questions: where an asset is *registered* versus where it physically *is*. Making the second a column on the first would fuse them; making it free text left a picker whose options nobody maintained. The two tables are the same shape and the admin manages them the same way, and the form picks them separately. See Current locations is reference data |
 | No first-signup admin grant; the first admin is promoted by hand | The owner chose to close it (#39) over keeping it for convenience. The remote had 0 users with signup open, so the grant was an unclaimed admin for anyone who found the URL. The cost is a fresh project starts read-only — see Promoting the first admin |
 | `@supabase/supabase-js` is the backend, wired for email/password auth | Requested by the project owner. It costs ~760 kB of extra JavaScript, most of it realtime/PostgREST/storage this app does not use yet, but the owner wants this client |
 | The social sign-in buttons are removed, not `disabled` | They were `disabled` placeholders and the owner reversed the earlier decision to keep them visible. The "or" divider went with them, because its only purpose was to separate two ways in — leaving it above a form with no alternative reads as a bug. `google.svg` and `x.svg` are still in `src/icons/` and still exported, unreferenced, in case OAuth is picked up again |
@@ -2456,10 +2567,12 @@ not go looking for them unprompted.
   move a parent between units while it still has children. Both strand rows that
   then render as orphans in the unit filter; `guard_category_parent` and
   `categories_guard_department_change` refuse them.
-- Don't add a unit to `DEPARTMENTS` and forget that `categories.department` is
-  free text. The column has no `check`, so a typo is accepted and the row is then
-  invisible in the filter — that is the documented cost, and the list is the one
-  place a unit is added.
+- Don't create a department in User Management and expect it to be enforced on
+  `categories.department`. The column is free text with no `check`, so a typo is
+  accepted and the row is then invisible in the filter — the dropdown unions the
+  `departments` table with the pinned IT/HSSE pair (`getCategoryUnits`), but that
+  coupling is an offer, not a constraint. The only enforcement is the two guards
+  that keep a child in its parent's unit.
 - Don't drop `categories_name_key` with `drop index`. It is a table constraint
   from `categories.name text not null unique`, and the drop is refused with
   `2BP01`; it needs `alter table … drop constraint`.

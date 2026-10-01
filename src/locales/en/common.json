@@ -10,6 +10,7 @@
       "userList": "User List",
       "department": "Departement",
       "assetIt": "Asset IT",
+      "assetHsse": "Asset HSSE",
       "assetSettings": "Asset Settings"
     }
   },
@@ -180,14 +181,18 @@
     "optional": "optional",
     "tabs": {
       "categories": "Categories",
-      "locations": "Locations"
+      "locations": "Locations",
+      "currentLocations": "Current locations"
     },
     "addCategory": "Add category",
     "editCategoryTitle": "Edit category",
     "addLocation": "Add location",
     "editLocationTitle": "Edit location",
+    "addCurrentLocation": "Add current location",
+    "editCurrentLocationTitle": "Edit current location",
     "categoriesHint": "A sub-category belongs to one category above it. The code on a category is what the asset form uses to decide which fields to show, so an existing category should not have its code changed casually.",
     "locationsHint": "An area is a registered site; a room is a specific place inside it. A location may be just an area, which is why the room can be left empty.",
+    "currentLocationsHint": "Where an asset physically is right now, as distinct from where it is registered. Same area-and-room shape as a location, and the two are chosen separately on the asset form, so an asset registered at one site and sitting in another room is recorded rather than guessed.",
     "noCode": "No code",
     "noRoom": "Whole area",
     "departments": {
@@ -208,6 +213,9 @@
     "locationCreated": "{name} was added.",
     "locationUpdated": "{name} was updated.",
     "locationDeleted": "{name} was deleted.",
+    "currentLocationCreated": "{name} was added as a current location.",
+    "currentLocationUpdated": "{name} was updated.",
+    "currentLocationDeleted": "{name} was deleted.",
     "table": {
       "category": "Category",
       "code": "Code",
@@ -250,7 +258,8 @@
       "crossDepartment": "A sub-category must belong to the same department as its parent. Pick a parent from the department selected above.",
       "moveWithChildren": "This category still has sub-categories, so it cannot move to another department on its own. Move or clear them first.",
       "categoryInUse": "This category still has {subCategories} sub-categor(y/ies) and {assets} asset(s) pointing at it. Move them first.",
-      "locationInUse": "This location still has {count} asset(s) pointing at it. Move them first."
+      "locationInUse": "This location still has {count} asset(s) pointing at it. Move them first.",
+      "currentLocationInUse": "This current location still has {count} asset(s) pointing at it. Move them first."
     }
   },
   "users": {
@@ -374,9 +383,14 @@
     }
   },
   "assets": {
-    "pageTitle": "Asset IT",
-    "pageDescription": "The IT asset inventory: what exists, what it is, and where it is.",
-    "subtitle": "Stock belongs to everyone, so this list is readable by every signed-in user. Only admins can change it.",
+    "pageDescription": {
+      "IT": "The IT asset inventory: what exists, what it is, and where it is.",
+      "HSSE": "The HSSE inventory: equipment, its expiry date, and when it was last and is next inspected."
+    },
+    "subtitle": {
+      "IT": "Stock belongs to everyone, so this list is readable by every signed-in user. Only admins can change it.",
+      "HSSE": "Same read access as Asset IT — stock belongs to everyone. Only admins can change it."
+    },
     "loading": "Loading assets…",
     "empty": "No assets have been recorded yet.",
     "noMatches": "No assets match these filters.",
@@ -420,6 +434,7 @@
     "sections": {
       "identity": "Identity",
       "specification": "Specification",
+      "inspection": "Inspection",
       "network": "Network",
       "credentials": "Credentials",
       "administration": "Administration"
@@ -456,11 +471,8 @@
       "HSSE": "Asset HSSE"
     },
     "fields": {
-      "department": "Department",
-      "departmentHint": "Decides which categories you can pick and which fields the form shows. The asset is filed under the unit of the category you choose.",
       "hsseLegend": "Expiry, inspection and calibration",
-      "hsseHint": "These four are what the spreadsheet does not cover and what an HSSE item always has. The rest of the form is the same for both units.",
-      "hsseNoNetwork": "An HSSE item has no hostname, address, MAC or firmware, so this tab is empty for one.",
+      "hsseHint": "These four are what the spreadsheet does not cover and what an HSSE item always has. Network and credentials are not shown for this unit at all, and usage status stays hidden because its values describe how a computer is lent out.",
       "expirationDate": "Expiry / refill date",
       "lastInspectionDate": "Last inspection",
       "nextInspectionDate": "Next inspection",

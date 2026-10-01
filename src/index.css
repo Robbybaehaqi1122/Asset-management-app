@@ -284,15 +284,20 @@
   background-color: #344054;
 }
 
-@layer utilities {
-  /* For Remove Date Icon */
-  input[type="date"]::-webkit-inner-spin-button,
-  input[type="time"]::-webkit-inner-spin-button,
-  input[type="date"]::-webkit-calendar-picker-indicator,
-  input[type="time"]::-webkit-calendar-picker-indicator {
-    display: none;
-    -webkit-appearance: none;
-  }
+/* Native date/time inputs keep their calendar chrome. The template used to
+   blanket-hide `::-webkit-calendar-picker-indicator`, which in Chrome removes
+   the calendar icon *and* stops the click from opening the picker at all — and
+   this app's only `type="date"` inputs (the asset form and the calendar modal)
+   genuinely want the native popup. The inputs also carry `appearance-none` via
+   `Input`'s base classes or a className, so restore `appearance` here, outside
+   any cascade layer, so it beats that utility regardless of specificity. */
+input[type="date"],
+input[type="time"],
+input[type="datetime-local"],
+input[type="month"],
+input[type="week"] {
+  appearance: auto;
+  -webkit-appearance: auto;
 }
 
 /* third-party libraries CSS */

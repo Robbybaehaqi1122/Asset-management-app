@@ -58,6 +58,28 @@ export class LocationInUseError extends Error {
   }
 }
 
+/** Raised by `deleteCurrentLocation` when assets still point at it. */
+export class CurrentLocationInUseError extends Error {
+  readonly assetCount: number;
+
+  constructor(assetCount: number) {
+    super(`Current location still has ${assetCount} asset(s)`);
+    this.name = "CurrentLocationInUseError";
+    this.assetCount = assetCount;
+  }
+}
+
+/**
+ * A place an asset physically is *now*. Same shape as `LocationRow` and a
+ * different question: `locations` is where the asset is registered, this is
+ * where it actually sits. The two are independent by design, so both tables
+ * exist and an asset may point at a different row in each.
+ */
+export type CurrentLocationRow = LocationRow;
+
+/** Create/update payload for one current location. */
+export type CurrentLocationInput = LocationInput;
+
 export type CategoryRow = {
   id: string;
   name: string;
@@ -67,10 +89,9 @@ export type CategoryRow = {
   /** The fieldset key, only ever set on a top-level category. */
   code: string | null;
   /**
-   * The unit that owns this category. Free text in the database and a closed list
-   * here, because the two drift: a unit added to this list but not to the column
-   * default still works for new rows, and one added to the database but not here
-   * would be invisible in the filter.
+   * The unit that owns this category. Free text in the database; the selectable
+   * list is computed by `getCategoryUnits`, so creating a department in User
+   * Management surfaces it here.
    */
   department: string;
   created_at: string;
@@ -96,25 +117,53 @@ const CATEGORY_COLUMNS =
 const LOCATION_COLUMNS =
   "id, area_name, room_name, notes, created_at, assets!assets_location_id_fkey(count)";
 
-/**
- * The units a category can belong to.
- *
- * **This is a list, and the database column is free text.** That is deliberate:
- * the request named IT / HSSE / GA and "dll", so a `check` constraint would be
- * wrong the first time somebody spelled a unit differently, and a Postgres enum
- * would need a migration to extend. The cost is that this constant is the one
- * place a new unit has to be added, and the comment on `categories.department`
- * says the same thing.
- *
- * The values are what the filter shows, so a unit present in the database but
- * missing here would simply not be selectable.
- */
-export const DEPARTMENTS = ["IT", "HSSE"] as const;
+const CURRENT_LOCATION_COLUMNS =
+  "id, area_name, room_name, notes, created_at, assets!assets_current_location_id_fkey(count)";
 
-export type DepartmentName = (typeof DEPARTMENTS)[number];
+/**
+ * The units pinned into the category filter, whatever the `departments` table
+ * currently holds.
+ *
+ * These two are not optional because the **asset forms route on them**: `/assets`
+ * is Asset IT and `/assets-hsse` is Asset HSSE, fixed in `App.tsx` and in
+ * `ASSET_DEPARTMENTS` in `assetService.ts`. If IT or HSSE ever fell out of the
+ * selectable list, existing categories under them would become un-editable, so
+ * they are always present — every other unit comes from the `departments` table,
+ * which is what makes a department created in User Management appear in the
+ * filter.
+ *
+ * `categories.department` stays free text: no `check` constraint and no enum, so
+ * the column cannot reject a unit that was never seeded.
+ */
+export const PINNED_DEPARTMENTS = ["IT", "HSSE"] as const;
+
+/**
+ * Every unit a category can belong to, alphabetically.
+ *
+ * Pinned IT/HSSE unioned with the rows of the `departments` table. The union is
+ * deliberate: the pinned pair keeps the asset forms working against the seed,
+ * and the table gives the filter the departments an admin created in User
+ * Management — a "Finance" row created there appears here, and is gone again when
+ * it is deleted there.
+ */
+export async function getCategoryUnits(): Promise<string[]> {
+  const { data, error } = await supabase
+    .from("departments")
+    .select("name")
+    .order("name", { ascending: true });
+
+  if (error) throw error;
+
+  const units = new Set<string>(PINNED_DEPARTMENTS);
+  for (const row of data ?? []) {
+    const name = String(row.name).trim();
+    if (name) units.add(name);
+  }
+  return [...units].sort((a, b) => a.localeCompare(b));
+}
 
 /** The unit the screen opens on, and the one the existing seed belongs to. */
-export const DEFAULT_DEPARTMENT: DepartmentName = "IT";
+export const DEFAULT_DEPARTMENT = "IT";
 
 /**
  * Every category, top-level and sub, in one flat read.
@@ -375,6 +424,111 @@ export async function deleteLocation(locationId: string): Promise<void> {
     .from("locations")
     .delete()
     .eq("id", locationId)
+    .select("id")
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) throw new NoRowsWrittenError("deleted");
+}
+
+/** Every current location, area then room. */
+export async function getCurrentLocations(): Promise<CurrentLocationRow[]> {
+  const { data, error } = await supabase
+    .from("current_locations")
+    .select(CURRENT_LOCATION_COLUMNS)
+    .order("area_name", { ascending: true })
+    .order("room_name", { ascending: true, nullsFirst: true });
+
+  if (error) throw error;
+
+  return (data ?? []).map((row) => ({
+    id: row.id,
+    area_name: row.area_name,
+    room_name: row.room_name,
+    notes: row.notes,
+    created_at: row.created_at,
+    assetCount: embeddedCount(row.assets),
+  }));
+}
+
+/** Create one current location. */
+export async function createCurrentLocation(
+  input: CurrentLocationInput,
+): Promise<{ id: string; area_name: string }> {
+  const { data, error } = await supabase
+    .from("current_locations")
+    .insert({
+      area_name: input.area_name.trim(),
+      room_name: trimmed(input.room_name),
+      notes: trimmed(input.notes),
+    })
+    .select("id, area_name")
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) throw new NoRowsWrittenError("inserted");
+
+  return { id: data.id, area_name: data.area_name };
+}
+
+/**
+ * Update one current location.
+ *
+ * Only the three editable columns are sent. There is no column guard on this
+ * table to scope away, so the reason is simpler than it is on `profiles`: a
+ * narrower payload is simply a narrower write, and `created_at` is not something
+ * an edit should be able to move.
+ */
+export async function updateCurrentLocation(
+  currentLocationId: string,
+  input: CurrentLocationInput,
+): Promise<{ id: string; area_name: string }> {
+  const { data, error } = await supabase
+    .from("current_locations")
+    .update({
+      area_name: input.area_name.trim(),
+      room_name: trimmed(input.room_name),
+      notes: trimmed(input.notes),
+    })
+    .eq("id", currentLocationId)
+    .select("id, area_name")
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) throw new NoRowsWrittenError("updated");
+
+  return { id: data.id, area_name: data.area_name };
+}
+
+/**
+ * Delete one current location, refusing while assets still sit there.
+ *
+ * `assets.current_location_id` is `on delete set null`, for the same reason
+ * `assets.location_id` is: a deleted reference should degrade into "not set"
+ * rather than break an unrelated write. The cost is the same too — the database
+ * will happily delete a place that assets are currently in and silently un-set
+ * every one of them. This check is in the application because a cross-table
+ * count is not something a foreign key can express, and the count is what lets
+ * the refusal name what is in the way instead of surfacing a bare refusal code.
+ */
+export async function deleteCurrentLocation(
+  currentLocationId: string,
+): Promise<void> {
+  const { count, error: countError } = await supabase
+    .from("assets")
+    .select("id", { count: "exact", head: true })
+    .eq("current_location_id", currentLocationId);
+
+  if (countError) throw countError;
+
+  if ((count ?? 0) > 0) {
+    throw new CurrentLocationInUseError(count ?? 0);
+  }
+
+  const { data, error } = await supabase
+    .from("current_locations")
+    .delete()
+    .eq("id", currentLocationId)
     .select("id")
     .maybeSingle();
 

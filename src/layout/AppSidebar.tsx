@@ -76,7 +76,13 @@ const navItems: NavItem[] = [
     // the whole group from staff would take that away. The sub-item is where the
     // admin-only screen lives, so that is where the flag goes.
     subItems: [
+      // One row per unit, matching the one route per unit in `App.tsx`. These
+      // are separate lists rather than one list with a unit filter, because the
+      // two have almost nothing in common: an HSSE item is inspected and expires,
+      // an IT item is specced and networked, and the form shows a different
+      // fieldset for each.
       { name: "Asset IT", key: "assetIt", path: "/assets" },
+      { name: "Asset HSSE", key: "assetHsse", path: "/assets-hsse" },
       {
         name: "Asset Settings",
         key: "assetSettings",

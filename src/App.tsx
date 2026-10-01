@@ -34,10 +34,22 @@ export default function App() {
               <Route path="/users" element={<UserListPage />} />
               <Route path="/departments" element={<DepartmentListPage />} />
               {/* `assets_select_authenticated` adalah `using (true)` dan stok
-                  bukan milik satu departemen, jadi halaman ini juga untuk staff.
-                  Yang admin-only di dalamnya adalah kredensial: RLS menyembunyikan
-                  barisnya, sehingga staff tidak pernah menerimanya di respons. */}
-              <Route path="/assets" element={<AssetListPage />} />
+                  bukan milik satu departemen, jadi kedua halaman ini juga untuk
+                  staff. Yang admin-only di dalamnya adalah kredensial: RLS
+                  menyembunyikan barisnya, sehingga staff tidak pernah
+                  menerimanya di respons.
+
+                  Satu route per unit, bukan satu halaman dengan filter unit.
+                 dipilih unit di dalam form berarti aset HSSE bisa dibuat dari
+                  halaman IT lalu langsung hilang dari sana — persis masalah yang
+                  pemisahan ini menutup. Sekarang unit datang dari route, jadi
+                  `assets.department` tidak pernah diisi client: trigger
+                  `assets_sync_department` yang menimpanya dari kategori. */}
+              <Route path="/assets" element={<AssetListPage unit="IT" />} />
+              <Route
+                path="/assets-hsse"
+                element={<AssetListPage unit="HSSE" />}
+              />
               {/* Master data yang jadi sumber dropdown form aset. Dasarnya bukan
                   tabel baru: `categories` (dua level lewat `parent_id`) dan
                   `locations` sudah jadi referensi, dan `assets.category_id` /

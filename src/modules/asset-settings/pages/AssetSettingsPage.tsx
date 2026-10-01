@@ -31,19 +31,28 @@ import {
 
 import {
   createCategory,
+  createCurrentLocation,
   createLocation,
   deleteCategory,
+  deleteCurrentLocation,
   deleteLocation,
   getCategoriesWithSubCategoryCounts,
+  getCurrentLocations,
   getLocations,
   updateCategory,
+  updateCurrentLocation,
   updateLocation,
   CategoryInUseError,
+  CurrentLocationInUseError,
   LocationInUseError,
   DEFAULT_DEPARTMENT,
-  DEPARTMENTS,
+  getCategoryUnits,
 } from "../services/settingService";
-import type { CategoryRow, LocationRow } from "../services/settingService";
+import type {
+  CategoryRow,
+  CurrentLocationRow,
+  LocationRow,
+} from "../services/settingService";
 
 /**
  * Asset settings: the reference data behind the asset form's pickers.
@@ -68,7 +77,7 @@ import type { CategoryRow, LocationRow } from "../services/settingService";
  * before pressing it.
  */
 
-const TABS = ["categories", "locations"] as const;
+const TABS = ["categories", "locations", "currentLocations"] as const;
 type Tab = (typeof TABS)[number];
 
 type CategoryForm = {
@@ -78,6 +87,13 @@ type CategoryForm = {
   code: string;
   department: string;
 };
+
+/**
+ * Which place table the shared modal is editing. `locations` is where an asset is
+ * registered, `currentLocations` is where it physically is; the two tables have
+ * the same shape and the admin manages them the same way.
+ */
+type PlaceKind = "location" | "currentLocation";
 
 type LocationForm = {
   area_name: string;
@@ -106,8 +122,12 @@ export default function AssetSettingsPage() {
 
   const [tab, setTab] = useState<Tab>("categories");
   const [department, setDepartment] = useState<string>(DEFAULT_DEPARTMENT);
+  const [units, setUnits] = useState<string[]>([]);
   const [categories, setCategories] = useState<CategoryRow[]>([]);
   const [locations, setLocations] = useState<LocationRow[]>([]);
+  const [currentLocations, setCurrentLocations] = useState<
+    CurrentLocationRow[]
+  >([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
   const [reloadToken, setReloadToken] = useState(0);
@@ -129,6 +149,7 @@ export default function AssetSettingsPage() {
   const [pendingDelete, setPendingDelete] = useState<
     | { kind: "category"; row: CategoryRow }
     | { kind: "location"; row: LocationRow }
+    | { kind: "currentLocation"; row: CurrentLocationRow }
     | null
   >(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -146,11 +167,15 @@ export default function AssetSettingsPage() {
     void Promise.all([
       getCategoriesWithSubCategoryCounts(),
       getLocations(),
+      getCurrentLocations(),
+      getCategoryUnits(),
     ]).then(
-      ([categoryRows, locationRows]) => {
+      ([categoryRows, locationRows, currentLocationRows, units]) => {
         if (cancelled) return;
         setCategories(categoryRows);
         setLocations(locationRows);
+        setCurrentLocations(currentLocationRows);
+        setUnits(units);
         setLoadFailed(false);
         setIsLoading(false);
       },
@@ -158,6 +183,8 @@ export default function AssetSettingsPage() {
         if (cancelled) return;
         setCategories([]);
         setLocations([]);
+        setCurrentLocations([]);
+        setUnits([]);
         setLoadFailed(true);
         setIsLoading(false);
       },
@@ -205,10 +232,19 @@ export default function AssetSettingsPage() {
     return map;
   }, [departmentCategories]);
 
+  /**
+   * The unit dropdown is a live list, not a constant: `getCategoryUnits` unions
+   * the pinned IT/HSSE with the `departments` table, so a department created in
+   * User Management appears here on the next load. Labels fall back to the raw
+   * name — only the pinned pair have i18n keys.
+   */
   const departmentOptions = useMemo(
     () =>
-      DEPARTMENTS.map((value) => ({ value, label: t(`departments.${value}`) })),
-    [t],
+      units.map((name) => ({
+        value: name,
+        label: t(`departments.${name}`, { defaultValue: name }),
+      })),
+    [units, t],
   );
 
   /**
@@ -319,15 +355,29 @@ export default function AssetSettingsPage() {
     }
   };
 
-  const handleOpenCreateLocation = () => {
+  /**
+   * Which of the two place tables the shared location modal is editing.
+   *
+   * **One modal, two tables, rather than two modals.** `locations` and
+   * `current_locations` are the same shape by design, so the form, the validation
+   * and the error copy are all identical. A second modal would be the same markup
+   * twice and would need its own fix whenever the fields change; the only thing
+   * that differs is which service the save calls and which strings the headings
+   * use, and both are read from this one flag.
+   */
+  const [placeKind, setPlaceKind] = useState<PlaceKind>("location");
+
+  const handleOpenCreatePlace = (kind: PlaceKind) => {
     setSaveError(null);
+    setPlaceKind(kind);
     setEditingLocationId(null);
     setLocationForm(EMPTY_LOCATION);
     locationModal.openModal();
   };
 
-  const handleOpenEditLocation = (row: LocationRow) => {
+  const handleOpenEditPlace = (kind: PlaceKind, row: LocationRow) => {
     setSaveError(null);
+    setPlaceKind(kind);
     setEditingLocationId(row.id);
     setLocationForm({
       area_name: row.area_name,
@@ -337,7 +387,7 @@ export default function AssetSettingsPage() {
     locationModal.openModal();
   };
 
-  const handleSaveLocation = async () => {
+  const handleSavePlace = async () => {
     const areaName = locationForm.area_name.trim();
     if (areaName === "") {
       setSaveError(t("errors.areaRequired"));
@@ -352,13 +402,23 @@ export default function AssetSettingsPage() {
         room_name: locationForm.room_name,
         notes: locationForm.notes,
       };
-      if (editingLocationId) {
+
+      if (placeKind === "currentLocation") {
+        if (editingLocationId) {
+          await updateCurrentLocation(editingLocationId, input);
+          setNotice(t("currentLocationUpdated", { name: areaName }));
+        } else {
+          await createCurrentLocation(input);
+          setNotice(t("currentLocationCreated", { name: areaName }));
+        }
+      } else if (editingLocationId) {
         await updateLocation(editingLocationId, input);
         setNotice(t("locationUpdated", { name: areaName }));
       } else {
         await createLocation(input);
         setNotice(t("locationCreated", { name: areaName }));
       }
+
       locationModal.closeModal();
       reload();
     } catch (error) {
@@ -371,15 +431,24 @@ export default function AssetSettingsPage() {
   };
 
   const handleOpenDelete = (
-    kind: "category" | "location",
+    kind: "category" | "location" | "currentLocation",
     row: CategoryRow | LocationRow,
   ) => {
     setDeleteError(null);
-    setPendingDelete(
-      kind === "category"
-        ? { kind, row: row as CategoryRow }
-        : { kind, row: row as LocationRow },
-    );
+    // The union is keyed on `kind`, so one assignment has to be checked rather
+    // than three. Each branch below re-narrows before using the row, so a
+    // mismatched pair is a type error at the call site rather than here.
+    switch (kind) {
+      case "category":
+        setPendingDelete({ kind, row: row as CategoryRow });
+        break;
+      case "location":
+        setPendingDelete({ kind, row: row as LocationRow });
+        break;
+      case "currentLocation":
+        setPendingDelete({ kind, row: row as CurrentLocationRow });
+        break;
+    }
     deleteModal.openModal();
   };
 
@@ -393,6 +462,10 @@ export default function AssetSettingsPage() {
         const row = pendingDelete.row as CategoryRow;
         await deleteCategory(row.id);
         setNotice(t("categoryDeleted", { name: row.name }));
+      } else if (pendingDelete.kind === "currentLocation") {
+        const row = pendingDelete.row as CurrentLocationRow;
+        await deleteCurrentLocation(row.id);
+        setNotice(t("currentLocationDeleted", { name: row.area_name }));
       } else {
         const row = pendingDelete.row as LocationRow;
         await deleteLocation(row.id);
@@ -412,6 +485,10 @@ export default function AssetSettingsPage() {
         );
       } else if (error instanceof LocationInUseError) {
         setDeleteError(t("errors.locationInUse", { count: error.assetCount }));
+      } else if (error instanceof CurrentLocationInUseError) {
+        setDeleteError(
+          t("errors.currentLocationInUse", { count: error.assetCount }),
+        );
       } else {
         setDeleteError(t("errors.delete"));
       }
@@ -436,12 +513,16 @@ export default function AssetSettingsPage() {
     );
   }
 
+  // Both place kinds read `area_name`, so one branch covers the two of them and
+  // the category is the only row with a different name field.
   const pendingName =
     pendingDelete?.kind === "category"
       ? (pendingDelete.row as CategoryRow).name
-      : pendingDelete?.kind === "location"
-        ? (pendingDelete.row as LocationRow).area_name
-        : "";
+      : pendingDelete?.kind === "currentLocation"
+        ? (pendingDelete.row as CurrentLocationRow).area_name
+        : pendingDelete?.kind === "location"
+          ? (pendingDelete.row as LocationRow).area_name
+          : "";
 
   return (
     <div>
@@ -584,7 +665,9 @@ export default function AssetSettingsPage() {
                   <div className="flex flex-col items-start gap-4 p-6">
                     <p className="text-sm text-gray-500 dark:text-gray-400">
                       {t("emptyForDepartment", {
-                        name: t(`departments.${department}`),
+                        name: t(`departments.${department}`, {
+                          defaultValue: department,
+                        }),
                       })}
                     </p>
                     <Button
@@ -671,7 +754,7 @@ export default function AssetSettingsPage() {
                   </p>
                   <Button
                     variant="outline"
-                    onClick={handleOpenCreateLocation}
+                    onClick={() => handleOpenCreatePlace("location")}
                     startIcon={<PlusIcon className="size-4" />}
                     className="shrink-0 self-start sm:self-auto"
                   >
@@ -717,43 +800,87 @@ export default function AssetSettingsPage() {
                     </TableHeader>
                     <TableBody>
                       {locations.map((row) => (
-                        <TableRow
+                        <PlaceRow
                           key={row.id}
-                          className="border-b border-gray-100 last:border-0 hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-white/3"
+                          row={row}
+                          onEdit={() => handleOpenEditPlace("location", row)}
+                          onDelete={() => handleOpenDelete("location", row)}
+                        />
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </section>
+            )}
+
+            {tab === "currentLocations" && (
+              <section
+                id="asset-settings-panel-currentLocations"
+                role="tabpanel"
+                aria-labelledby="asset-settings-tab-currentLocations"
+              >
+                <div className="flex flex-col gap-4 border-b border-gray-200 p-6 sm:flex-row sm:items-center sm:justify-between dark:border-gray-800">
+                  <p className="text-sm text-gray-500 sm:pe-6 dark:text-gray-400">
+                    {t("currentLocationsHint")}
+                  </p>
+                  <Button
+                    variant="outline"
+                    onClick={() => handleOpenCreatePlace("currentLocation")}
+                    startIcon={<PlusIcon className="size-4" />}
+                    className="shrink-0 self-start sm:self-auto"
+                  >
+                    {t("addCurrentLocation")}
+                  </Button>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <Table className="min-w-[760px]">
+                    <TableHeader>
+                      <TableRow className="border-b border-gray-200 dark:border-gray-800">
+                        <TableCell
+                          isHeader
+                          className="px-6 py-3 text-start text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
                         >
-                          <TableCell className="px-6 py-3 text-sm font-medium text-gray-800 dark:text-white/90">
-                            {row.area_name}
-                          </TableCell>
-                          <TableCell className="px-4 py-3 text-sm text-gray-600 dark:text-gray-300">
-                            {row.room_name ?? t("noRoom")}
-                          </TableCell>
-                          <TableCell className="px-4 py-3 text-sm">
-                            <span className="text-gray-500 dark:text-gray-400">
-                              {row.notes ?? "—"}
-                            </span>
-                          </TableCell>
-                          <TableCell className="px-4 py-3 text-sm text-gray-600 dark:text-gray-300">
-                            {t("assetCount", { count: row.assetCount })}
-                          </TableCell>
-                          <TableCell className="px-6 py-3 text-end">
-                            <RowActions
-                              editLabel={t("editLabel", {
-                                name: row.area_name,
-                              })}
-                              deleteLabel={t("deleteLabel", {
-                                name: row.area_name,
-                              })}
-                              deleteDisabled={row.assetCount > 0}
-                              deleteTitle={
-                                row.assetCount > 0
-                                  ? t("deleteInUse")
-                                  : undefined
-                              }
-                              onEdit={() => handleOpenEditLocation(row)}
-                              onDelete={() => handleOpenDelete("location", row)}
-                            />
-                          </TableCell>
-                        </TableRow>
+                          {t("table.area")}
+                        </TableCell>
+                        <TableCell
+                          isHeader
+                          className="px-4 py-3 text-start text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
+                        >
+                          {t("table.room")}
+                        </TableCell>
+                        <TableCell
+                          isHeader
+                          className="px-4 py-3 text-start text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
+                        >
+                          {t("table.notes")}
+                        </TableCell>
+                        <TableCell
+                          isHeader
+                          className="px-4 py-3 text-start text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
+                        >
+                          {t("table.assets")}
+                        </TableCell>
+                        <TableCell
+                          isHeader
+                          className="px-6 py-3 text-end text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
+                        >
+                          {t("table.actions")}
+                        </TableCell>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {currentLocations.map((row) => (
+                        <PlaceRow
+                          key={row.id}
+                          row={row}
+                          onEdit={() =>
+                            handleOpenEditPlace("currentLocation", row)
+                          }
+                          onDelete={() =>
+                            handleOpenDelete("currentLocation", row)
+                          }
+                        />
                       ))}
                     </TableBody>
                   </Table>
@@ -916,7 +1043,13 @@ export default function AssetSettingsPage() {
       >
         <div className="p-6">
           <h3 className="text-lg font-semibold text-gray-800 dark:text-white/90">
-            {editingLocationId ? t("editLocationTitle") : t("addLocation")}
+            {placeKind === "currentLocation"
+              ? editingLocationId
+                ? t("editCurrentLocationTitle")
+                : t("addCurrentLocation")
+              : editingLocationId
+                ? t("editLocationTitle")
+                : t("addLocation")}
           </h3>
 
           <div className="mt-5 space-y-4">
@@ -996,7 +1129,7 @@ export default function AssetSettingsPage() {
             >
               {t("cancel")}
             </Button>
-            <Button onClick={handleSaveLocation} disabled={isSaving}>
+            <Button onClick={handleSavePlace} disabled={isSaving}>
               {isSaving ? t("saving") : t("save")}
             </Button>
           </div>
@@ -1196,6 +1329,55 @@ function CategoryGroup({
           </TableRow>
         ))}
     </>
+  );
+}
+
+/**
+ * One row of either place table.
+ *
+ * Extracted rather than written twice: the two tables are the same shape by
+ * design, and a copy of these five cells is a copy that gets a padding fix in
+ * one table and not the other. The only thing that varies is the callbacks, so
+ * the row takes them as props and knows nothing about which table it is in.
+ */
+function PlaceRow({
+  row,
+  onEdit,
+  onDelete,
+}: {
+  row: LocationRow;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  const { t } = useTranslation("common", { keyPrefix: "assetSettings" });
+
+  return (
+    <TableRow className="border-b border-gray-100 last:border-0 hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-white/3">
+      <TableCell className="px-6 py-3 text-sm font-medium text-gray-800 dark:text-white/90">
+        {row.area_name}
+      </TableCell>
+      <TableCell className="px-4 py-3 text-sm text-gray-600 dark:text-gray-300">
+        {row.room_name ?? t("noRoom")}
+      </TableCell>
+      <TableCell className="px-4 py-3 text-sm">
+        <span className="text-gray-500 dark:text-gray-400">
+          {row.notes ?? "—"}
+        </span>
+      </TableCell>
+      <TableCell className="px-4 py-3 text-sm text-gray-600 dark:text-gray-300">
+        {t("assetCount", { count: row.assetCount })}
+      </TableCell>
+      <TableCell className="px-6 py-3 text-end">
+        <RowActions
+          editLabel={t("editLabel", { name: row.area_name })}
+          deleteLabel={t("deleteLabel", { name: row.area_name })}
+          deleteDisabled={row.assetCount > 0}
+          deleteTitle={row.assetCount > 0 ? t("deleteInUse") : undefined}
+          onEdit={onEdit}
+          onDelete={onDelete}
+        />
+      </TableCell>
+    </TableRow>
   );
 }
 

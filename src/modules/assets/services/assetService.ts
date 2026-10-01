@@ -116,6 +116,14 @@ export type Asset = {
   category_id: string | null;
   location_id: string | null;
   /**
+   * Where the asset physically is *now*, as a `current_locations` reference.
+   * Independent of `location_id`, which is where the asset is *registered*: an
+   * asset registered at one site and sitting in another room is the normal case,
+   * and `01600` made the second one a real reference row rather than a free-text
+   * note.
+   */
+  current_location_id: string | null;
+  /**
    * The owning unit, copied from the category by `assets_sync_department`. Never
    * written by the client: the trigger overwrites it, so this is a read-only
    * mirror of the category's unit that a query can filter on without a join.
@@ -159,13 +167,11 @@ export type Asset = {
   panel_size: string | null;
   capacity: string | null;
   speed: string | null;
-  current_location: string | null;
   protocol_url: string | null;
   connection_type: ConnectionType | null;
 
   /** The workbook's own `Usage Status`, separate from `status`. */
   usage_status: UsageStatus | null;
-
   // COMPUTER: the workbook splits the four free-text boxes above into its own
   // headings. `processor_spec`, `ram_spec`, `storage_spec` and `display_spec`
   // remain for the sheets that still use a single box, and the form writes both
@@ -226,6 +232,8 @@ export type AssetInput = {
   condition: AssetCondition;
   category_id: string | null;
   location_id: string | null;
+  /** `01600`: the place the asset is in now, separate from where it is registered. */
+  current_location_id: string | null;
   purchase_date: string | null;
   /** HSSE only. The four fields `01500` added. */
   expiration_date: string | null;
@@ -260,7 +268,6 @@ export type AssetInput = {
   panel_size: string | null;
   capacity: string | null;
   speed: string | null;
-  current_location: string | null;
   protocol_url: string | null;
   connection_type: ConnectionType | null;
   usage_status: UsageStatus | null;
@@ -359,7 +366,7 @@ const ASSET_COLUMNS = `
   department,
   expiration_date, last_inspection_date, next_inspection_date,
   calibration_cert_no,
-  current_location, protocol_url, connection_type, usage_status,
+  current_location_id, protocol_url, connection_type, usage_status,
   processor_mfg, processor_model,
   ram_mfg, ram_type, ram_speed, ram_slots, ram_channel, ram_size_gb,
   gpu_onboard,
@@ -371,6 +378,7 @@ const ASSET_COLUMNS = `
   created_at, updated_at,
   category:categories!assets_category_id_fkey ( id, name ),
   location:locations!assets_location_id_fkey ( id, area_name, room_name ),
+  currentLocation:current_locations!assets_current_location_id_fkey ( id, area_name, room_name ),
   credentials:asset_credentials ( username, password )
 ` as const;
 
@@ -422,6 +430,7 @@ function mapAsset(row: RawAsset): Asset {
     condition: row.condition as AssetCondition,
     category_id: str(row.category_id),
     location_id: str(row.location_id),
+    current_location_id: str(row.current_location_id),
     department: String(row.department ?? "IT"),
     purchase_date: str(row.purchase_date),
     expiration_date: str(row.expiration_date),
@@ -459,7 +468,6 @@ function mapAsset(row: RawAsset): Asset {
     panel_size: str(row.panel_size),
     capacity: str(row.capacity),
     speed: str(row.speed),
-    current_location: str(row.current_location),
     protocol_url: str(row.protocol_url),
     connection_type: str(row.connection_type) as ConnectionType | null,
     usage_status: str(row.usage_status) as UsageStatus | null,
@@ -518,17 +526,53 @@ function mapAsset(row: RawAsset): Asset {
 }
 
 /**
- * Every asset, newest first.
+ * The units the asset forms and routes serve, in the order they appear.
+ *
+ * This is a **closed** set by design — the routes are fixed: `/assets` is IT and
+ * `/assets-hsse` is HSSE in `App.tsx`. A unit added to the category filter in
+ * Asset Settings beyond these two — a department created in User Management
+ * surfaces there through `getCategoryUnits` — has categories but no asset form,
+ * until a route is added here.
+ *
+ * Deliberately separate from the units list in `settingService.ts`: this one
+ * answers "which unit does an asset page serve", fixed in `App.tsx`, while that
+ * one answers "which units have categories", computed from the `departments`
+ * table. Sharing one constant would make the asset routes depend on a
+ * reference-data list they do not need — the form only routes on this pair.
+ */
+export const ASSET_DEPARTMENTS = ["IT", "HSSE"] as const;
+
+/**
+ * The unit a page is scoped to. One page per value, so the route decides it and
+ * the form no longer offers a switch: picking the wrong unit on the IT page
+ * created an asset that was then invisible on the page that created it.
+ */
+export type AssetUnit = (typeof ASSET_DEPARTMENTS)[number];
+
+/**
+ * Every asset in one unit, newest first.
+ *
+ * The unit is the **page**, not a filter, so the filter is in SQL rather than in
+ * the browser. Filtering client-side would mean each of the two pages fetched
+ * the whole table and threw most of it away — and the reason the unit is now a
+ * page at all is that an HSSE row appearing in the IT list is what made the two
+ * impossible to tell apart.
+ *
+ * This is safe to filter on because `assets.department` is not a client-written
+ * column. `assets_sync_department` overwrites it from the category on every
+ * insert and update, so a row that says `IT` is filed under an IT category and
+ * there is no third case to handle.
  *
  * Not gated on `useIsAdmin`, and deliberately so. `assets_select_authenticated`
  * is `using (true)` and stock does not belong to one department, so a staff
  * member gets the same rows an admin does. The only difference in the payload is
  * that `credentials` is null for them, which the database decides.
  */
-export async function getAssets(): Promise<Asset[]> {
+export async function getAssets(unit: AssetUnit): Promise<Asset[]> {
   const { data, error } = await supabase
     .from("assets")
     .select(ASSET_COLUMNS)
+    .eq("department", unit)
     .order("created_at", { ascending: false });
 
   if (error) throw error;
@@ -536,35 +580,23 @@ export async function getAssets(): Promise<Asset[]> {
 }
 
 /**
- * The units the asset form offers, in the order they appear.
- *
- * Two units so far, and the list is the one place a third would be added — the
- * same trade `DEPARTMENTS` in the settings module makes, and for the same reason:
- * `categories.department` is free text, so a closed set would refuse a unit the
- * moment somebody spelled it differently.
- *
- * Deliberately separate from `DEPARTMENTS` in `settingService.ts`. They cover the
- * same values today, but they answer two different questions — "which units have
- * categories" and "which unit is this asset in" — and sharing one constant would
- * make the asset form depend on a reference-data list it does not need.
- */
-export const ASSET_DEPARTMENTS = ["IT", "HSSE"] as const;
-
-/**
  * The pickers for the filter bar and the form: every category with its parents
  * and its unit, plus locations. Same split as `getDepartmentOptions` — no
  * counts, no gating, because both reads are `using (true)`.
  *
- * **Every unit is returned, not just this one.** `01500` gave the asset form a
- * unit selector, so filtering the rows in SQL by one department would leave the
- * other unit's pickers permanently empty. The form does the filtering, from
- * `CategoryOption.department`.
+ * **Every unit is returned, not just the page's.** The form and the filter bar
+ * both narrow to one unit in the browser, from `CategoryOption.department`. The
+ * page does not pass its unit here, because a category from another unit still
+ * has to be *readable* for the two sides of a `parent_id` join to resolve — and
+ * because a SQL filter would make a second call necessary the moment a third
+ * consumer wanted the whole list.
  */
 export async function getAssetFilterOptions(): Promise<{
   categories: CategoryOption[];
   locations: LocationOption[];
+  currentLocations: LocationOption[];
 }> {
-  const [categories, locations] = await Promise.all([
+  const [categories, locations, currentLocations] = await Promise.all([
     supabase
       .from("categories")
       .select("id, name, parent_id, code, department")
@@ -574,10 +606,19 @@ export async function getAssetFilterOptions(): Promise<{
       .select("id, area_name, room_name")
       .order("area_name", { ascending: true })
       .order("room_name", { ascending: true, nullsFirst: true }),
+    // Read from `current_locations`, not filtered by unit: a place is a place.
+    // The two tables hold the same shape and answer different questions, and the
+    // form needs both to fill independently.
+    supabase
+      .from("current_locations")
+      .select("id, area_name, room_name")
+      .order("area_name", { ascending: true })
+      .order("room_name", { ascending: true, nullsFirst: true }),
   ]);
 
   if (categories.error) throw categories.error;
   if (locations.error) throw locations.error;
+  if (currentLocations.error) throw currentLocations.error;
 
   const rows = (categories.data ?? []) as RawAsset[];
 
@@ -615,6 +656,20 @@ export async function getAssetFilterOptions(): Promise<{
         name: locationDisplayName(areaName, roomName),
       };
     }),
+    currentLocations: ((currentLocations.data ?? []) as RawAsset[]).map(
+      (row) => {
+        const areaName = String(row.area_name);
+        const roomName = str(row.room_name);
+        return {
+          id: String(row.id),
+          areaName,
+          roomName,
+          // Same assembled display string, same reason: a picker wants one line and
+          // the database holds the two facts.
+          name: locationDisplayName(areaName, roomName),
+        };
+      },
+    ),
   };
 }
 
@@ -658,6 +713,10 @@ function normalise(input: Omit<AssetInput, "credentials">) {
     condition: input.condition,
     category_id: input.category_id || null,
     location_id: input.location_id || null,
+    // Independent of `location_id` on purpose: registered place and actual place
+    // are two facts, and an empty box on either one is "not recorded" rather than
+    // a request to clear the other.
+    current_location_id: input.current_location_id || null,
     purchase_date: input.purchase_date || null,
     // The four HSSE fields are sent as `YYYY-MM-DD`, which is what a `date`
     // column wants and what a native date input produces. An empty box is
@@ -697,7 +756,6 @@ function normalise(input: Omit<AssetInput, "credentials">) {
     panel_size: text(input.panel_size),
     capacity: text(input.capacity),
     speed: text(input.speed),
-    current_location: text(input.current_location),
     protocol_url: text(input.protocol_url),
     connection_type: input.connection_type || null,
     usage_status: input.usage_status || null,

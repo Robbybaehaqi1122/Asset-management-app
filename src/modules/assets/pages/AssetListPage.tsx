@@ -29,7 +29,6 @@ import {
   getAssetFilterOptions,
   setAssetStatus,
   updateAsset,
-  ASSET_DEPARTMENTS,
   AssetInUseError,
 } from "../services/assetService";
 import type {
@@ -38,6 +37,7 @@ import type {
   AssetInput,
   AssetRef,
   AssetStatus,
+  AssetUnit,
   CategoryOption,
   ConnectionType,
   SelectableAssetStatus,
@@ -71,18 +71,11 @@ type AssetForm = {
   name: string;
   description: string;
   condition: AssetCondition;
-  /**
-   * UI-only: the owning unit. It decides which categories the pickers offer and
-   * which fieldset the Specification and Network tabs show. It is *not* sent as
-   * the asset's unit — `assets_sync_department` derives that from the category,
-   * so the two cannot disagree.
-   */
-  department: string;
   /** UI-only: the main category. `category_id` holds the chosen sub-category. */
   parent_category_id: string;
   category_id: string;
   location_id: string;
-  current_location: string;
+  current_location_id: string;
   purchase_date: string;
   purchase_price: string;
   supplier: string;
@@ -158,11 +151,10 @@ const EMPTY_FORM: AssetForm = {
   name: "",
   description: "",
   condition: "good",
-  department: ASSET_DEPARTMENTS[0],
   parent_category_id: "",
   category_id: "",
   location_id: "",
-  current_location: "",
+  current_location_id: "",
   purchase_date: "",
   purchase_price: "",
   supplier: "",
@@ -241,16 +233,12 @@ function formFromAsset(asset: Asset, categories: CategoryOption[]): AssetForm {
     name: asset.name,
     description: asset.description ?? "",
     condition: asset.condition,
-    // The unit comes off the asset, which got it from its category by trigger, so
-    // editing an asset opens on the unit it actually belongs to.
-    department:
-      asset.department || category?.department || ASSET_DEPARTMENTS[0],
     // A sub-category's parent is what the fieldset switches on; a top-level
     // category is its own parent.
     parent_category_id: category ? (category.parentId ?? category.id) : "",
     category_id: category?.parentId ? category.id : "",
     location_id: asset.location_id ?? "",
-    current_location: asset.current_location ?? "",
+    current_location_id: asset.current_location_id ?? "",
     purchase_date: asset.purchase_date ?? "",
     purchase_price:
       asset.purchase_price === null ? "" : String(asset.purchase_price),
@@ -356,7 +344,7 @@ function toInput(form: AssetForm, includeCredentials: boolean): AssetInput {
     // stored on the asset directly.
     category_id: form.category_id || form.parent_category_id || null,
     location_id: form.location_id || null,
-    current_location: form.current_location || null,
+    current_location_id: form.current_location_id || null,
     purchase_date: form.purchase_date || null,
     // Sent as the raw `YYYY-MM-DD` a native date input produces, and only for
     // HSSE: the fieldset does not render them for IT, so they arrive empty and
@@ -447,6 +435,17 @@ const SECTIONS = [
 ] as const;
 type Section = (typeof SECTIONS)[number];
 
+/** Tabs HSSE does not get. An extinguisher or a hard hat has no address, no
+    firmware and no device login, so those two panels would be empty for every
+    HSSE item. The previous version kept the Network tab and filled it with a
+    "there is no network here" note, arguing that a tab which appears and
+    disappears is worse than an empty one. That reasoning holds *within* a unit,
+    where the strip changes as you move between panels, and does not hold
+    *across* units, where the tab is empty for every single row. `credentials`
+    disappears for the same reason it already did for a non-admin: the panel is
+    admin-only, so an HSSE form would show it to nobody at all. */
+const HSSE_HIDDEN_SECTIONS: readonly Section[] = ["network", "credentials"];
+
 /** Badge colour per status. Values come from the column's check constraint. */
 const STATUS_COLOR: Record<
   AssetStatus,
@@ -536,13 +535,14 @@ const NETWORK_PORTS = [
   label: string;
 }>;
 
-export default function AssetListPage() {
+export default function AssetListPage({ unit }: { unit: AssetUnit }) {
   const { t } = useTranslation("common", { keyPrefix: "assets" });
   const isAdmin = useIsAdmin();
 
   const [assets, setAssets] = useState<Asset[]>([]);
   const [categories, setCategories] = useState<CategoryOption[]>([]);
   const [locations, setLocations] = useState<AssetRef[]>([]);
+  const [currentLocations, setCurrentLocations] = useState<AssetRef[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
   const [reloadToken, setReloadToken] = useState(0);
@@ -578,12 +578,13 @@ export default function AssetListPage() {
     // `cancelled` covers a sign-out landing while the reads are in flight.
     let cancelled = false;
 
-    void Promise.all([getAssets(), getAssetFilterOptions()]).then(
+    void Promise.all([getAssets(unit), getAssetFilterOptions()]).then(
       ([rows, options]) => {
         if (cancelled) return;
         setAssets(rows);
         setCategories(options.categories);
         setLocations(options.locations);
+        setCurrentLocations(options.currentLocations);
         setLoadFailed(false);
         setIsLoading(false);
       },
@@ -597,12 +598,24 @@ export default function AssetListPage() {
     return () => {
       cancelled = true;
     };
-  }, [reloadToken]);
+  }, [reloadToken, unit]);
 
   const set = useCallback(
     <K extends keyof AssetForm>(key: K, value: AssetForm[K]) =>
       setForm((prev) => ({ ...prev, [key]: value })),
     [],
+  );
+
+  /**
+   * Current-location options: every row in `current_locations` by its display
+   * name, keyed on the id. Distinct from `locationOptions` on purpose — the
+   * registered place and the place the asset actually sits are two independent
+   * facts, and the legacy-value fallback the text column needed is gone because
+   * `01600` backfilled every free-text value into this table before dropping it.
+   */
+  const currentLocationOptions = useMemo(
+    () => currentLocations.map((l) => ({ value: l.id, label: l.name })),
+    [currentLocations],
   );
 
   /**
@@ -612,13 +625,18 @@ export default function AssetListPage() {
    */
   const categoryOptions = useMemo(
     () =>
-      categories.map((option) => ({
-        value: option.id,
-        label: option.parentName
-          ? `${option.parentName} / ${option.name}`
-          : option.name,
-      })),
-    [categories],
+      categories
+        // This page's unit only. The list below is already filtered by it, so
+        // offering a cross-unit category here would produce "no matches" for a
+        // reason the person cannot see.
+        .filter((option) => option.department === unit)
+        .map((option) => ({
+          value: option.id,
+          label: option.parentName
+            ? `${option.parentName} / ${option.name}`
+            : option.name,
+        })),
+    [categories, unit],
   );
 
   /** The main-category picker: parents only. Nothing here has a `parent_id`. */
@@ -628,13 +646,13 @@ export default function AssetListPage() {
         .filter(
           (option) =>
             option.parentId === null &&
-            // Only the unit on screen. `assets_sync_department` derives the
+            // Only this page's unit. `assets_sync_department` derives the
             // asset's unit from the category, so offering a cross-unit category
             // here would only produce a fieldset that does not match the label.
-            option.department === form.department,
+            option.department === unit,
         )
         .map((option) => ({ value: option.id, label: option.name })),
-    [categories, form.department],
+    [categories, unit],
   );
 
   /** The sub-category picker: children of whatever main category is chosen. */
@@ -644,44 +662,37 @@ export default function AssetListPage() {
         .filter(
           (option) =>
             option.parentId === form.parent_category_id &&
-            option.department === form.department,
+            option.department === unit,
         )
         .map((option) => ({ value: option.id, label: option.name })),
-    [categories, form.parent_category_id, form.department],
+    [categories, form.parent_category_id, unit],
   );
 
   /**
-   * The HSSE fieldset, chosen by unit rather than by a category `code`.
+   * The HSSE fieldset, chosen by the page's unit rather than by a category
+   * `code`.
    *
    * HSSE categories have no `code` — the fieldset switch has never honoured one
    * on a category an admin added — so without this they would fall through to
    * `isGeneric` and be given the IT fields, which is the opposite of the point.
    */
-  const isHsse = form.department === "HSSE";
+  const isHsse = unit === "HSSE";
 
-  const departmentOptions = useMemo(
-    () =>
-      ASSET_DEPARTMENTS.map((value) => ({
-        value,
-        label: t(`units.${value}`),
-      })),
-    [t],
+  /** The tabs actually rendered, which is `SECTIONS` minus the ones this unit
+      and this viewer have no use for. `credentials` was already admin-gated;
+      both it and `network` are additionally dropped for HSSE. */
+  const visibleSections = SECTIONS.filter(
+    (s) =>
+      (s !== "credentials" || isAdmin) &&
+      !(isHsse && HSSE_HIDDEN_SECTIONS.includes(s)),
   );
 
-  /**
-   * Switching unit clears the category pickers.
-   *
-   * The chosen category belongs to the unit it was chosen in, so keeping it would
-   * leave a COMPUTER id sitting in a form showing HSSE fields — and
-   * `assets_sync_department` would then quietly file the asset under IT. The
-   * sub-category is cleared for the same reason it is when a parent changes: it
-   * belongs to the parent that was just left.
-   */
-  const handleChangeDepartment = (value: string) => {
-    set("department", value);
-    set("parent_category_id", "");
-    set("category_id", "");
-  };
+  /** The specification tab is named for what it holds in this unit: IT spec
+      sheets on one, inspection dates and expiry on the other. The section id
+      stays `specification` so the panel condition, the tab id and the
+      `aria-labelledby` all stay stable while only the visible word changes. */
+  const sectionLabelKey = (s: Section) =>
+    isHsse && s === "specification" ? "sections.inspection" : `sections.${s}`;
 
   /**
    * The fieldset is chosen by the *main* category's `code`, never by its name.
@@ -944,10 +955,10 @@ export default function AssetListPage() {
   return (
     <div>
       <PageMeta
-        title={`${t("pageTitle")} | Asset Management App`}
-        description={t("pageDescription")}
+        title={`${t(`units.${unit}`)} | Asset Management App`}
+        description={t(`pageDescription.${unit}`)}
       />
-      <PageBreadcrumb pageTitle={t("pageTitle")} />
+      <PageBreadcrumb pageTitle={t(`units.${unit}`)} />
 
       {/* Outside any modal: the outcome is raised after the modal closed, and
           `Modal` returns null while closed, so a message inside would never be
@@ -973,10 +984,10 @@ export default function AssetListPage() {
         <div className="flex flex-col gap-4 border-b border-gray-200 p-6 sm:flex-row sm:items-center sm:justify-between dark:border-gray-800">
           <div>
             <h3 className="text-lg font-semibold text-gray-800 dark:text-white/90">
-              {t("pageTitle")}
+              {t(`units.${unit}`)}
             </h3>
             <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-              {t("subtitle")}
+              {t(`subtitle.${unit}`)}
             </p>
           </div>
 
@@ -1220,7 +1231,7 @@ export default function AssetListPage() {
             aria-label={t("formTabsLabel")}
             className="mt-4 flex flex-wrap gap-1 border-b border-gray-200 dark:border-gray-800"
           >
-            {SECTIONS.filter((s) => s !== "credentials" || isAdmin).map((s) => (
+            {visibleSections.map((s) => (
               <button
                 key={s}
                 type="button"
@@ -1235,7 +1246,7 @@ export default function AssetListPage() {
                     : "border-b-2 border-transparent px-3 py-2 text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
                 }
               >
-                {t(`sections.${s}`)}
+                {t(sectionLabelKey(s))}
               </button>
             ))}
           </div>
@@ -1292,26 +1303,6 @@ export default function AssetListPage() {
                 </div>
 
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  {/* The unit, above the categories it filters. Keyed by its own
-                      value because `Select` reads `defaultValue` once and would
-                      otherwise show the unit loaded at mount. */}
-                  <div>
-                    <Label htmlFor="asset-department">
-                      {t("fields.department")}{" "}
-                      <span className="text-error-500">*</span>
-                    </Label>
-                    <Select
-                      key={`dept-${editingId ?? "new"}`}
-                      id="asset-department"
-                      options={departmentOptions}
-                      defaultValue={form.department}
-                      onChange={handleChangeDepartment}
-                    />
-                    <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
-                      {t("fields.departmentHint")}
-                    </p>
-                  </div>
-
                   <div>
                     <Label htmlFor="asset-condition">
                       {t("fields.condition")}
@@ -1786,150 +1777,136 @@ export default function AssetListPage() {
 
             {section === "network" && (
               <>
-                {/* An HSSE item has no hostname, address, MAC or firmware, so the
-                    whole network tab is empty for one. The tab is still rendered
-                    — `Select` and the tab strip are not conditional — because a
-                    tab that appears and disappears is worse than an empty one,
-                    and the explanation says why rather than leaving a blank
-                    panel. */}
-                {isHsse ? (
-                  <p className="rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-500 dark:border-gray-800 dark:bg-white/3 dark:text-gray-400">
-                    {t("fields.hsseNoNetwork")}
-                  </p>
-                ) : (
+                {(isComputer || isNetworkLike || isGeneric) && (
                   <>
-                    {(isComputer || isNetworkLike || isGeneric) && (
-                      <>
-                        <TextField
-                          id="asset-hostname"
-                          label={t("fields.hostname")}
-                          value={form.hostname}
-                          onChange={(v) => set("hostname", v)}
-                          placeholder="mbp-01"
-                        />
-                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                          <TextField
-                            id="asset-ip-wifi"
-                            label={t("fields.ipWifi")}
-                            value={form.ip_wifi}
-                            onChange={(v) => set("ip_wifi", v)}
-                          />
-                          <TextField
-                            id="asset-ip-eth"
-                            label={t("fields.ipEth")}
-                            value={form.ip_eth}
-                            onChange={(v) => set("ip_eth", v)}
-                          />
-                          <TextField
-                            id="asset-mac-wifi"
-                            label={t("fields.macWifi")}
-                            value={form.mac_wifi}
-                            onChange={(v) => set("mac_wifi", v)}
-                          />
-                          <TextField
-                            id="asset-mac-eth"
-                            label={t("fields.macEth")}
-                            value={form.mac_eth}
-                            onChange={(v) => set("mac_eth", v)}
-                          />
-                        </div>
-                        <TextField
-                          id="asset-os"
-                          label={
-                            isComputer
-                              ? t("fields.osOrFirmware")
-                              : t("fields.firmwareVersion")
-                          }
-                          value={form.os_or_firmware_version}
-                          onChange={(v) => set("os_or_firmware_version", v)}
-                        />
-                      </>
-                    )}
-
-                    {(isComputer || isGeneric) && (
+                    <TextField
+                      id="asset-hostname"
+                      label={t("fields.hostname")}
+                      value={form.hostname}
+                      onChange={(v) => set("hostname", v)}
+                      placeholder="mbp-01"
+                    />
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                       <TextField
-                        id="asset-product-key"
-                        label={t("fields.productKey")}
-                        value={form.product_key}
-                        onChange={(v) => set("product_key", v)}
+                        id="asset-ip-wifi"
+                        label={t("fields.ipWifi")}
+                        value={form.ip_wifi}
+                        onChange={(v) => set("ip_wifi", v)}
+                      />
+                      <TextField
+                        id="asset-ip-eth"
+                        label={t("fields.ipEth")}
+                        value={form.ip_eth}
+                        onChange={(v) => set("ip_eth", v)}
+                      />
+                      <TextField
+                        id="asset-mac-wifi"
+                        label={t("fields.macWifi")}
+                        value={form.mac_wifi}
+                        onChange={(v) => set("mac_wifi", v)}
+                      />
+                      <TextField
+                        id="asset-mac-eth"
+                        label={t("fields.macEth")}
+                        value={form.mac_eth}
+                        onChange={(v) => set("mac_eth", v)}
+                      />
+                    </div>
+                    <TextField
+                      id="asset-os"
+                      label={
+                        isComputer
+                          ? t("fields.osOrFirmware")
+                          : t("fields.firmwareVersion")
+                      }
+                      value={form.os_or_firmware_version}
+                      onChange={(v) => set("os_or_firmware_version", v)}
+                    />
+                  </>
+                )}
+
+                {(isComputer || isGeneric) && (
+                  <TextField
+                    id="asset-product-key"
+                    label={t("fields.productKey")}
+                    value={form.product_key}
+                    onChange={(v) => set("product_key", v)}
+                  />
+                )}
+
+                {isNetworkLike && (
+                  <>
+                    {parentCode === "NETWORK_DEVICES" && (
+                      <TextField
+                        id="asset-firmware-platform"
+                        label={t("fields.firmwarePlatform")}
+                        value={form.firmware_platform}
+                        onChange={(v) => set("firmware_platform", v)}
+                        placeholder="CISCO"
                       />
                     )}
 
-                    {isNetworkLike && (
-                      <>
-                        {parentCode === "NETWORK_DEVICES" && (
-                          <TextField
-                            id="asset-firmware-platform"
-                            label={t("fields.firmwarePlatform")}
-                            value={form.firmware_platform}
-                            onChange={(v) => set("firmware_platform", v)}
-                            placeholder="CISCO"
-                          />
-                        )}
+                    {(parentCode === "IOT" || parentCode === "SERVER") && (
+                      <TextField
+                        id="asset-power-source"
+                        label={t("fields.powerSource")}
+                        value={form.power_source}
+                        onChange={(v) => set("power_source", v)}
+                        placeholder="PoE (Power over Ethernet)"
+                      />
+                    )}
 
-                        {(parentCode === "IOT" || parentCode === "SERVER") && (
-                          <TextField
-                            id="asset-power-source"
-                            label={t("fields.powerSource")}
-                            value={form.power_source}
-                            onChange={(v) => set("power_source", v)}
-                            placeholder="PoE (Power over Ethernet)"
-                          />
-                        )}
-
-                        <div>
-                          <Label htmlFor="asset-connection-type">
-                            {t("fields.connectionType")} <Optional />
-                          </Label>
-                          <Select
-                            key={`form-conn-${editingId ?? "new"}`}
-                            id="asset-connection-type"
-                            options={connectionTypeOptions}
-                            placeholder={t("fields.none")}
-                            defaultValue={form.connection_type}
-                            onChange={(v) => set("connection_type", v)}
-                          />
-                        </div>
-                        <TextField
-                          id="asset-protocol-url"
-                          label={t("fields.protocolUrl")}
-                          value={form.protocol_url}
-                          onChange={(v) => set("protocol_url", v)}
-                          placeholder="https://10.0.0.2"
-                        />
-                        {/* Said plainly on the form: this column is on `assets`,
+                    <div>
+                      <Label htmlFor="asset-connection-type">
+                        {t("fields.connectionType")} <Optional />
+                      </Label>
+                      <Select
+                        key={`form-conn-${editingId ?? "new"}`}
+                        id="asset-connection-type"
+                        options={connectionTypeOptions}
+                        placeholder={t("fields.none")}
+                        defaultValue={form.connection_type}
+                        onChange={(v) => set("connection_type", v)}
+                      />
+                    </div>
+                    <TextField
+                      id="asset-protocol-url"
+                      label={t("fields.protocolUrl")}
+                      value={form.protocol_url}
+                      onChange={(v) => set("protocol_url", v)}
+                      placeholder="https://10.0.0.2"
+                    />
+                    {/* Said plainly on the form: this column is on `assets`,
                         which every signed-in user can read, so a URL carrying a
                         device password is readable by all staff. */}
-                        <p className="rounded-lg border border-warning-200 bg-warning-50 p-3 text-xs text-warning-700 dark:border-warning-500/20 dark:bg-warning-500/10 dark:text-warning-400">
-                          {t("fields.protocolUrlHint")}
-                        </p>
-                      </>
-                    )}
+                    <p className="rounded-lg border border-warning-200 bg-warning-50 p-3 text-xs text-warning-700 dark:border-warning-500/20 dark:bg-warning-500/10 dark:text-warning-400">
+                      {t("fields.protocolUrlHint")}
+                    </p>
+                  </>
+                )}
 
-                    {isPeripheral && (
-                      <>
-                        <TextField
-                          id="asset-hostname"
-                          label={t("fields.hostname")}
-                          value={form.hostname}
-                          onChange={(v) => set("hostname", v)}
-                        />
-                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                          <TextField
-                            id="asset-ip-eth"
-                            label={t("fields.ipAddress")}
-                            value={form.ip_eth}
-                            onChange={(v) => set("ip_eth", v)}
-                          />
-                          <TextField
-                            id="asset-mac-eth"
-                            label={t("fields.macAddress")}
-                            value={form.mac_eth}
-                            onChange={(v) => set("mac_eth", v)}
-                          />
-                        </div>
-                      </>
-                    )}
+                {isPeripheral && (
+                  <>
+                    <TextField
+                      id="asset-hostname"
+                      label={t("fields.hostname")}
+                      value={form.hostname}
+                      onChange={(v) => set("hostname", v)}
+                    />
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                      <TextField
+                        id="asset-ip-eth"
+                        label={t("fields.ipAddress")}
+                        value={form.ip_eth}
+                        onChange={(v) => set("ip_eth", v)}
+                      />
+                      <TextField
+                        id="asset-mac-eth"
+                        label={t("fields.macAddress")}
+                        value={form.mac_eth}
+                        onChange={(v) => set("mac_eth", v)}
+                      />
+                    </div>
                   </>
                 )}
               </>
@@ -1999,12 +1976,24 @@ export default function AssetListPage() {
                   </div>
                 </div>
 
-                <TextField
-                  id="asset-current-location"
-                  label={t("fields.currentLocation")}
-                  value={form.current_location}
-                  onChange={(v) => set("current_location", v)}
-                />
+                <div>
+                  <Label htmlFor="asset-current-location">
+                    {t("fields.currentLocation")} <Optional />
+                  </Label>
+                  {/* A picker over `current_locations`, not the `locations` list
+                      above and not a free-text box. The two answer different
+                      questions — where the asset is registered versus where it
+                      actually is — so they are separate tables and separate
+                      options, and this one stores a real id. */}
+                  <Select
+                    key={`form-current-loc-${editingId ?? "new"}`}
+                    id="asset-current-location"
+                    options={currentLocationOptions}
+                    placeholder={t("fields.none")}
+                    defaultValue={form.current_location_id}
+                    onChange={(v) => set("current_location_id", v)}
+                  />
+                </div>
 
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                   <TextField
@@ -2052,21 +2041,32 @@ export default function AssetListPage() {
                     and `assets_guard_status` own, so it stays read-only with the
                     list's control as the one place to change it. "Lent out"
                     overlaps `assigned` and the triggers do not read
-                    `usage_status`, so the two are not kept in step. */}
+                    `usage_status`, so the two are not kept in step.
+
+                    `usage_status` is IT's column, though — its four values come
+                    from the IT hardware workbook and describe how a computer is
+                    being lent out, which is not a question an extinguisher
+                    raises. So it is hidden for HSSE while the column stays. The
+                    `loanStatus` badge below it is `assets.status` and stays for
+                    both: a hard hat can genuinely be issued to someone and
+                    `assigned` is derived from the loans, so it is a real fact
+                    about an HSSE item too. */}
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  <div>
-                    <Label htmlFor="asset-usage-status">
-                      {t("fields.usageStatus")} <Optional />
-                    </Label>
-                    <Select
-                      key={`form-usage-${editingId ?? "new"}`}
-                      id="asset-usage-status"
-                      options={usageStatusOptions}
-                      placeholder={t("fields.none")}
-                      defaultValue={form.usage_status}
-                      onChange={(v) => set("usage_status", v)}
-                    />
-                  </div>
+                  {!isHsse && (
+                    <div>
+                      <Label htmlFor="asset-usage-status">
+                        {t("fields.usageStatus")} <Optional />
+                      </Label>
+                      <Select
+                        key={`form-usage-${editingId ?? "new"}`}
+                        id="asset-usage-status"
+                        options={usageStatusOptions}
+                        placeholder={t("fields.none")}
+                        defaultValue={form.usage_status}
+                        onChange={(v) => set("usage_status", v)}
+                      />
+                    </div>
+                  )}
 
                   {editingId && editingStatus && (
                     <div>
@@ -2082,9 +2082,11 @@ export default function AssetListPage() {
                   )}
                 </div>
 
-                <p className="text-xs text-gray-500 dark:text-gray-400">
-                  {t("fields.usageStatusHint")}
-                </p>
+                {!isHsse && (
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    {t("fields.usageStatusHint")}
+                  </p>
+                )}
               </>
             )}
           </div>
