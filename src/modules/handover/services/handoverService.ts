@@ -1,0 +1,606 @@
+import { supabase } from "@/lib/supabase";
+import type {
+  AssetCondition,
+  AssetUnit,
+} from "@/modules/assets/services/assetService";
+
+/**
+ * Asset handover: the screen `assignments` has needed since migration `001`.
+ *
+ * The table was already there with RLS, a status trigger and two guards. Nothing
+ * about this module invents a data model — it gives the existing one a UI, and
+ * adds the two facts a handover record needs that a loan did not
+ * (`20260927001900`).
+ *
+ * ## Who can do what is already decided by the database, not here
+ *
+ * | Action | Policy | So |
+ * |---|---|---|
+ * | read | `assignments_select_own_or_admin` | staff see **their own** handovers only |
+ * | issue | `assignments_insert_admin` | **admin only** — a staff insert raises |
+ * | return | `assignments_update_own_or_admin` | the holder may return their own; admin may return any |
+ * | delete | `assignments_delete_admin` | admin only |
+ *
+ * That split is the reason this page can render a Return button for a staff
+ * member and an Issue button only for an admin without either being a guess: the
+ * policies already say so, and the UI gate exists so nobody is shown a control
+ * that cannot work. `RLS` is the enforcement point in both cases.
+ *
+ * ## Every write here uses `.select()` and throws on zero rows
+ *
+ * Same reason as `departmentService` and `assetService`. For UPDATE and DELETE a
+ * caller's statement can match nothing under RLS and PostgREST still reports
+ * success, so a resolved promise is not proof that anything happened.
+ */
+
+/** Thrown when RLS matched no row, so the write silently did nothing. */
+export class NoRowsWrittenError extends Error {
+  constructor(operation: string) {
+    super(`No assignment row was ${operation}`);
+    this.name = "NoRowsWrittenError";
+  }
+}
+
+/**
+ * Raised when deleting a handover that is still open.
+ *
+ * `assignments_sync_asset_status` is `after delete` as well as `after insert`, so
+ * removing an open row puts the asset straight back to `available` while the
+ * person is still physically holding it. That is a silent return: the asset looks
+ * like stock, the handover history is gone, and nothing errors. Requiring a
+ * return first keeps the delete to what it is for — taking back a record that was
+ * entered wrongly.
+ */
+export class HandoverOpenError extends Error {
+  constructor() {
+    super("This handover is still open: return the asset before deleting it");
+    this.name = "HandoverOpenError";
+  }
+}
+
+/** The asset, trimmed to what the handover list shows. */
+export type HandoverAsset = {
+  id: string;
+  assetCode: string;
+  name: string;
+  status: string;
+  condition: AssetCondition;
+  department: string;
+  /**
+   * The asset's own registration document number, from `assets.handover_doc_no`.
+   * Shown as read-only reference on a handover. This module never writes it — see
+   * the note at the top of migration `01900`.
+   */
+  handoverDocNo: string | null;
+};
+
+/**
+ * The **recipient** — a `handover_users` row, not an account.
+ *
+ * Read-only as far as this module is concerned: the roster is administered in
+ * `/asset-settings`, and this is just enough to label the holder in a list and
+ * disambiguate two people who share a name.
+ *
+ * `position` and `departmentName` are both `null`-tolerant because the database
+ * does not force either to be present on an existing row and both are nullable in
+ * the embed. `id` is the roster row's id, which is what `assignments.user_id`
+ * holds — **not** an auth id.
+ */
+export type HandoverHolder = {
+  name: string;
+  position: string | null;
+  departmentName: string | null;
+};
+
+/**
+ * The **issuer** — an authenticated account from `profiles`.
+ *
+ * This is the asymmetry the `02000` migration introduced and the reason it could
+ * be done without breaking anything: who received the asset is a fact about the
+ * asset, and who recorded it is a fact about this application's audit trail. Only
+ * the first one decouples.
+ *
+ * `issuedBy` is null once the issuing account is deleted, because
+ * `assignments.assigned_by` is `on delete set null`. That is deliberate: losing
+ * the name of an admin who has left is better than deleting every handover they
+ * recorded.
+ */
+export type HandoverIssuer = {
+  id: string;
+  fullName: string | null;
+  email: string | null;
+};
+
+export type Handover = {
+  id: string;
+  assetId: string;
+  /** A `handover_users` id — the recipient's roster entry, not an account. */
+  userId: string;
+  /** The authenticated account that recorded the handover, or null if deleted. */
+  assignedBy: string | null;
+  assignedAt: string;
+  dueDate: string | null;
+  returnedAt: string | null;
+  notes: string | null;
+  conditionAtHandover: AssetCondition | null;
+  asset: HandoverAsset | null;
+  /** Who received it, from the roster. */
+  holder: HandoverHolder | null;
+  /** Who handed it over, from the login list. */
+  issuedBy: HandoverIssuer | null;
+};
+
+/** An asset that can be handed over right now. */
+export type HandoverTarget = {
+  id: string;
+  assetCode: string;
+  name: string;
+  condition: AssetCondition;
+  /** The asset's own document number, shown read-only on the issue form. */
+  handoverDocNo: string | null;
+};
+
+/**
+ * **No newline may appear inside the literal**, or reflowed into a multi-line
+ * template literal, however it reads. A newline within the select string is
+ * rejected by PostgREST's parser:
+ *
+ * ```
+ * unexpected "\n" expecting "...", field name (* or [a..z0..9_$])
+ * ```
+ *
+ * which comes back as `PGRST100` naming a *field*, not whitespace — so it reads
+ * like a misspelled column rather than a line break, and the page goes blank with
+ * no hint anywhere near the cause. Both shapes were tried against the local
+ * stack and only the single-line one returns rows.
+ *
+ * Prettier puts the opening backtick on the line below `=`, which looks like a
+ * two-line literal and is not one: that newline is outside the string. The test
+ * that matters is whether the text *between* the backticks holds a newline, and
+ * it must not.
+ *
+ * Concatenating one-line fragments to keep the source readable does not work
+ * either: `as const` is rejected on a parenthesised binary expression with
+ * `TS1355`, and without `as const` the type-level parser yields
+ * `GenericStringError` and every cast below has to go through `unknown`. One long
+ * line is the price of both working at once.
+ *
+ * `as const` is required for a different reason: without the literal type,
+ * supabase-js hands back `GenericStringError` and the casts below have to go
+ * through `unknown`, throwing away the check that would catch a column renamed
+ * out from under this string. `ASSET_COLUMNS` in `assetService.ts` is the same
+ * pattern and the reason it is written that way.
+ *
+ * `!inner` on the asset embed is what makes `.eq("asset.department", …)` a
+ * server-side filter rather than a client-side one. PostgREST only filters on an
+ * embedded resource through an inner join; on the default left join the filter is
+ * silently ignored and the page would show both units' handovers on both pages —
+ * the same "an HSSE row in the IT list" problem that made the assets two pages.
+ *
+ * **Both the hint and `!inner` are needed, and the order is `!hint!inner`.** All
+ * three variants were tried against the local stack and `tsc`, and each failure
+ * looks like nothing to do with the other:
+ *
+ * | Form | Runtime | `tsc` |
+ * |---|---|---|
+ * | `assets!assignments_asset_id_fkey!inner` | works | works |
+ * | `assets!inner!assignments_asset_id_fkey` | works | **`GenericStringError`** |
+ * | `assets!inner` (no hint) | **`PGRST108`** | works |
+ *
+ * So dropping the hint to please the type layer returns a 400 from PostgREST, and
+ * reordering the two modifiers to please the runtime returns a type error that
+ * names neither modifier. Do not "tidy" the order.
+ *
+ * The hint is needed because PostgREST resolves an alias to a relationship and,
+ * asked to pick between the two foreign keys `assignments` has out, does not
+ * guess — `PGRST108` says the alias is not an embedded resource at all, which
+ * reads like a typo in the alias rather than a missing disambiguator.
+ *
+ * **`holder` and `issuedBy` now come from different tables, and that is the whole
+ * point of `02000`.** `holder` is `handover_users` via
+ * `assignments_user_id_fkey`, because the recipient is a roster entry rather than
+ * an account; `issuedBy` is still `profiles` via `assignments_assigned_by_fkey`,
+ * because the issuer is the authenticated account that recorded the row. Both
+ * hints are still required — and neither is a self-relationship, which is the case
+ * where a hint resolves to the inbound direction and returns an empty array
+ * instead; see `getCategories` in `settingService.ts`.
+ *
+ * **Neither embed is `!inner`.** Both columns are nullable from the reader's
+ * point of view — a handover whose roster entry has since been deleted (the FK
+ * is `restrict`, so only an unreferenced row can vanish, but a `service_role`
+ * write could) or whose issuing account was deleted (`assigned_by` is `on delete
+ * set null`) — and `!inner` would drop those rows from the list entirely rather
+ * than showing a blank cell. The asset embed is the only one that must be inner,
+ * and that is for the unit filter rather than for existence.
+ *
+ * A whole-statement failure is the cost of naming columns explicitly: PostgREST
+ * refuses with `42703` when one of them has gone, so a renamed column takes the
+ * page down rather than leaving one blank cell. That trade is worth it, and it is
+ * why the list below has to be read when a column changes.
+ */
+const HANDOVER_COLUMNS =
+  `id, asset_id, user_id, assigned_by, assigned_at, due_date, returned_at, notes, condition_at_handover, asset:assets!assignments_asset_id_fkey!inner(id, asset_code, name, status, condition, department, handover_doc_no), holder:handover_users!assignments_user_id_fkey(name, position, department:departments(name)), issuedBy:profiles!assignments_assigned_by_fkey(full_name, email)` as const;
+
+/** What PostgREST hands back before it is flattened. */
+type RawHandover = Record<string, unknown>;
+
+function str(value: unknown): string | null {
+  return value === null || value === undefined ? null : String(value);
+}
+
+/**
+ * The recipient, from the `handover_users` embed.
+ *
+ * **There is no `id` on this type on purpose.** The embed asks PostgREST for
+ * `name, position` and the department, not the primary key, because `Handover`
+ * already carries `userId` straight off the row and a second copy of the same
+ * uuid is a second thing that can be wrong. Anything needing the roster id reads
+ * `Handover.userId`.
+ */
+function mapHolder(value: unknown): HandoverHolder | null {
+  if (typeof value !== "object" || value === null) return null;
+  const row = value as Record<string, unknown>;
+  const department = row.department as
+    Record<string, unknown> | null | undefined;
+  return {
+    name: String(row.name ?? ""),
+    position: str(row.position),
+    departmentName:
+      department && typeof department === "object"
+        ? str(department.name)
+        : null,
+  };
+}
+
+/** The issuer, from the `profiles` embed. Null once the account is deleted. */
+function mapIssuer(value: unknown): HandoverIssuer | null {
+  if (typeof value !== "object" || value === null) return null;
+  const row = value as Record<string, unknown>;
+  return {
+    id: String(row.id),
+    fullName: str(row.full_name),
+    email: str(row.email),
+  };
+}
+
+function mapHandover(row: RawHandover): Handover {
+  const asset = row.asset as Record<string, unknown> | null | undefined;
+  return {
+    id: String(row.id),
+    assetId: String(row.asset_id),
+    userId: String(row.user_id),
+    assignedBy: str(row.assigned_by),
+    assignedAt: String(row.assigned_at),
+    dueDate: str(row.due_date),
+    returnedAt: str(row.returned_at),
+    notes: str(row.notes),
+    conditionAtHandover:
+      (str(row.condition_at_handover) as AssetCondition) ?? null,
+    asset:
+      asset && typeof asset === "object"
+        ? {
+            id: String(asset.id),
+            assetCode: String(asset.asset_code ?? ""),
+            handoverDocNo: str(asset.handover_doc_no),
+            name: String(asset.name ?? ""),
+            status: String(asset.status ?? ""),
+            condition: String(asset.condition ?? "") as AssetCondition,
+            department: String(asset.department ?? ""),
+          }
+        : null,
+    holder: mapHolder(row.holder),
+    issuedBy: mapIssuer(row.issuedBy),
+  };
+}
+
+/**
+ * Every handover for one unit, newest first.
+ *
+ * Not gated on `isAdmin`, and deliberately so — same reasoning as `getAssets`.
+ * `assignments_select_own_or_admin` already decides the row set per caller, so
+ * gating the read would only delay the screen: a staff member's list is the same
+ * query and comes back with their own rows instead of an admin's.
+ *
+ * The unit is the **page**, so the filter is in SQL rather than in the browser.
+ */
+export async function getHandovers(unit: AssetUnit): Promise<Handover[]> {
+  const { data, error } = await supabase
+    .from("assignments")
+    .select(HANDOVER_COLUMNS)
+    .eq("asset.department", unit)
+    .order("assigned_at", { ascending: false });
+
+  if (error) throw error;
+  return ((data ?? []) as RawHandover[]).map(mapHandover);
+}
+
+/**
+ * The assets in one unit that can be handed over right now.
+ *
+ * `status = 'available'` is doing the work of "not already out", and it is not a
+ * guess: `assignments_guard_asset_available` (`01900`) refuses an insert unless
+ * the asset is `available`, and `assignments_sync_asset_status` flips it to
+ * `assigned` on the way out and back on the way home. So `available` and "has no
+ * open handover" are the same state, kept in step by two triggers — asking the
+ * question a second way here would be a second answer to maintain.
+ *
+ * It is still the database that refuses, so a race between two admins handing the
+ * same asset out ends in `23514` on one of them rather than in a duplicate.
+ */
+export async function getHandoverTargets(
+  unit: AssetUnit,
+): Promise<HandoverTarget[]> {
+  const { data, error } = await supabase
+    .from("assets")
+    .select("id, asset_code, name, condition, handover_doc_no")
+    .eq("department", unit)
+    .eq("status", "available")
+    .order("asset_code", { ascending: true });
+
+  if (error) throw error;
+
+  return ((data ?? []) as RawHandover[]).map((row) => ({
+    id: String(row.id),
+    assetCode: String(row.asset_code ?? ""),
+    name: String(row.name ?? ""),
+    condition: String(row.condition ?? "") as AssetCondition,
+    handoverDocNo: str(row.handover_doc_no),
+  }));
+}
+
+export type HandoverInput = {
+  assetId: string;
+  /**
+   * The person receiving it — a **`handover_users` id**, not an account id.
+   *
+   * That is the whole change in `02000`, and getting it wrong fails loudly rather
+   * than silently: a profile id here matches no roster row and the insert is
+   * refused by `assignments_user_id_fkey` with `23503`.
+   */
+  userId: string;
+  /**
+   * The authenticated account handing it over; recorded as `assigned_by`.
+   *
+   * Still a profile id, deliberately. The issuer is who used this application,
+   * which is not something a roster row can answer.
+   */
+  issuedBy: string;
+  dueDate?: string | null;
+  notes?: string | null;
+  conditionAtHandover?: AssetCondition | null;
+};
+
+/**
+ * One roster entry, as the issue form's picker needs it.
+ *
+ * Read from `handover_users`, which every signed-in user may read
+ * (`handover_users_select_authenticated` is `using (true)`) — so unlike the
+ * `getAllUsers` call this replaces, **it does not need an admin**. The form shows
+ * it on a staff screen as well, which is why the read policy is not `is_admin()`.
+ *
+ * The label is assembled here rather than in the page, because the whole reason
+ * this table exists is that a bare name is ambiguous: `name — position` plus the
+ * department in a second field is what lets an admin tell two people called
+ * "Budi" apart without opening each record.
+ */
+export type HandoverUserOption = {
+  id: string;
+  name: string;
+  position: string;
+  departmentName: string | null;
+  /** What the picker shows. Never empty, because `name` is `not null`. */
+  label: string;
+};
+
+/**
+ * Everyone a handover can be issued to.
+ *
+ * Deliberately **not** filtered by unit. A roster entry is not an asset: the same
+ * contractor receives a laptop and a fire extinguisher, and narrowing the list to
+ * one department would be a second classification of the same person.
+ *
+ * Not gated on `isAdmin` either, and that is the change from `getAllUsers` —
+ * `profiles` is readable only by an admin and by the caller themselves, so the old
+ * picker returned one row for a staff member and the Issue button was never
+ * reachable for them anyway. `handover_users` is plain reference data.
+ */
+export async function getHandoverUserOptions(): Promise<HandoverUserOption[]> {
+  const { data, error } = await supabase
+    .from("handover_users")
+    .select("id, name, position, department:departments(name)")
+    .order("name", { ascending: true })
+    .order("position", { ascending: true });
+
+  if (error) throw error;
+
+  return ((data ?? []) as RawHandover[]).map((row) => {
+    const department = row.department as
+      Record<string, unknown> | null | undefined;
+    const name = String(row.name ?? "");
+    const position = String(row.position ?? "");
+    const departmentName =
+      department && typeof department === "object"
+        ? str(department.name)
+        : null;
+    return {
+      id: String(row.id),
+      name,
+      position,
+      departmentName,
+      label: position ? `${name} — ${position}` : name,
+    };
+  });
+}
+
+/**
+ * Which roster entries belong to the signed-in account.
+ *
+ * **This exists because of one line of UI.** The Return button used to be gated on
+ * `row.userId === user?.id`, which was correct while `user_id` *was* an auth id —
+ * both were the same uuid. Since `02000` moved `user_id` onto `handover_users`,
+ * that comparison is a reference id against a JWT subject and is false for every
+ * row, for every staff member: the button would silently vanish for exactly the
+ * people the module was built for, and the page would look coherent doing it.
+ *
+ * So the client asks the database which roster rows are theirs rather than
+ * guessing, and the RLS join in `assignments_select_own_or_admin` decides the
+ * rows. **Both sides read the same column**, which is the point — a client-side
+ * guess and a policy that disagree is how a staff member ends up with a button
+ * that errors, or no button at all.
+ *
+ * Read rather than derived: it is one small request, `handover_users` is readable
+ * by everyone, and an empty result is a normal state (an admin who is not on the
+ * roster) rather than a failure.
+ */
+export async function getOwnHandoverUserIds(): Promise<string[]> {
+  const { data, error } = await supabase
+    .from("handover_users")
+    .select("id")
+    .eq("profile_id", await currentUserId());
+
+  if (error) throw error;
+  return ((data ?? []) as RawHandover[]).map((row) => String(row.id));
+}
+
+/**
+ * The caller's own auth id, read from the token rather than from a prop.
+ *
+ * A private helper rather than a parameter so a caller cannot pass somebody else's
+ * id and get a list of their roster entries back — the filter is a *self* read,
+ * and making the id an argument would quietly turn it into an arbitrary one.
+ * PostgREST needs the id as a value, so it has to be fetched rather than derived
+ * from the JWT the client does not hold.
+ */
+async function currentUserId(): Promise<string | null> {
+  const { data, error } = await supabase.auth.getUser();
+  if (error) return null;
+  return data.user?.id ?? null;
+}
+
+/**
+ * Hand one asset over to one person.
+ *
+ * `assigned_at` is left to its `now()` default rather than sent from the browser:
+ * it is the server's clock, and a client clock is a second source of truth for
+ * when a handover happened. `assigned_by` **is** sent, because it is the caller
+ * and the database has no way to know who asked.
+ *
+ * `status` is not sent and cannot be. `assignments_sync_asset_status` is an
+ * `after insert` trigger and owns that transition — the same reason
+ * `createAsset` does not send one.
+ *
+ * Refusals the client should be able to say something useful about:
+ * - `23514` — the asset is not `available`: retired, damaged, already out, or in
+ *   maintenance. One code for all four, because the message names the status.
+ * - `23505` — two handovers of the same asset raced; the index caught it.
+ * - `23503` — `userId` is not a `handover_users` row. A client bug, not user
+ *   error, so `issueHandover` lets it through rather than mapping it.
+ */
+export async function issueHandover(input: HandoverInput): Promise<Handover> {
+  const { data, error } = await supabase
+    .from("assignments")
+    .insert({
+      asset_id: input.assetId,
+      user_id: input.userId,
+      assigned_by: input.issuedBy,
+      due_date: input.dueDate || null,
+      notes: input.notes?.trim() || null,
+      condition_at_handover: input.conditionAtHandover ?? null,
+    })
+    .select(HANDOVER_COLUMNS)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) throw new NoRowsWrittenError("inserted");
+  return mapHandover(data as RawHandover);
+}
+
+/**
+ * Record that the asset came back.
+ *
+ * `returned_at` is sent as an ISO string rather than a SQL `now()` through a
+ * function call, because PostgREST cannot call a database function in an UPDATE
+ * — `rpc` is the only route to one, and an `rpc` cannot be filtered to the row.
+ * The cost is that this is the browser's clock; `assignments_dates_ordered` at
+ * least refuses a return dated before the handover, which is the error that would
+ * actually be worth catching.
+ */
+export async function returnHandover(
+  handoverId: string,
+  notes?: string | null,
+): Promise<void> {
+  const { data, error } = await supabase
+    .from("assignments")
+    .update({
+      returned_at: new Date().toISOString(),
+      ...(notes?.trim() ? { notes: notes.trim() } : {}),
+    })
+    .eq("id", handoverId)
+    .select("id")
+    .maybeSingle();
+
+  if (error) throw error;
+
+  // Only reachable for a caller who may not touch this row — RLS answers a
+  // non-permitted UPDATE with zero rows and no error.
+  if (!data) throw new NoRowsWrittenError("updated");
+}
+
+/**
+ * Delete a handover record, refusing while it is still open.
+ *
+ * The refusal is in the application and not on the foreign key, because
+ * `assignments_sync_asset_status` runs `after delete` too: deleting an open row
+ * returns the asset to `available` while the person still has it, with no error
+ * anywhere. A constraint cannot express "no row with `returned_at is null` may be
+ * deleted" without a trigger, and the read it needs is one the client can do.
+ */
+export async function deleteHandover(handoverId: string): Promise<void> {
+  const { data: existing, error: readError } = await supabase
+    .from("assignments")
+    .select("returned_at")
+    .eq("id", handoverId)
+    .maybeSingle();
+
+  if (readError) throw readError;
+
+  // `null` here means RLS hid the row rather than that the row is missing, so the
+  // delete below is the thing that reports it rather than this check inventing a
+  // second answer.
+  if (existing && existing.returned_at === null) {
+    throw new HandoverOpenError();
+  }
+
+  const { data, error } = await supabase
+    .from("assignments")
+    .delete()
+    .eq("id", handoverId)
+    .select("id")
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) throw new NoRowsWrittenError("deleted");
+}
+
+/**
+ * `23514` is `check_violation`, and for this module it means one thing to say:
+ * the asset is not `available`. Both `assignments_guard_asset_available` and
+ * `block_assignment_while_in_maintenance` raise it, and so does
+ * `assets_guard_status`.
+ */
+export function isUnavailableAssetError(error: unknown): boolean {
+  return codeOf(error) === "23514";
+}
+
+/** `23505`, the race the partial index caught. */
+export function isAlreadyHandedOverError(error: unknown): boolean {
+  return codeOf(error) === "23505";
+}
+
+function codeOf(error: unknown): string | null {
+  if (typeof error !== "object" || error === null || !("code" in error)) {
+    return null;
+  }
+  const { code } = error as { code?: unknown };
+  return typeof code === "string" ? code : null;
+}

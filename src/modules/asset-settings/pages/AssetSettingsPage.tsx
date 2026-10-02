@@ -29,21 +29,29 @@ import {
   TrashBinIcon,
 } from "@/icons";
 
+import { getDepartmentOptions } from "@/modules/departments/services/departmentService";
+import { getAllUsers } from "@/modules/users/services/userService";
+
 import {
   createCategory,
   createCurrentLocation,
+  createHandoverUser,
   createLocation,
   deleteCategory,
   deleteCurrentLocation,
+  deleteHandoverUser,
   deleteLocation,
   getCategoriesWithSubCategoryCounts,
   getCurrentLocations,
+  getHandoverUsers,
   getLocations,
   updateCategory,
   updateCurrentLocation,
+  updateHandoverUser,
   updateLocation,
   CategoryInUseError,
   CurrentLocationInUseError,
+  HandoverUserInUseError,
   LocationInUseError,
   DEFAULT_DEPARTMENT,
   getCategoryUnits,
@@ -51,8 +59,10 @@ import {
 import type {
   CategoryRow,
   CurrentLocationRow,
+  HandoverUserRow,
   LocationRow,
 } from "../services/settingService";
+import type { DepartmentRef } from "@/lib/profiles";
 
 /**
  * Asset settings: the reference data behind the asset form's pickers.
@@ -65,9 +75,9 @@ import type {
  * asset form can populate its pickers for a staff member while this screen cannot
  * be opened by one.
  *
- * **Two tabs rather than two pages**, because the two are edited together: a
- * category is meaningless without knowing its sub-categories, and both are small
- * enough to sit under one breadcrumb.
+ * **Four tabs rather than four pages**, because these are edited together: a
+ * category is meaningless without knowing its sub-categories, and each list is
+ * small enough to sit under one breadcrumb.
  *
  * **The delete buttons are disabled, not hidden, and the guard is in the
  * database too.** A category with assets or sub-categories cannot be removed,
@@ -77,7 +87,21 @@ import type {
  * before pressing it.
  */
 
-const TABS = ["categories", "locations", "currentLocations"] as const;
+/**
+ * The four reference tables this screen administers.
+ *
+ * `handoverUsers` is the odd one out: it is not a place or a category but a
+ * **roster of people a handover can be issued to**, and it is the only tab whose
+ * rows carry an account link. It is read on every load like the others rather
+ * than lazily, because `Promise.all` is already here and one more request on an
+ * admin-only screen is not worth a second loading path.
+ */
+const TABS = [
+  "categories",
+  "locations",
+  "currentLocations",
+  "handoverUsers",
+] as const;
 type Tab = (typeof TABS)[number];
 
 type CategoryForm = {
@@ -101,6 +125,28 @@ type LocationForm = {
   notes: string;
 };
 
+/**
+ * One roster entry's editable fields.
+ *
+ * `department` holds the department **name**, not its id, and that is deliberate:
+ * `getHandoverUsers` reads the row with `department:departments(name)` because the
+ * name is what the table and the picker show, so carrying the name through the
+ * form means an edit round-trips without a second lookup to render it. The id is
+ * resolved back on save.
+ *
+ * `profileId` is the exception — an id, because that is what the row already holds
+ * and `profile_id` is never displayed as a name. An empty `<Select>` is `""` and
+ * `Select` has no other way to say "nothing chosen", so the service turns `""` into
+ * `null` and the two never meet.
+ */
+type HandoverUserForm = {
+  name: string;
+  position: string;
+  department: string;
+  profileId: string;
+  notes: string;
+};
+
 const EMPTY_CATEGORY: CategoryForm = {
   name: "",
   description: "",
@@ -115,6 +161,14 @@ const EMPTY_LOCATION: LocationForm = {
   notes: "",
 };
 
+const EMPTY_HANDOVER_USER: HandoverUserForm = {
+  name: "",
+  position: "",
+  department: "",
+  profileId: "",
+  notes: "",
+};
+
 export default function AssetSettingsPage() {
   const { t } = useTranslation("common", { keyPrefix: "assetSettings" });
   const { isProfileLoading } = useAuth();
@@ -123,10 +177,33 @@ export default function AssetSettingsPage() {
   const [tab, setTab] = useState<Tab>("categories");
   const [department, setDepartment] = useState<string>(DEFAULT_DEPARTMENT);
   const [units, setUnits] = useState<string[]>([]);
+
+  /**
+   * The `departments` rows, kept as ids rather than only names.
+   *
+   * `units` above is the pinned IT/HSSE pair unioned with the same table, and it
+   * is names-only because that is what the unit filter needs. This is the other
+   * read of the same table, kept because a roster entry writes an id back and a
+   * name cannot be resolved to one without a second query.
+   */
+  const [departments, setDepartments] = useState<DepartmentRef[]>([]);
   const [categories, setCategories] = useState<CategoryRow[]>([]);
   const [locations, setLocations] = useState<LocationRow[]>([]);
   const [currentLocations, setCurrentLocations] = useState<
     CurrentLocationRow[]
+  >([]);
+  const [handoverUsers, setHandoverUsers] = useState<HandoverUserRow[]>([]);
+
+  /**
+   * Accounts the roster modal can link an entry to.
+   *
+   * `getAllUsers` rather than a dedicated read, because it is already the one
+   * query that returns every profile and this screen is admin-only. It arrives as
+   * `Profile[]` and is flattened here into the `{id,label}` shape `Select` wants,
+   * so the modal holds options rather than domain objects.
+   */
+  const [linkableProfiles, setLinkableProfiles] = useState<
+    { id: string; label: string }[]
   >([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -134,6 +211,16 @@ export default function AssetSettingsPage() {
 
   const categoryModal = useModal();
   const locationModal = useModal();
+  /**
+   * Its own modal rather than a fourth arm on the shared place modal.
+   *
+   * `PlaceKind` exists because two tables happen to share a shape. A person has
+   * three fields the place form does not have and none of the fields it has, so
+   * driving this through `PlaceKind` would mean a `PlaceKind` member that satisfies
+   * neither shape — and a shared modal is exactly where a padding or a validation
+   * fix ends up applied to one table and not the other.
+   */
+  const handoverUserModal = useModal();
   const deleteModal = useModal();
 
   const [categoryForm, setCategoryForm] =
@@ -146,10 +233,16 @@ export default function AssetSettingsPage() {
   const [editingLocationId, setEditingLocationId] = useState<string | null>(
     null,
   );
+  const [handoverUserForm, setHandoverUserForm] =
+    useState<HandoverUserForm>(EMPTY_HANDOVER_USER);
+  const [editingHandoverUserId, setEditingHandoverUserId] = useState<
+    string | null
+  >(null);
   const [pendingDelete, setPendingDelete] = useState<
     | { kind: "category"; row: CategoryRow }
     | { kind: "location"; row: LocationRow }
     | { kind: "currentLocation"; row: CurrentLocationRow }
+    | { kind: "handoverUser"; row: HandoverUserRow }
     | null
   >(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -169,13 +262,35 @@ export default function AssetSettingsPage() {
       getLocations(),
       getCurrentLocations(),
       getCategoryUnits(),
+      getHandoverUsers(),
+      // Admin-only, like every other read on this screen: `profiles_select_own_or_admin`
+      // gives an admin every row. Only used to offer the account link in the
+      // roster modal, and only the id and name are read.
+      getAllUsers(),
+      getDepartmentOptions(),
     ]).then(
-      ([categoryRows, locationRows, currentLocationRows, units]) => {
+      ([
+        categoryRows,
+        locationRows,
+        currentLocationRows,
+        unitNames,
+        handoverUserRows,
+        profileRows,
+        departmentRows,
+      ]) => {
         if (cancelled) return;
         setCategories(categoryRows);
         setLocations(locationRows);
         setCurrentLocations(currentLocationRows);
-        setUnits(units);
+        setUnits(unitNames);
+        setHandoverUsers(handoverUserRows);
+        setDepartments(departmentRows);
+        setLinkableProfiles(
+          profileRows.map((row) => ({
+            id: row.id,
+            label: row.full_name || row.email || row.id,
+          })),
+        );
         setLoadFailed(false);
         setIsLoading(false);
       },
@@ -185,6 +300,8 @@ export default function AssetSettingsPage() {
         setLocations([]);
         setCurrentLocations([]);
         setUnits([]);
+        setHandoverUsers([]);
+        setDepartments([]);
         setLoadFailed(true);
         setIsLoading(false);
       },
@@ -245,6 +362,24 @@ export default function AssetSettingsPage() {
         label: t(`departments.${name}`, { defaultValue: name }),
       })),
     [units, t],
+  );
+
+  /**
+   * Every department, with its id — the picker for a **person's** department.
+   *
+   * A different list from `departmentOptions` on purpose, and the difference is
+   * the point. `departmentOptions` feeds the *unit* filter, whose values are the
+   * pinned IT/HSSE pair the asset routes serve plus whatever `departments` holds.
+   * A person's department has no such routing meaning, so this is every row and
+   * nothing is pinned — a roster must be able to name a department that exists
+   * for people and owns no category yet.
+   *
+   * Read from `getDepartmentOptions` rather than `getCategoryUnits` because that
+   * one is what returns ids, and this picker needs to write one back.
+   */
+  const departmentChoices = useMemo(
+    () => departments.map((row) => ({ value: row.id, label: row.name })),
+    [departments],
   );
 
   /**
@@ -430,9 +565,86 @@ export default function AssetSettingsPage() {
     }
   };
 
+  const handleOpenCreateHandoverUser = () => {
+    setSaveError(null);
+    setEditingHandoverUserId(null);
+    setHandoverUserForm(EMPTY_HANDOVER_USER);
+    handoverUserModal.openModal();
+  };
+
+  const handleOpenEditHandoverUser = (row: HandoverUserRow) => {
+    setSaveError(null);
+    setEditingHandoverUserId(row.id);
+    setHandoverUserForm({
+      name: row.name,
+      position: row.position,
+      department: row.departmentName ?? "",
+      profileId: row.profileId ?? "",
+      notes: row.notes ?? "",
+    });
+    handoverUserModal.openModal();
+  };
+
+  /**
+   * Name → id for the department picker.
+   *
+   * `getCategoryUnits()` returns `string[]` because that is what the unit *filter*
+   * needs, and it is pinned to IT/HSSE plus the `departments` rows. For a person's
+   * department that pinned pair is wrong — those two are the asset routes, not a
+   * list of who works here — so the ids come from `departmentOptions` below rather
+   * than being derived from a list shaped for a different question.
+   */
+  const departmentIdByName = useMemo(
+    () => new Map(departmentChoices.map((row) => [row.label, row.value])),
+    [departmentChoices],
+  );
+
+  const handleSaveHandoverUser = async () => {
+    const name = handoverUserForm.name.trim();
+    const position = handoverUserForm.position.trim();
+    // Both are `not null` with a blank check in the database, so this is the same
+    // validation as the price field in the asset form: catch it before the write
+    // so the refusal names the box instead of arriving as a bare `23514`.
+    if (name === "") {
+      setSaveError(t("errors.handoverUserNameRequired"));
+      return;
+    }
+    if (position === "") {
+      setSaveError(t("errors.handoverUserPositionRequired"));
+      return;
+    }
+
+    setIsSaving(true);
+    setSaveError(null);
+    try {
+      const input = {
+        name,
+        position,
+        departmentId:
+          departmentIdByName.get(handoverUserForm.department) ?? null,
+        profileId: handoverUserForm.profileId || null,
+        notes: handoverUserForm.notes,
+      };
+
+      if (editingHandoverUserId) {
+        await updateHandoverUser(editingHandoverUserId, input);
+        setNotice(t("handoverUserUpdated", { name }));
+      } else {
+        await createHandoverUser(input);
+        setNotice(t("handoverUserCreated", { name }));
+      }
+      handoverUserModal.closeModal();
+      reload();
+    } catch {
+      setSaveError(t("errors.save"));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   const handleOpenDelete = (
-    kind: "category" | "location" | "currentLocation",
-    row: CategoryRow | LocationRow,
+    kind: "category" | "location" | "currentLocation" | "handoverUser",
+    row: CategoryRow | LocationRow | HandoverUserRow,
   ) => {
     setDeleteError(null);
     // The union is keyed on `kind`, so one assignment has to be checked rather
@@ -447,6 +659,9 @@ export default function AssetSettingsPage() {
         break;
       case "currentLocation":
         setPendingDelete({ kind, row: row as CurrentLocationRow });
+        break;
+      case "handoverUser":
+        setPendingDelete({ kind, row: row as HandoverUserRow });
         break;
     }
     deleteModal.openModal();
@@ -466,6 +681,10 @@ export default function AssetSettingsPage() {
         const row = pendingDelete.row as CurrentLocationRow;
         await deleteCurrentLocation(row.id);
         setNotice(t("currentLocationDeleted", { name: row.area_name }));
+      } else if (pendingDelete.kind === "handoverUser") {
+        const row = pendingDelete.row as HandoverUserRow;
+        await deleteHandoverUser(row.id);
+        setNotice(t("handoverUserDeleted", { name: row.name }));
       } else {
         const row = pendingDelete.row as LocationRow;
         await deleteLocation(row.id);
@@ -488,6 +707,10 @@ export default function AssetSettingsPage() {
       } else if (error instanceof CurrentLocationInUseError) {
         setDeleteError(
           t("errors.currentLocationInUse", { count: error.assetCount }),
+        );
+      } else if (error instanceof HandoverUserInUseError) {
+        setDeleteError(
+          t("errors.handoverUserInUse", { count: error.handoverCount }),
         );
       } else {
         setDeleteError(t("errors.delete"));
@@ -513,16 +736,19 @@ export default function AssetSettingsPage() {
     );
   }
 
-  // Both place kinds read `area_name`, so one branch covers the two of them and
-  // the category is the only row with a different name field.
+  // Both place kinds read `area_name`, so one branch covers the two of them, the
+  // category is the only row with a different name field, and a roster entry has
+  // no place fields at all.
   const pendingName =
     pendingDelete?.kind === "category"
       ? (pendingDelete.row as CategoryRow).name
-      : pendingDelete?.kind === "currentLocation"
-        ? (pendingDelete.row as CurrentLocationRow).area_name
-        : pendingDelete?.kind === "location"
-          ? (pendingDelete.row as LocationRow).area_name
-          : "";
+      : pendingDelete?.kind === "handoverUser"
+        ? (pendingDelete.row as HandoverUserRow).name
+        : pendingDelete?.kind === "currentLocation"
+          ? (pendingDelete.row as CurrentLocationRow).area_name
+          : pendingDelete?.kind === "location"
+            ? (pendingDelete.row as LocationRow).area_name
+            : "";
 
   return (
     <div>
@@ -887,6 +1113,90 @@ export default function AssetSettingsPage() {
                 </div>
               </section>
             )}
+            {tab === "handoverUsers" && (
+              <section
+                id="asset-settings-panel-handoverUsers"
+                role="tabpanel"
+                aria-labelledby="asset-settings-tab-handoverUsers"
+              >
+                <div className="flex flex-col gap-4 border-b border-gray-200 p-6 sm:flex-row sm:items-center sm:justify-between dark:border-gray-800">
+                  <p className="text-sm text-gray-500 sm:pe-6 dark:text-gray-400">
+                    {t("handoverUsersHint")}
+                  </p>
+                  <Button
+                    variant="outline"
+                    onClick={handleOpenCreateHandoverUser}
+                    startIcon={<PlusIcon className="size-4" />}
+                    className="shrink-0 self-start sm:self-auto"
+                  >
+                    {t("addHandoverUser")}
+                  </Button>
+                </div>
+
+                {handoverUsers.length === 0 ? (
+                  <p className="p-6 text-sm text-gray-500 dark:text-gray-400">
+                    {t("handoverUsersEmpty")}
+                  </p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <Table className="min-w-[860px]">
+                      <TableHeader>
+                        <TableRow className="border-b border-gray-200 dark:border-gray-800">
+                          <TableCell
+                            isHeader
+                            className="px-6 py-3 text-start text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
+                          >
+                            {t("table.handoverUserName")}
+                          </TableCell>
+                          <TableCell
+                            isHeader
+                            className="px-4 py-3 text-start text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
+                          >
+                            {t("table.handoverUserPosition")}
+                          </TableCell>
+                          <TableCell
+                            isHeader
+                            className="px-4 py-3 text-start text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
+                          >
+                            {t("table.handoverUserDepartment")}
+                          </TableCell>
+                          <TableCell
+                            isHeader
+                            className="px-4 py-3 text-start text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
+                          >
+                            {t("table.handoverUserAccount")}
+                          </TableCell>
+                          <TableCell
+                            isHeader
+                            className="px-4 py-3 text-start text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
+                          >
+                            {t("table.handoverUserHandovers")}
+                          </TableCell>
+                          <TableCell
+                            isHeader
+                            className="px-6 py-3 text-end text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
+                          >
+                            {t("table.actions")}
+                          </TableCell>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {handoverUsers.map((row) => (
+                          <HandoverUserRowView
+                            key={row.id}
+                            row={row}
+                            onEdit={() => handleOpenEditHandoverUser(row)}
+                            onDelete={() =>
+                              handleOpenDelete("handoverUser", row)
+                            }
+                          />
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                )}
+              </section>
+            )}
           </>
         )}
       </div>
@@ -1137,6 +1447,162 @@ export default function AssetSettingsPage() {
       </Modal>
 
       <Modal
+        isOpen={handoverUserModal.isOpen}
+        onClose={handoverUserModal.closeModal}
+        className="max-w-lg"
+      >
+        <div className="p-6">
+          <h3 className="text-lg font-semibold text-gray-800 dark:text-white/90">
+            {editingHandoverUserId
+              ? t("editHandoverUserTitle")
+              : t("addHandoverUser")}
+          </h3>
+
+          <div className="mt-5 space-y-4">
+            <div>
+              <Label htmlFor="setting-handover-user-name">
+                {t("table.handoverUserName")}{" "}
+                <span className="text-error-500">*</span>
+              </Label>
+              <Input
+                id="setting-handover-user-name"
+                name="name"
+                value={handoverUserForm.name}
+                onChange={(event) =>
+                  setHandoverUserForm((prev) => ({
+                    ...prev,
+                    name: event.target.value,
+                  }))
+                }
+                placeholder={t("fields.handoverUserNamePlaceholder")}
+                autoFocus
+              />
+            </div>
+
+            <div>
+              <Label htmlFor="setting-handover-user-position">
+                {t("table.handoverUserPosition")}{" "}
+                <span className="text-error-500">*</span>
+              </Label>
+              <Input
+                id="setting-handover-user-position"
+                name="position"
+                value={handoverUserForm.position}
+                onChange={(event) =>
+                  setHandoverUserForm((prev) => ({
+                    ...prev,
+                    position: event.target.value,
+                  }))
+                }
+                placeholder={t("fields.handoverUserPositionPlaceholder")}
+              />
+            </div>
+
+            <div>
+              <Label htmlFor="setting-handover-user-department">
+                {t("table.handoverUserDepartment")}{" "}
+                <span className="text-sm font-normal text-gray-400 dark:text-gray-500">
+                  ({t("optional")})
+                </span>
+              </Label>
+              {/* Keyed on the current value: `Select` reads `defaultValue` once, so
+                  an unkeyed one would keep showing whatever it mounted with after
+                  an edit opened the modal on a different row. */}
+              <Select
+                key={`handover-user-department-${
+                  editingHandoverUserId ?? "new"
+                }-${handoverUserForm.department}`}
+                id="setting-handover-user-department"
+                options={[
+                  { value: "", label: t("noDepartment") },
+                  ...departmentChoices,
+                ]}
+                defaultValue={handoverUserForm.department}
+                onChange={(value) =>
+                  setHandoverUserForm((prev) => ({
+                    ...prev,
+                    department: value,
+                  }))
+                }
+              />
+              <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                {t("fields.handoverUserDepartmentHint")}
+              </p>
+            </div>
+
+            <div>
+              <Label htmlFor="setting-handover-user-account">
+                {t("table.handoverUserAccount")}{" "}
+                <span className="text-sm font-normal text-gray-400 dark:text-gray-500">
+                  ({t("optional")})
+                </span>
+              </Label>
+              <Select
+                key={`handover-user-account-${
+                  editingHandoverUserId ?? "new"
+                }-${handoverUserForm.profileId}`}
+                id="setting-handover-user-account"
+                options={[
+                  { value: "", label: t("fields.noAccount") },
+                  ...linkableProfiles.map((row) => ({
+                    value: row.id,
+                    label: row.label,
+                  })),
+                ]}
+                defaultValue={handoverUserForm.profileId}
+                onChange={(value) =>
+                  setHandoverUserForm((prev) => ({
+                    ...prev,
+                    profileId: value,
+                  }))
+                }
+              />
+              <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                {t("fields.handoverUserAccountHint")}
+              </p>
+            </div>
+
+            <div>
+              <Label htmlFor="setting-handover-user-notes">
+                {t("fields.notes")}{" "}
+                <span className="text-sm font-normal text-gray-400 dark:text-gray-500">
+                  ({t("optional")})
+                </span>
+              </Label>
+              <TextArea
+                id="setting-handover-user-notes"
+                rows={2}
+                value={handoverUserForm.notes}
+                onChange={(v) =>
+                  setHandoverUserForm((prev) => ({ ...prev, notes: v }))
+                }
+                placeholder={t("fields.handoverUserNotesPlaceholder")}
+              />
+            </div>
+          </div>
+
+          {saveError && (
+            <p className="mt-4 text-sm text-error-600 dark:text-error-500">
+              {saveError}
+            </p>
+          )}
+
+          <div className="mt-6 flex justify-end gap-3">
+            <Button
+              variant="outline"
+              onClick={handoverUserModal.closeModal}
+              disabled={isSaving}
+            >
+              {t("cancel")}
+            </Button>
+            <Button onClick={handleSaveHandoverUser} disabled={isSaving}>
+              {isSaving ? t("saving") : t("save")}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
         isOpen={deleteModal.isOpen}
         onClose={deleteModal.closeModal}
         className="max-w-md"
@@ -1373,6 +1839,70 @@ function PlaceRow({
           deleteLabel={t("deleteLabel", { name: row.area_name })}
           deleteDisabled={row.assetCount > 0}
           deleteTitle={row.assetCount > 0 ? t("deleteInUse") : undefined}
+          onEdit={onEdit}
+          onDelete={onDelete}
+        />
+      </TableCell>
+    </TableRow>
+  );
+}
+
+/**
+ * One row of the handover roster.
+ *
+ * Its own component rather than a `PlaceKind` arm, because it shares nothing with
+ * the place tables: no `area_name`, no `room_name`, and its last-but-one column is
+ * an account link rather than an asset count.
+ *
+ * **The account cell is the one column that can read as a refusal.** Most rows
+ * have no linked account — that is the normal case for a contractor or a visitor,
+ * and the table has to say so rather than leave a blank cell that looks like a
+ * failed load. The badge reads "no account" instead of an em dash for that reason.
+ */
+function HandoverUserRowView({
+  row,
+  onEdit,
+  onDelete,
+}: {
+  row: HandoverUserRow;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  const { t } = useTranslation("common", { keyPrefix: "assetSettings" });
+
+  return (
+    <TableRow className="border-b border-gray-100 last:border-0 hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-white/3">
+      <TableCell className="px-6 py-3 text-sm font-medium text-gray-800 dark:text-white/90">
+        {row.name}
+      </TableCell>
+      <TableCell className="px-4 py-3 text-sm text-gray-600 dark:text-gray-300">
+        {row.position}
+      </TableCell>
+      <TableCell className="px-4 py-3 text-sm text-gray-600 dark:text-gray-300">
+        {row.departmentName ?? t("noDepartment")}
+      </TableCell>
+      <TableCell className="px-4 py-3">
+        {row.profileId ? (
+          <Badge size="sm" color="light">
+            {row.profileName ?? row.profileId}
+          </Badge>
+        ) : (
+          <span className="text-xs text-gray-500 dark:text-gray-400">
+            {t("handoverUserNoAccount")}
+          </span>
+        )}
+      </TableCell>
+      <TableCell className="px-4 py-3 text-sm text-gray-600 dark:text-gray-300">
+        {t("handoverCount", { count: row.handoverCount })}
+      </TableCell>
+      <TableCell className="px-6 py-3 text-end">
+        <RowActions
+          editLabel={t("editLabel", { name: row.name })}
+          deleteLabel={t("deleteLabel", { name: row.name })}
+          deleteDisabled={row.handoverCount > 0}
+          deleteTitle={
+            row.handoverCount > 0 ? t("deleteHandoverUserInUse") : undefined
+          }
           onEdit={onEdit}
           onDelete={onDelete}
         />

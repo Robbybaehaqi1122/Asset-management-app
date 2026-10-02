@@ -5,6 +5,7 @@ import { ScrollToTop } from "./components/common/ScrollToTop";
 import AppLayout from "./layout/AppLayout";
 import AssetSettingsPage from "./modules/asset-settings/pages/AssetSettingsPage";
 import AssetListPage from "./modules/assets/pages/AssetListPage";
+import HandoverListPage from "./modules/handover/pages/HandoverListPage";
 import DepartmentListPage from "./modules/departments/pages/DepartmentListPage";
 import UserListPage from "./modules/users/pages/UserListPage";
 import SignIn from "./pages/AuthPages/SignIn";
@@ -50,6 +51,24 @@ export default function App() {
                 path="/assets-hsse"
                 element={<AssetListPage unit="HSSE" />}
               />
+              {/* Handover: tabel `assignments` sudah ada sejak `001`, lengkap
+                  dengan RLS dan trigger status, tapi belum ada layar yang
+                  memakainya.
+
+                  Satu route, bukan satu per unit — kebalikan dari `/assets` di
+                  atas, dan itu pilihan yang disengaja. Handover tidak membuat
+                  data: satu daftar berisi catatan siapa sedang memegang apa,
+                  jadi pemisahan tidak menambah informasi apa pun, hanya cara
+                  mencari. Unit-nya jadi tombol filter di dalam halaman, persis
+                  seperti unit filter di `/asset-settings`, dan filter tetap di
+                  SQL lewat `.eq("asset.department", unit)` — mengganti unit
+                  reload, bukan memfilter ulang hasil yang sudah terunduh.
+
+                  Yang tetap per unit adalah `/assets` dan `/assets-hsse`: page
+                  itu menulis baris, dan form-nya memilih fieldset berbeda
+                  seluruhnya menurut unit, jadi filter di dalam form akan
+                  memungkinkan HSSE dibuat dari halaman IT lalu hilang dari sana. */}
+              <Route path="/handover" element={<HandoverListPage />} />
               {/* Master data yang jadi sumber dropdown form aset. Dasarnya bukan
                   tabel baru: `categories` (dua level lewat `parent_id`) dan
                   `locations` sudah jadi referensi, dan `assets.category_id` /

@@ -83,6 +83,19 @@ const navItems: NavItem[] = [
       // fieldset for each.
       { name: "Asset IT", key: "assetIt", path: "/assets" },
       { name: "Asset HSSE", key: "assetHsse", path: "/assets-hsse" },
+      // One row, not one per unit — the reverse of the two rows above, and
+      // deliberately so. Handover records nothing that varies by unit: it is one
+      // list of who is holding what, so splitting it bought a second page rather
+      // than a distinction. The unit became a filter inside the page, the same
+      // shape `/asset-settings` uses for its own unit filter.
+      //
+      // Deliberately *not* `adminOnly`: a staff member can see what they are
+      // holding and return it, which is the whole point of handing something out.
+      // `assignments_select_own_or_admin` gives them their own rows and
+      // `assignments_update_own_or_admin` lets them close one. The Issue button
+      // is admin-gated inside the page instead, because
+      // `assignments_insert_admin` is what refuses it.
+      { name: "Asset Handover", key: "handover", path: "/handover" },
       {
         name: "Asset Settings",
         key: "assetSettings",
@@ -102,7 +115,7 @@ const navItems: NavItem[] = [
     // into either screen opens this group on its own.
     subItems: [
       { name: "User List", key: "userList", path: "/users" },
-      { name: "Departement", key: "department", path: "/departments" },
+      { name: "Department", key: "department", path: "/departments" },
     ],
   },
 ];

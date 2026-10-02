@@ -449,8 +449,14 @@ export default function UserListPage() {
       deleteModal.closeModal();
 
       // Reported rather than silent. The account is gone and there is nothing
-      // to undo, so the number of loans that went with it is the last chance to
-      // say so out loud.
+      // to undo, so the number of handovers this account *issued* is the last
+      // chance to say so out loud.
+      //
+      // It is no longer a count of what was erased: since migration `02000` the
+      // recipient lives in `handover_users` and outlives the account, so deleting
+      // somebody no longer takes their handover history with them. The number is
+      // what is genuinely lost — the record of which admin issued each record —
+      // and the wording says so rather than implying a bulk delete happened.
       setOutcome(
         result.erasedLoans === 0
           ? t("deleteDone", {

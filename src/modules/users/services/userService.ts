@@ -358,7 +358,20 @@ export async function resetUserPassword(
 /** Hasil pemanggilan `delete-user`. */
 export type DeletedUser = {
   id: string;
-  /** Berapa riwayat peminjaman yang ikut terhapus, untuk dilaporkan jujur. */
+  /**
+   * Berapa handover yang **dikeluarkan** akun ini, untuk dilaporkan jujur.
+   *
+   * Semula ini berarti "berapa riwayat peminjaman yang ikut terhapus". Sejak
+   * migrasi `02000` maknanya berubah dan kata `erased` jadi tidak jujur: tidak ada
+   * lagi baris `assignments` yang terhapus karena akun ini dihapus. Peminjam
+   * dicatat di `handover_users`, yang bertahan melewati penghapusan akun, jadi
+   * riwayat serah terima justru **bertahan** — itu justru tujuan pemisahan itu.
+   *
+   * Yang hilang sekarang lebih sempit, dan dihitung dari `assigned_by`:
+   * penanda siapa admin yangumper Issuing tiap handover itu, dan tautan akun pada
+   * entri roster orang tersebut. Nama field tidak diubah karena sudah jadi
+   * bagian dari kontrak respons yang dibaca modal konfirmasi.
+   */
   erasedLoans: number;
 };
 

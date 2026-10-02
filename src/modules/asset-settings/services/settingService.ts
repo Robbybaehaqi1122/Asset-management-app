@@ -70,6 +70,25 @@ export class CurrentLocationInUseError extends Error {
 }
 
 /**
+ * Raised by `deleteHandoverUser` when handover records still name them.
+ *
+ * The database refuses this too — `handover_users_guard_delete` (`02000`) counts
+ * the rows and raises `23514` — so this class exists for the same reason
+ * `CategoryInUseError` and `LocationInUseError` do: the trigger holds for any
+ * caller, and this is what lets the screen *name* what is in the way instead of
+ * surfacing a bare refusal code.
+ */
+export class HandoverUserInUseError extends Error {
+  readonly handoverCount: number;
+
+  constructor(handoverCount: number) {
+    super(`Handover user still appears on ${handoverCount} handover record(s)`);
+    this.name = "HandoverUserInUseError";
+    this.handoverCount = handoverCount;
+  }
+}
+
+/**
  * A place an asset physically is *now*. Same shape as `LocationRow` and a
  * different question: `locations` is where the asset is registered, this is
  * where it actually sits. The two are independent by design, so both tables
@@ -111,6 +130,45 @@ export type LocationRow = {
   assetCount: number;
 };
 
+/**
+ * A person a handover can be issued to (`handover_users`, migration `02000`).
+ *
+ * **Not an account.** This is a roster, and most of its rows are people who never
+ * sign in — a contractor, a visitor, a technician on someone else's site. It
+ * exists because `assignments.user_id` used to point at `profiles`, which made
+ * "who received the asset" and "who can log in" the same question, and they are
+ * not.
+ *
+ * `profileId` is the link that keeps staff self-service working: it is what the
+ * two rewritten `assignments` policies join through, so a row here with no
+ * `profileId` simply belongs to nobody's account. It is deliberately nullable and
+ * deliberately not unique — see the column comment in the migration.
+ */
+export type HandoverUserRow = {
+  id: string;
+  name: string;
+  position: string;
+  /** The person's department, or null once that department is deleted. */
+  departmentName: string | null;
+  /** The linked account, or null for someone who does not sign in. */
+  profileId: string | null;
+  /** The linked account's display name, so the table can show who it is. */
+  profileName: string | null;
+  notes: string | null;
+  created_at: string;
+  /** How many handover records name this person. Zero makes a delete safe. */
+  handoverCount: number;
+};
+
+/** Create/update payload for one roster entry. */
+export type HandoverUserInput = {
+  name: string;
+  position: string;
+  departmentId?: string | null;
+  profileId?: string | null;
+  notes?: string | null;
+};
+
 const CATEGORY_COLUMNS =
   "id, name, description, parent_id, code, department, created_at, assets!assets_category_id_fkey(count)";
 
@@ -119,6 +177,28 @@ const LOCATION_COLUMNS =
 
 const CURRENT_LOCATION_COLUMNS =
   "id, area_name, room_name, notes, created_at, assets!assets_current_location_id_fkey(count)";
+
+/**
+ * The roster, with its two embeds.
+ *
+ * `assignments!assignments_user_id_fkey(count)` is the handover count, and it uses
+ * the explicit FK hint for the same reason `LOCATION_COLUMNS` does — the hint is
+ * what tells PostgREST which of the several relationships this is. Note that
+ * `assignments` still has a *second* FK to `profiles` (`assigned_by`), so the hint
+ * is not optional here either.
+ *
+ * `department:departments(name)` and `profile:profiles(full_name)` are aliases,
+ * so they arrive as single objects rather than arrays and read naturally. Both are
+ * nullable and neither is `!inner`d — a roster entry with no department and no
+ * account is the normal case, and `!inner` would drop the row from the list
+ * entirely rather than showing a blank cell.
+ *
+ * **No comment inside this literal.** supabase-js parses the select string at the
+ * type level, so a `--` line turns the whole constant into a `ParserError` and
+ * `tsc` then fails on every `.select()` in the file.
+ */
+const HANDOVER_USER_COLUMNS =
+  "id, name, position, department_id, profile_id, notes, created_at, department:departments(name), profile:profiles(full_name), assignments!assignments_user_id_fkey(count)";
 
 /**
  * The units pinned into the category filter, whatever the `departments` table
@@ -541,4 +621,151 @@ function embeddedCount(value: unknown): number {
   if (!Array.isArray(value)) return 0;
   const first = value[0] as { count?: number } | undefined;
   return first?.count ?? value.length;
+}
+
+/**
+ * Read one object's embedded `name`, or null when the embed is absent.
+ *
+ * An aliased many-to-one arrives as an object, and it is `null` rather than `[]`
+ * when the referenced row is missing or invisible — which is a normal outcome
+ * here, not an error. `departments` and `profiles` are both readable by every
+ * signed-in user, so this is only null for a row that genuinely has no link.
+ */
+function embeddedName(value: unknown): string | null {
+  if (typeof value !== "object" || value === null) return null;
+  return trimmed((value as { name?: string }).name);
+}
+
+/** Read one object's embedded `full_name`, or null. See `embeddedName`. */
+function embeddedFullName(value: unknown): string | null {
+  if (typeof value !== "object" || value === null) return null;
+  return trimmed((value as { full_name?: string }).full_name);
+}
+
+/** The whole roster, by name then position. */
+export async function getHandoverUsers(): Promise<HandoverUserRow[]> {
+  const { data, error } = await supabase
+    .from("handover_users")
+    .select(HANDOVER_USER_COLUMNS)
+    .order("name", { ascending: true })
+    .order("position", { ascending: true });
+
+  if (error) throw error;
+
+  return ((data ?? []) as Record<string, unknown>[]).map((row) => ({
+    id: String(row.id),
+    name: String(row.name ?? ""),
+    position: String(row.position ?? ""),
+    departmentName: embeddedName(row.department),
+    profileId: str(row.profile_id),
+    profileName: embeddedFullName(row.profile),
+    notes: str(row.notes),
+    created_at: String(row.created_at ?? ""),
+    handoverCount: embeddedCount(row.assignments),
+  }));
+}
+
+/** Stringify a nullable column, keeping `null` as `null` rather than `"null"`. */
+function str(value: unknown): string | null {
+  return value === null || value === undefined ? null : String(value);
+}
+
+/**
+ * Create one roster entry.
+ *
+ * `profileId` is sent as given rather than defaulted to somebody. The default
+ * case is the whole point: most roster entries are people with no account, so
+ * omitting it is the normal path and there is nothing sensible to default to.
+ */
+export async function createHandoverUser(
+  input: HandoverUserInput,
+): Promise<{ id: string; name: string }> {
+  const { data, error } = await supabase
+    .from("handover_users")
+    .insert({
+      name: input.name.trim(),
+      position: input.position.trim(),
+      department_id: input.departmentId || null,
+      profile_id: input.profileId || null,
+      notes: trimmed(input.notes),
+    })
+    .select("id, name")
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) throw new NoRowsWrittenError("inserted");
+
+  return { id: data.id, name: data.name };
+}
+
+/**
+ * Update one roster entry.
+ *
+ * All five editable columns are sent every time, including `profile_id`, so
+ * unlinking an account is a real operation rather than something the form can
+ * only add. `updated_at` is deliberately absent: `handover_users_set_updated_at`
+ * owns it.
+ */
+export async function updateHandoverUser(
+  handoverUserId: string,
+  input: HandoverUserInput,
+): Promise<{ id: string; name: string }> {
+  const { data, error } = await supabase
+    .from("handover_users")
+    .update({
+      name: input.name.trim(),
+      position: input.position.trim(),
+      department_id: input.departmentId || null,
+      profile_id: input.profileId || null,
+      notes: trimmed(input.notes),
+    })
+    .eq("id", handoverUserId)
+    .select("id, name")
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) throw new NoRowsWrittenError("updated");
+
+  return { id: data.id, name: data.name };
+}
+
+/**
+ * Delete one roster entry, refusing while a handover record still names them.
+ *
+ * The FK from `assignments.user_id` is `on delete restrict`, so the database
+ * refuses on its own — and `handover_users_guard_delete` (`02000`) refuses with
+ * a message naming the count rather than a bare `23503`.
+ *
+ * That guard is `security definer` because a staff caller cannot read other
+ * people's handover rows, and a count taken through their own RLS would report
+ * zero and wave the delete through. **The same reason `assets_guard_status` is
+ * `security definer`** and `sync_asset_status_from_assignment` should have been.
+ *
+ * The count below is the application's own check and is trustworthy here only
+ * because this screen is admin-only. It exists so the refusal can name what is in
+ * the way, which a bare `23514` cannot.
+ */
+export async function deleteHandoverUser(
+  handoverUserId: string,
+): Promise<void> {
+  const { count, error: countError } = await supabase
+    .from("assignments")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", handoverUserId);
+
+  if (countError) throw countError;
+
+  if ((count ?? 0) > 0) {
+    throw new HandoverUserInUseError(count ?? 0);
+  }
+
+  const { data, error } = await supabase
+    .from("handover_users")
+    .delete()
+    .eq("id", handoverUserId)
+    .select("id")
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) throw new NoRowsWrittenError("deleted");
 }

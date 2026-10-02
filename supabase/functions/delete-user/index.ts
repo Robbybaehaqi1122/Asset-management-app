@@ -10,9 +10,25 @@
 // about before they press the button:
 //
 //   auth.users -> profiles (on delete cascade)
-//              -> assignments.user_id    (on delete cascade)  loan history is erased
 //              -> assignments.assigned_by (on delete set null) who lent it is lost
-//              -> assignments_sync_asset_status fires, assets return to `available`
+//              -> handover_users.profile_id (on delete set null) the roster link
+//                 drops, and the roster entry itself stays
+//
+// **Deleting an account no longer erases loan history.** Until migration `02000`,
+// `assignments.user_id` referenced `profiles` with `on delete cascade`, so
+// removing somebody's account silently deleted every handover they were the
+// recipient of. That is the loss the confirmation modal used to warn about, and
+// it no longer happens: `assignments.user_id` now points at `handover_users`, a
+// roster row that outlives any account, and the person who held an asset is named
+// there rather than in the login list.
+//
+// What is still lost is narrower, and the modal says so:
+//
+//   - `assignments.assigned_by` becomes NULL — the record of which admin issued
+//     each of those handovers.
+//   - `handover_users.profile_id` becomes NULL — that person stops seeing and
+//     returning their own handovers in the app. The roster entry stays, so a new
+//     admin can relink it to a new account.
 //
 // The role and department are not written here for the same reason they are not
 // written in `create-user`: `protect_profile_role` refuses a service-role write.
@@ -153,10 +169,16 @@ Deno.serve(async (req) => {
 
   // How much is about to disappear, reported so the admin is not guessing.
   // Counted before the delete, because afterwards it is unanswerable.
+  //
+  // This counts what the account **issued**, not what it held. Since `02000` the
+  // holder is a `handover_users` row and does not disappear with the account, so
+  // `.eq("user_id", userId)` would match nothing and `erasedLoans` would be a
+  // confident zero. The name is kept because the response field is part of the
+  // contract the confirmation modal reads; the semantic is what changed.
   const { count: loanCount } = await service
     .from("assignments")
     .select("id", { count: "exact", head: true })
-    .eq("user_id", userId);
+    .eq("assigned_by", userId);
 
   // The auth user is deleted LAST, and that ordering is the whole trick.
   //
@@ -169,26 +191,26 @@ Deno.serve(async (req) => {
   // `auth.admin.deleteUser` on a user with a profile therefore always fails.
   //
   // Fixing it with grants would mean giving `supabase_auth_admin` DELETE on
-  // `profiles` and `assignments` plus UPDATE on `assets` (for the status
-  // trigger), and adding a DELETE policy to a table that deliberately has none.
-  // Removing the rows ourselves avoids all of that: the service role bypasses
-  // RLS, and the triggers it fires behave the same as they do for any other
-  // privileged write. Order is the constraint — `assignments` first, because
-  // `profiles` cannot go while a row still references it.
-  const { error: loansError } = await service
-    .from("assignments")
-    .delete()
-    .eq("user_id", userId);
-
-  if (loansError) {
-    console.error("delete-user: clearing assignments failed", {
-      userId,
-      code: loansError.code,
-      message: loansError.message,
-    });
-    return json(req, 400, { error: "unknown" });
-  }
-
+  // `profiles` and UPDATE on `assets` (for the status trigger), and adding a
+  // DELETE policy to a table that deliberately has none. Removing the rows
+  // ourselves avoids all of that: the service role bypasses RLS.
+  //
+  // Order is the constraint, and `02000` shortened the list. It used to be
+  // "`assignments` first, because `profiles` cannot go while a row still
+  // references it" — `assignments.user_id` and `assignments.assigned_by` both
+  // pointed at `profiles`. Now only `assigned_by` does, and it is `on delete set
+  // null`, which does **not** block the delete. So `assignments` no longer needs
+  // clearing first, and the statement below was deleted rather than repointed:
+  //
+  //   - keeping it and filtering on `user_id` would match nothing, because that
+  //     column now holds a roster id, not an account id.
+  //   - keeping it and filtering on `assigned_by` would be actively harmful: it
+  //     would delete handover *history* to remove an account, and firing
+  //     `assignments_sync_asset_status` on the way would push assets somebody is
+  //     still physically holding back into stock.
+  //
+  // So an admin's handover history survives their account, which is the outcome
+  // the whole `handover_users` split was for.
   const { error: profileError } = await service
     .from("profiles")
     .delete()

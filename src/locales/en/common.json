@@ -8,9 +8,10 @@
       "assetManagement": "Asset Management",
       "userManagement": "User Management",
       "userList": "User List",
-      "department": "Departement",
+      "department": "Department",
       "assetIt": "Asset IT",
       "assetHsse": "Asset HSSE",
+      "handover": "Asset Handover",
       "assetSettings": "Asset Settings"
     }
   },
@@ -122,7 +123,7 @@
     }
   },
   "departments": {
-    "pageTitle": "Departement",
+    "pageTitle": "Department",
     "pageDescription": "The departments a profile can belong to",
     "subtitle": "The people screen offers these as a dropdown, so a department added here is available immediately when adding or editing an account.",
     "checkingAccess": "Checking your access…",
@@ -182,7 +183,8 @@
     "tabs": {
       "categories": "Categories",
       "locations": "Locations",
-      "currentLocations": "Current locations"
+      "currentLocations": "Current locations",
+      "handoverUsers": "User Handover"
     },
     "addCategory": "Add category",
     "editCategoryTitle": "Edit category",
@@ -216,6 +218,17 @@
     "currentLocationCreated": "{name} was added as a current location.",
     "currentLocationUpdated": "{name} was updated.",
     "currentLocationDeleted": "{name} was deleted.",
+    "addHandoverUser": "Add handover user",
+    "editHandoverUserTitle": "Edit handover user",
+    "handoverUsersHint": "People an asset can be handed over to. A handover can go to somebody with no account at all; linking an account only lets that person see and return their own handovers in the app.",
+    "handoverUsersEmpty": "No handover user yet. Add the people assets are handed to before issuing a handover.",
+    "handoverUserNoAccount": "No account",
+    "handoverUserCreated": "{name} was added to the handover list.",
+    "handoverUserUpdated": "{name} was updated.",
+    "handoverUserDeleted": "{name} was removed from the handover list.",
+    "noDepartment": "No department",
+    "handoverCount": "{count} handover(s)",
+    "deleteHandoverUserInUse": "This person appears on handover records. Return or reassign those before removing them.",
     "table": {
       "category": "Category",
       "code": "Code",
@@ -224,7 +237,12 @@
       "room": "Room",
       "notes": "Notes",
       "assets": "Assets",
-      "actions": "Actions"
+      "actions": "Actions",
+      "handoverUserName": "Name",
+      "handoverUserPosition": "Position",
+      "handoverUserDepartment": "Department",
+      "handoverUserAccount": "Linked account",
+      "handoverUserHandovers": "Handovers"
     },
     "fields": {
       "name": "Name",
@@ -245,7 +263,13 @@
       "roomPlaceholder": "e.g. Customs Building",
       "roomHint": "Leave empty when the location is a whole area rather than a room inside one.",
       "notes": "Notes",
-      "notesPlaceholder": "Anything worth recording about this location"
+      "notesPlaceholder": "Anything worth recording about this location",
+      "handoverUserNamePlaceholder": "e.g. Budi Santoso",
+      "handoverUserPositionPlaceholder": "e.g. Field Technician",
+      "handoverUserDepartmentHint": "Leave empty if this person has no department. This is a person’s department, so it offers every department rather than only the two asset units.",
+      "noAccount": "No account",
+      "handoverUserAccountHint": "Optional. Link an account only if this person also signs in — it is what lets them see and return their own handovers. Leave empty for a contractor or a visitor.",
+      "handoverUserNotesPlaceholder": "Anything worth recording about this person"
     },
     "errors": {
       "load": "The reference data could not be loaded.",
@@ -259,7 +283,10 @@
       "moveWithChildren": "This category still has sub-categories, so it cannot move to another department on its own. Move or clear them first.",
       "categoryInUse": "This category still has {subCategories} sub-categor(y/ies) and {assets} asset(s) pointing at it. Move them first.",
       "locationInUse": "This location still has {count} asset(s) pointing at it. Move them first.",
-      "currentLocationInUse": "This current location still has {count} asset(s) pointing at it. Move them first."
+      "currentLocationInUse": "This current location still has {count} asset(s) pointing at it. Move them first.",
+      "handoverUserNameRequired": "A name is required.",
+      "handoverUserPositionRequired": "A position is required.",
+      "handoverUserInUse": "This person still appears on {count} handover record(s). Return or reassign them before removing the person."
     }
   },
   "users": {
@@ -291,14 +318,14 @@
     "deleteOnlyAccount": "This is the only account in the workspace. Add another administrator before deleting this one.",
     "deleteTitle": "Delete this account?",
     "deleteBody": "{name} will be deleted permanently. This cannot be undone.",
-    "deleteWarningTitle": "This also deletes, without any way to recover them:",
-    "deleteWarningLoans": "every loan record for this person, including returned ones",
-    "deleteWarningLender": "the record of which admin lent out each of those assets",
-    "deleteWarningAssets": "nothing — but any asset they were holding goes back to Available with no history of who had it",
+    "deleteWarningTitle": "This also loses, with no way to recover them:",
+    "deleteWarningLoans": "the record of which admin issued each handover this account created. The handovers themselves stay: the person who received an asset is named in the User Handover roster, not in the login list, so deleting an account no longer erases loan history",
+    "deleteWarningLender": "this person’s own link to their account, so they stop seeing and returning their own handovers in the app. The roster entry stays and an admin can relink it to a new account",
+    "deleteWarningAssets": "nothing else — assets are untouched, because a handover is not removed when the account that issued it is",
     "deleteConfirm": "Delete permanently",
     "deleting": "Deleting…",
     "deleteDone": "{name} was deleted.",
-    "deleteDoneWithLoans": "{name} was deleted, along with {count} loan record(s).",
+    "deleteDoneWithLoans": "{name} was deleted, along with the record of {count} handover(s) they had issued. The handovers themselves are kept.",
     "resetPassword": "Reset password",
     "resetTitle": "Reset password",
     "resetBody": "{name} will sign in with the password you set here. Give it to them directly — there is no email to send it to.",
@@ -338,7 +365,7 @@
       "showPassword": "Show password",
       "hidePassword": "Hide password"
     },
-    "noDepartmentsYet": "No departments yet — add one from the Departement page first.",
+    "noDepartmentsYet": "No departments yet — add one from the Department page first.",
     "errors": {
       "load": "The user list could not be loaded.",
       "save": "The role could not be changed. Please try again.",
@@ -595,6 +622,91 @@
       "duplicateCode": "That asset code is already used by another asset.",
       "statusContradictsLoans": "That status disagrees with the current loans, so the database refused it. An asset out on loan is Assigned on its own.",
       "inUse": "{name} cannot be deleted: it still has {assignments} loan record(s) and {maintenance} maintenance record(s). Returning it and clearing its history is the only way to remove it."
+    }
+  },
+  "handover": {
+    "pageTitle": "Asset Handover",
+    "pageDescription": "Hand assets over to people and record what comes back.",
+    "subtitle": "Every handover an asset goes out on, and whether it has come back.",
+    "loading": "Loading handovers…",
+    "empty": "No {unit} asset has been handed over yet.",
+    "noMatches": "No handover matches these filters.",
+    "dismiss": "Dismiss",
+    "cancel": "Cancel",
+    "confirm": "Delete",
+    "deleting": "Deleting…",
+    "saving": "Saving…",
+    "issue": "Issue",
+    "return": "Return",
+    "issueTitle": "Issue an asset",
+    "deleteTitle": "Delete this handover",
+    "deleteBody": "The record is removed. The asset itself is not affected.",
+    "deleteLabel": "Delete handover",
+    "deleteOpenHint": "This handover is still open. Return the asset before deleting the record.",
+    "issued": "Handover issued.",
+    "returned": "{name} was returned.",
+    "deleted": "Handover deleted.",
+    "status": {
+      "open": "Out",
+      "returned": "Returned"
+    },
+    "condition": {
+      "new": "New",
+      "good": "Good",
+      "fair": "Fair",
+      "poor": "Poor",
+      "broken": "Broken"
+    },
+    "table": {
+      "asset": "Asset",
+      "holder": "Held by",
+      "handedOverOn": "Issued",
+      "due": "Due",
+      "status": "Status",
+      "actions": "Actions",
+      "doc": "Doc no",
+      "recordedBy": "Recorded by"
+    },
+    "filters": {
+      "search": "Search",
+      "searchPlaceholder": "Asset, person, doc no…",
+      "unit": "Department",
+      "status": "Status",
+      "all": "All"
+    },
+    "units": {
+      "IT": "IT",
+      "HSSE": "HSSE"
+    },
+    "fields": {
+      "asset": "Asset",
+      "assetPlaceholder": "Select an available asset",
+      "person": "Handed to",
+      "personPlaceholder": "Select a person",
+      "condition": "Condition at handover",
+      "conditionPlaceholder": "Same as the asset record",
+      "doc": "Document no",
+      "docPlaceholder": "This asset has no document number",
+      "docReadOnlyHint": "Taken from the asset record, where it is edited. A handover does not change it, so every handover of this asset prints the same number.",
+      "due": "Due date",
+      "notes": "Notes",
+      "notesPlaceholder": "Anything worth recording",
+      "unknown": "Unknown",
+      "personHint": "Pick from the User Handover list in Asset Settings, not from the login list. The account you are signed in as is recorded as who issued this handover.",
+      "personDepartment": "Department",
+      "recordedBy": "This handover will be recorded under"
+    },
+    "errors": {
+      "load": "Handovers could not be loaded.",
+      "pickers": "The asset and person lists could not be loaded, so nothing can be issued from here.",
+      "assetRequired": "Choose an asset.",
+      "personRequired": "Choose who is receiving it.",
+      "notAvailable": "That asset is not available to hand over. It may be retired, damaged, already out, or in maintenance.",
+      "alreadyHandedOver": "That asset was handed to somebody else first. Reload and try again.",
+      "issue": "The handover could not be saved.",
+      "returnDenied": "That handover could not be returned. You may only return one you are holding.",
+      "open": "This handover is still open, so deleting it would put the asset back into stock while the person still has it. Return it first.",
+      "delete": "The handover could not be deleted."
     }
   }
 }
