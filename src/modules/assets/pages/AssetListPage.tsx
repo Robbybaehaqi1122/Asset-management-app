@@ -56,6 +56,8 @@ import type {
   AssetUnit,
   CategoryOption,
   ConnectionType,
+  InspectionGenerationMode,
+  InspectionPeriodUnit,
   SelectableAssetStatus,
   UsageStatus,
 } from "../services/assetService";
@@ -160,6 +162,17 @@ type AssetForm = {
   last_inspection_date: string;
   next_inspection_date: string;
   calibration_cert_no: string;
+  // HSSE only, from the inspection register (`01800`). `inspection_frequency`
+  // and `inspection_period_unit` are one schedule and the database refuses
+  // either without the other, so the form clears them as a pair.
+  entity_name: string;
+  country: string;
+  checklist_form_code: string;
+  checklist_name: string;
+  checklist_url: string;
+  inspection_generation_mode: InspectionGenerationMode | "";
+  inspection_frequency: number | null;
+  inspection_period_unit: InspectionPeriodUnit | "";
 };
 
 const EMPTY_FORM: AssetForm = {
@@ -236,6 +249,14 @@ const EMPTY_FORM: AssetForm = {
   last_inspection_date: "",
   next_inspection_date: "",
   calibration_cert_no: "",
+  entity_name: "",
+  country: "",
+  checklist_form_code: "",
+  checklist_name: "",
+  checklist_url: "",
+  inspection_generation_mode: "",
+  inspection_frequency: null,
+  inspection_period_unit: "",
 };
 
 /** Credentials are omitted when the tab was never opened on an existing asset. */
@@ -329,6 +350,14 @@ function formFromAsset(asset: Asset, categories: CategoryOption[]): AssetForm {
     last_inspection_date: asset.last_inspection_date ?? "",
     next_inspection_date: asset.next_inspection_date ?? "",
     calibration_cert_no: asset.calibration_cert_no ?? "",
+    entity_name: asset.entity_name ?? "",
+    country: asset.country ?? "",
+    checklist_form_code: asset.checklist_form_code ?? "",
+    checklist_name: asset.checklist_name ?? "",
+    checklist_url: asset.checklist_url ?? "",
+    inspection_generation_mode: asset.inspection_generation_mode ?? "",
+    inspection_frequency: asset.inspection_frequency,
+    inspection_period_unit: asset.inspection_period_unit ?? "",
   };
 }
 
@@ -369,6 +398,23 @@ function toInput(form: AssetForm, includeCredentials: boolean): AssetInput {
     last_inspection_date: form.last_inspection_date || null,
     next_inspection_date: form.next_inspection_date || null,
     calibration_cert_no: form.calibration_cert_no || null,
+    entity_name: form.entity_name || null,
+    country: form.country || null,
+    checklist_form_code: form.checklist_form_code || null,
+    checklist_name: form.checklist_name || null,
+    checklist_url: form.checklist_url || null,
+    inspection_generation_mode: form.inspection_generation_mode || null,
+    // The two halves of one schedule, and the check refuses either alone, so
+    // they are nulled as a pair rather than independently. Typing a number and
+    // leaving the unit blank is an unfinished answer, not "every 1 units".
+    inspection_frequency:
+      form.inspection_period_unit && form.inspection_frequency !== null
+        ? form.inspection_frequency
+        : null,
+    inspection_period_unit:
+      form.inspection_frequency !== null && form.inspection_period_unit
+        ? form.inspection_period_unit
+        : null,
     // An empty box is "not recorded", not zero. NaN means the box holds
     // something that is not a number, which the column check would refuse.
     purchase_price:
@@ -518,6 +564,27 @@ const USAGE_STATUSES = [
 ] as const;
 
 /**
+ * The inspection register's two closed sets, as `01800` constrains them.
+ *
+ * The generation mode and the period unit are both `Select` rather than a text
+ * box, for the same reason `USAGE_STATUSES` is: a closed set is what stops
+ * "monthly" and "Monthly" from both existing in the same column.
+ *
+ * `INSPECTION_PERIOD_UNITS` carries two values the source workbook never
+ * records — it observes `Daily` and `Monthly` only. `Weekly` and `Yearly` are
+ * there because an annual fire-extinguisher check is real data this form would
+ * otherwise refuse with a `23514` the admin cannot act on.
+ */
+const INSPECTION_GENERATION_MODES = ["Manual", "Automatic"] as const;
+
+const INSPECTION_PERIOD_UNITS = [
+  "Daily",
+  "Weekly",
+  "Monthly",
+  "Yearly",
+] as const;
+
+/**
  * The port counts, per category, as the workbook's own columns name them.
  *
  * A count rather than the checkbox list 01100 used: the sheet records `HDMI = 3`
@@ -664,7 +731,18 @@ function RowActions({
     };
   }, [isOpen]);
 
-  const itemClass = "menu-dropdown-item menu-dropdown-item-inactive";
+  // `w-full text-start` are not decoration and not in `menu-dropdown-item`.
+  //
+  // `DropdownItem`'s own default carries `block w-full text-start`, and replacing
+  // `baseClassName` wholesale drops both. `menu-dropdown-item` supplies `flex`,
+  // which turns the item from a block into a flex *container* but leaves it
+  // shrink-to-fit: without `w-full` the button is only as wide as its icon and
+  // label, so a row of the panel is dead space and the whole row is not clickable.
+  // `text-start` is the logical property this project requires in place of
+  // `text-left`/`text-right`; inheriting the default alignment happens to look
+  // right in English and is wrong the moment the direction flips.
+  const itemClass =
+    "menu-dropdown-item menu-dropdown-item-inactive w-full text-start";
   const dangerClass =
     "text-error-600 hover:text-error-700 dark:text-error-400 dark:hover:text-error-300";
 
@@ -1302,7 +1380,37 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
           </p>
         ) : (
           <div className="overflow-x-auto">
-            <Table className="min-w-[900px]">
+            {/* `table-fixed` plus an explicit `<colgroup>` is what makes this
+                table stop behaving differently from the Asset IT one.
+
+                Without it every column width was derived from its content, so a
+                single long `name`, `category?.name` or `location?.name` — the
+                last is assembled in the client as `"Area / Room"` — widened that
+                column past the container and `overflow-x-auto` clipped the rest
+                away. The identical markup renders on both units, but the data
+                differs, so one page fit and the other did not: nothing was
+                actually shared between the two tables.
+
+                `table-fixed` makes the first row (here: the `<colgroup>`) the
+                sole authority on widths, so `/assets` and `/assets-hsse` now
+                produce the same geometry for the same headers. The name column
+                carries no width on purpose — in a fixed layout an unsized column
+                absorbs the remainder, which is the one thing that *should* vary
+                with the window.
+
+                `min-w-[900px]` stays: below that width the table scrolls
+                horizontally, which is the intended mobile behaviour and was
+                true before this change. */}
+            <Table className="w-full min-w-[900px] table-fixed">
+              <colgroup>
+                <col className="w-[140px]" />
+                <col />
+                <col className="w-[150px]" />
+                <col className="w-[160px]" />
+                <col className="w-[110px]" />
+                <col className="w-[120px]" />
+                {isAdmin && <col className="w-[64px]" />}
+              </colgroup>
               <TableHeader>
                 <TableRow className="border-b border-gray-200 dark:border-gray-800">
                   <TableCell
@@ -1358,31 +1466,35 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
                     key={row.id}
                     className="border-b border-gray-100 last:border-0 hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-white/3"
                   >
-                    <TableCell className="font-mono px-6 py-3 text-xs text-gray-700 dark:text-gray-300">
+                    {/* `truncate` is what turns "too long" into an ellipsis
+                        instead of an overflow. `table-fixed` already stops a
+                        long value from *widening* the column; this stops it from
+                        escaping one. */}
+                    <TableCell className="font-mono truncate px-6 py-3 text-xs text-gray-700 dark:text-gray-300">
                       {row.asset_code}
                     </TableCell>
                     <TableCell className="px-4 py-3">
-                      <p className="font-medium text-gray-800 dark:text-white/90">
+                      <p className="truncate font-medium text-gray-800 dark:text-white/90">
                         {row.name}
                       </p>
                       {row.hostname && (
-                        <p className="font-mono mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                        <p className="font-mono mt-0.5 truncate text-xs text-gray-500 dark:text-gray-400">
                           {row.hostname}
                         </p>
                       )}
                     </TableCell>
-                    <TableCell className="px-4 py-3 text-sm text-gray-600 dark:text-gray-300">
+                    <TableCell className="truncate px-4 py-3 text-sm text-gray-600 dark:text-gray-300">
                       {row.category?.name ?? "—"}
                     </TableCell>
-                    <TableCell className="px-4 py-3 text-sm text-gray-600 dark:text-gray-300">
+                    <TableCell className="truncate px-4 py-3 text-sm text-gray-600 dark:text-gray-300">
                       {row.location?.name ?? "—"}
                     </TableCell>
-                    <TableCell className="px-4 py-3">
+                    <TableCell className="truncate px-4 py-3">
                       <Badge size="sm" color={STATUS_COLOR[row.status]}>
                         {t(`status.${row.status}`)}
                       </Badge>
                     </TableCell>
-                    <TableCell className="px-4 py-3">
+                    <TableCell className="truncate px-4 py-3">
                       <Badge
                         size="sm"
                         variant="light"
@@ -1651,6 +1763,135 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
                         placeholder="5 kg"
                       />
                     </div>
+
+                    {/* The inspection register's own columns (`01800`).
+
+                        Kept in their own fieldset rather than folded into the
+                        dates above, because they answer a different question:
+                        the dates are *facts* about this item, and this group is
+                        the *schedule and the paperwork* it is inspected
+                        against. `Equipment Family` is deliberately absent —
+                        it became the HSSE parent categories instead of a
+                        column, so it is chosen in the Identity tab. */}
+                    <fieldset className="space-y-4">
+                      <Legend>{t("fields.registerLegend")}</Legend>
+
+                      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                        <TextField
+                          id="asset-checklist-form-code"
+                          label={t("fields.checklistFormCode")}
+                          value={form.checklist_form_code}
+                          onChange={(v) => set("checklist_form_code", v)}
+                          placeholder="FORM-PGT-HSE-CL-003-08-2025"
+                        />
+                        <TextField
+                          id="asset-checklist-name"
+                          label={t("fields.checklistName")}
+                          value={form.checklist_name}
+                          onChange={(v) => set("checklist_name", v)}
+                          placeholder="FIRE EXTINGUISHER CHECKLIST"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                        <div>
+                          <Label htmlFor="asset-inspection-mode">
+                            {t("fields.inspectionGenerationMode")} <Optional />
+                          </Label>
+                          <Select
+                            key={`hsse-mode-${form.asset_code}`}
+                            id="asset-inspection-mode"
+                            placeholder={t("fields.none")}
+                            defaultValue={form.inspection_generation_mode}
+                            onChange={(v) =>
+                              set(
+                                "inspection_generation_mode",
+                                v as InspectionGenerationMode | "",
+                              )
+                            }
+                            options={INSPECTION_GENERATION_MODES.map(
+                              (mode) => ({
+                                value: mode,
+                                label: t(`inspectionMode.${mode}`),
+                              }),
+                            )}
+                          />
+                        </div>
+                        <TextField
+                          id="asset-checklist-url"
+                          label={t("fields.checklistUrl")}
+                          value={form.checklist_url}
+                          onChange={(v) => set("checklist_url", v)}
+                          placeholder="https://…"
+                        />
+                      </div>
+
+                      {/* Frequency and unit are one schedule in two boxes, and
+                          `assets_inspection_schedule_paired_check` refuses one
+                          without the other. Clearing either clears both here so
+                          the form never shows a half-answered schedule that the
+                          database would reject on save. */}
+                      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                        <div>
+                          <Label htmlFor="asset-inspection-frequency">
+                            {t("fields.inspectionFrequency")} <Optional />
+                          </Label>
+                          <Input
+                            id="asset-inspection-frequency"
+                            type="number"
+                            min={1}
+                            step={1}
+                            value={
+                              form.inspection_frequency === null
+                                ? ""
+                                : String(form.inspection_frequency)
+                            }
+                            onChange={(event) => {
+                              const raw = event.target.value;
+                              const parsed = Number(raw);
+                              // "" is the empty box, not zero — 0 is refused by
+                              // the check, and `Number("")` is exactly 0.
+                              set(
+                                "inspection_frequency",
+                                raw === "" || Number.isNaN(parsed) || parsed < 1
+                                  ? null
+                                  : parsed,
+                              );
+                              if (raw === "" || Number.isNaN(parsed)) {
+                                set("inspection_period_unit", "");
+                              }
+                            }}
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="asset-inspection-period">
+                            {t("fields.inspectionPeriodUnit")} <Optional />
+                          </Label>
+                          <Select
+                            key={`hsse-period-${form.asset_code}`}
+                            id="asset-inspection-period"
+                            placeholder={t("fields.none")}
+                            defaultValue={form.inspection_period_unit}
+                            onChange={(v) => {
+                              set(
+                                "inspection_period_unit",
+                                v as InspectionPeriodUnit | "",
+                              );
+                              // A unit with no number is equally half-answered.
+                              if (!v) set("inspection_frequency", null);
+                            }}
+                            options={INSPECTION_PERIOD_UNITS.map((unit) => ({
+                              value: unit,
+                              label: t(`inspectionPeriod.${unit}`),
+                            }))}
+                          />
+                        </div>
+                      </div>
+
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                        {t("fields.registerHint")}
+                      </p>
+                    </fieldset>
 
                     <p className="text-xs text-gray-500 dark:text-gray-400">
                       {t("fields.hsseHint")}
@@ -2197,6 +2438,32 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
                     onChange={(v) => set("current_location_id", v)}
                   />
                 </div>
+
+                {/* Entity and country, from the inspection register (`01800`).
+                    HSSE only, and deliberately plain text rather than a
+                    reference: the register is multi-country by design, so these
+                    vary per asset in a way a fixed list would have to be
+                    re-migrated every time a new country appears. `Site` in the
+                    workbook maps to the two pickers above, which is why there is
+                    no third place field here. */}
+                {isHsse && (
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <TextField
+                      id="asset-entity-name"
+                      label={t("fields.entityName")}
+                      value={form.entity_name}
+                      onChange={(v) => set("entity_name", v)}
+                      placeholder="Patimban Global Gateway Terminal"
+                    />
+                    <TextField
+                      id="asset-country"
+                      label={t("fields.country")}
+                      value={form.country}
+                      onChange={(v) => set("country", v)}
+                      placeholder="Indonesia"
+                    />
+                  </div>
+                )}
 
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                   <TextField

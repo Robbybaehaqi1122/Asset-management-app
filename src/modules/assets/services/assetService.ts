@@ -49,6 +49,29 @@ export type ConnectionType =
  */
 export type UsageStatus = "In used by User" | "Idle" | "Shared" | "Lent out";
 
+/**
+ * Mirrors `assets_inspection_generation_mode_check`.
+ *
+ * `Manual` is the only value the register actually records; `Automatic` is the
+ * counterpart of the French sheet's `Manuel` / `Automatique` pair. Narrower
+ * unions are fine to widen, but a union wider than the constraint compiles and
+ * then fails at the database with a code nobody can act on.
+ */
+export type InspectionGenerationMode = "Manual" | "Automatic";
+
+/**
+ * Mirrors `assets_inspection_period_unit_check`.
+ *
+ * The register observes `Daily` and `Monthly` only. `Weekly` and `Yearly` are
+ * inferred, and they are here because an inspection register that cannot
+ * express an annual fire-extinguisher check would refuse real data — see the
+ * migration's comment.
+ *
+ * Always paired with `inspection_frequency`: the database refuses one without
+ * the other, so nothing here is meaningful on its own.
+ */
+export type InspectionPeriodUnit = "Daily" | "Weekly" | "Monthly" | "Yearly";
+
 /** The port names the workbook gives a count column to. */
 export type PortName =
   | "vga"
@@ -136,6 +159,17 @@ export type Asset = {
   last_inspection_date: string | null;
   next_inspection_date: string | null;
   calibration_cert_no: string | null;
+
+  /** HSSE only. The eight fields `01800` added from the inspection register. */
+  entity_name: string | null;
+  country: string | null;
+  checklist_form_code: string | null;
+  checklist_name: string | null;
+  checklist_url: string | null;
+  inspection_generation_mode: InspectionGenerationMode | null;
+  inspection_frequency: number | null;
+  inspection_period_unit: InspectionPeriodUnit | null;
+
   purchase_price: number | null;
   supplier: string | null;
   po_number: string | null;
@@ -240,6 +274,15 @@ export type AssetInput = {
   last_inspection_date: string | null;
   next_inspection_date: string | null;
   calibration_cert_no: string | null;
+  /** HSSE only. The eight fields `01800` added from the inspection register. */
+  entity_name: string | null;
+  country: string | null;
+  checklist_form_code: string | null;
+  checklist_name: string | null;
+  checklist_url: string | null;
+  inspection_generation_mode: InspectionGenerationMode | null;
+  inspection_frequency: number | null;
+  inspection_period_unit: InspectionPeriodUnit | null;
   purchase_price: number | null;
   supplier: string | null;
   po_number: string | null;
@@ -366,6 +409,9 @@ const ASSET_COLUMNS = `
   department,
   expiration_date, last_inspection_date, next_inspection_date,
   calibration_cert_no,
+  entity_name, country,
+  checklist_form_code, checklist_name, checklist_url,
+  inspection_generation_mode, inspection_frequency, inspection_period_unit,
   current_location_id, protocol_url, connection_type, usage_status,
   processor_mfg, processor_model,
   ram_mfg, ram_type, ram_speed, ram_slots, ram_channel, ram_size_gb,
@@ -437,6 +483,25 @@ function mapAsset(row: RawAsset): Asset {
     last_inspection_date: str(row.last_inspection_date),
     next_inspection_date: str(row.next_inspection_date),
     calibration_cert_no: str(row.calibration_cert_no),
+    entity_name: str(row.entity_name),
+    country: str(row.country),
+    checklist_form_code: str(row.checklist_form_code),
+    checklist_name: str(row.checklist_name),
+    checklist_url: str(row.checklist_url),
+    inspection_generation_mode: str(
+      row.inspection_generation_mode,
+    ) as InspectionGenerationMode | null,
+    // The only new integer here. `Number` rather than `parseInt`, and null
+    // preserved rather than coerced to 0, because 0 is refused by
+    // `assets_inspection_frequency_check` and `null` is a real state.
+    inspection_frequency:
+      row.inspection_frequency === null ||
+      row.inspection_frequency === undefined
+        ? null
+        : Number(row.inspection_frequency),
+    inspection_period_unit: str(
+      row.inspection_period_unit,
+    ) as InspectionPeriodUnit | null,
     purchase_price:
       row.purchase_price === null || row.purchase_price === undefined
         ? null
@@ -725,6 +790,21 @@ function normalise(input: Omit<AssetInput, "credentials">) {
     last_inspection_date: input.last_inspection_date || null,
     next_inspection_date: input.next_inspection_date || null,
     calibration_cert_no: text(input.calibration_cert_no),
+    entity_name: text(input.entity_name),
+    country: text(input.country),
+    checklist_form_code: text(input.checklist_form_code),
+    checklist_name: text(input.checklist_name),
+    checklist_url: text(input.checklist_url),
+    inspection_generation_mode: input.inspection_generation_mode || null,
+    // `Number("")` is 0, and 0 is refused by the check while "not recorded" is
+    // null — so the empty string has to be caught before the conversion, not
+    // after. Same shape as `purchase_price` above.
+    inspection_frequency:
+      input.inspection_frequency === null ||
+      Number.isNaN(input.inspection_frequency)
+        ? null
+        : input.inspection_frequency,
+    inspection_period_unit: input.inspection_period_unit || null,
     purchase_price:
       input.purchase_price === null || Number.isNaN(input.purchase_price)
         ? null

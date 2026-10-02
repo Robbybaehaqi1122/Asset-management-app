@@ -474,6 +474,16 @@
       "IT": "Asset IT",
       "HSSE": "Asset HSSE"
     },
+    "inspectionMode": {
+      "Manual": "Manual",
+      "Automatic": "Automatic"
+    },
+    "inspectionPeriod": {
+      "Daily": "Day(s)",
+      "Weekly": "Week(s)",
+      "Monthly": "Month(s)",
+      "Yearly": "Year(s)"
+    },
     "fields": {
       "hsseLegend": "Expiry, inspection and calibration",
       "hsseHint": "These four are what the spreadsheet does not cover and what an HSSE item always has. Network and credentials are not shown for this unit at all, and usage status stays hidden because its values describe how a computer is lent out.",
@@ -481,6 +491,16 @@
       "lastInspectionDate": "Last inspection",
       "nextInspectionDate": "Next inspection",
       "calibrationCertNo": "Calibration / test cert no.",
+      "registerLegend": "Inspection register",
+      "registerHint": "The schedule and paperwork this item is inspected against. Frequency and unit are one answer: clear either and both go. The register's Equipment Family is not asked for here, because it is the category you pick in the Identity tab.",
+      "entityName": "Entity (real name)",
+      "country": "Country",
+      "checklistFormCode": "Checklist form code",
+      "checklistName": "Checklist name",
+      "checklistUrl": "Checklist link",
+      "inspectionGenerationMode": "Generation mode",
+      "inspectionFrequency": "Inspection frequency",
+      "inspectionPeriodUnit": "Per",
       "assetCode": "Asset Code",
       "name": "Name",
       "description": "Description",

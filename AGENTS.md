@@ -24,10 +24,12 @@ repair, so the two tables the inventory depends on are written by nothing but th
 test fixtures. See The asset inventory, The form switches on a category code, and
 Database.
 
-**All fifteen migrations, including `20260927001500`, are applied to the remote**
-as of 2026-09-29. `db diff --linked` reports `No schema changes found`, and
-`pg_indexes` returns 27 for `public` on both the local and the remote database.
-The 14 `drop column` statements that `db diff --linked` listed while `01100` was
+**All sixteen migrations through `20260927001600` are applied to the remote**,
+with `01700` and `01800` authored and verified locally and **not yet pushed**.
+`db diff --linked` reported `No schema changes found` as of the `01600` push, and
+`pg_indexes` returns 27 for `public` on both the local and the remote database
+(`01800` adds no index). The 14 `drop column` statements that `db diff --linked`
+listed while `01100` was
 unpushed were the diff saying the remote was behind the files — not drift, and
 not something to fix by hand. The next migration will produce the same list again
 until it is pushed, and the way to tell the two apart is
@@ -225,6 +227,8 @@ supabase/
     └── 20260927001400_asset_category_department.sql  categories.department
     └── 20260927001500_asset_hsse_fields.sql  HSSE expiry/inspection/calibration
     └── 20260927001600_asset_current_locations.sql  current_locations + the FK
+    └── 20260927001700_asset_unit_scoping.sql  per-unit read policy
+    └── 20260927001800_asset_hsse_inspection_register.sql  HSSE register
 
 .github/
 ├── ISSUES_KNOWN.md            known problems, grouped by severity
@@ -256,14 +260,17 @@ vercel.json                    SPA rewrite only — no framework, no buildComman
 | `20260927001400_asset_category_department.sql` | `categories.department`, uniqueness per unit replacing the global one, the cross-unit and move-with-children guards; see Categories belong to a unit |
 | `20260927001500_asset_hsse_fields.sql` | the four HSSE columns and the `assets.department` trigger that keeps the unit in step with the category; see The asset form switches on the unit |
 | `20260927001600_asset_current_locations.sql` | `current_locations` as a deliberate copy of `locations`, `assets.current_location_id`, the free-text backfill, and the drop of the old column; see Current locations is reference data |
+| `20260927001700_asset_unit_scoping.sql` | `current_asset_unit()` and the per-unit `assets` read policy; authored and verified locally, **not pushed** |
+| `20260927001800_asset_hsse_inspection_register.sql` | the eight HSSE inspection-register columns, three closed sets, and the three Equipment Family categories; see The inspection register is the specification |
 
-**All fifteen are applied to the remote.** `db diff --linked` reports
+**Sixteen are applied to the remote; `01700` and `01800` are local only.** `db
+diff --linked` reports
 `No schema changes found`, which is the proof that the checked-in migrations and
-the live database agree — **and that will stop being true once `01600` is in the
+the live database agree — **and that will stop being true once `01800` is in the
 files but not on the remote.** Before the `01100` push it reported fourteen `drop
 column` statements; that was the diff saying the remote was behind the
 checked-in files, the normal state between authoring a migration and pushing it,
-not drift and not something to repair by hand. `01600` will produce the same
+not drift and not something to repair by hand. `01800` will produce the same
 reading until it is pushed.
 
 Read the ledger rather than trusting the CLI's wording, because this file
@@ -287,10 +294,12 @@ There are now **9 tables** in `public`, not 6: `01000` added `asset_credentials`
 "6 tables" were true when written and are listed in the table rows above for `001`
 and `003` — those describe what those two files did, not the current schema.
 
-**`01600` is authored and verified locally, and is NOT yet pushed.** The fifteen
-migrations through `01500` are on the remote; `01600` is the pending one, so
-`db diff --linked` will list its `drop column` until it is pushed. That is the
-same "remote is behind the files" reading the `01100` push produced, not drift.
+**`01600`, `01700` and `01800` are authored and verified locally, and are NOT
+yet pushed.** The sixteen
+migrations through `01600` are on the remote; `01700` and `01800` are the pending
+ones, so `db diff --linked` will list their changes until they are pushed. That is
+the same "remote is behind the files" reading the `01100` push produced, not
+drift.
 
 ### The CLI is not a dependency
 
@@ -417,8 +426,9 @@ triggers, `20260927000300` rls, `20260927000400` drop first-admin grant,
 `20260927000900` departments, `20260927001000` asset_inventory,
 `20260927001100` asset_dynamic_form, `20260927001200` asset_excel_headers,
 `20260927001300` asset_settings, `20260927001400` asset_category_department,
-`20260927001500` asset_hsse_fields. Read out of the linked project on
-2026-09-29, which is all fifteen and therefore nothing pending. That table, not
+`20260927001500` asset_hsse_fields, `20260927001600` asset_current_locations.
+Read out of the linked project on 2026-09-30, which is all sixteen and therefore
+`01700` and `01800` pending. That table, not
 the schema itself, is what the CLI consults to decide what is pending, and it is
 also the only trustworthy way to confirm a push landed.
 
@@ -1521,6 +1531,110 @@ only ever meant to be derived still has to be named, or nothing stops a direct
 write to it. That is the same mechanism as `profiles_protect_email` being
 `before update of email` and `profiles_guard_last_admin` being `of role`.
 
+## The inspection register is the specification
+
+`01800` is `Equipement HSSE PGT.xlsx` — note the filename's spelling — read with
+openpyxl from sheet `EN`, whose **headers are on row 2** because row 1 is the
+title `EQUIPMENT HSSE PGT`. Three sheets, and only one of them is data.
+
+**Four of the twelve headings already had a home.** `Serial Number/
+Immatriculation/Unique ID` is `assets.serial_number`, `Designation` is
+`assets.name`, and `Site` is the two existing location pickers. Only eight
+columns are new.
+
+### Equipment Family became the category, not a column
+
+Column 12 holds exactly three values — `Fire Safety and Emergency Response` (117
+rows), `Material Handling and Lifting Equipment` (9), `Vehicles and Road
+Transport` (1) — and it is the **only classification the workbook has**. There is
+no category column anywhere in the file. So the three are seeded as HSSE parent
+categories and a separate `equipment_family` column was refused: two
+classifications on one row that can disagree is the exact problem this repo
+refused seven times over in the IT inventory.
+
+**The consequence is a gap, and it is deliberate.** The workbook has no middle
+level either: `Designation` holds 127 distinct values that are mostly numbered
+instances — `Fire Extinguisher 1` through `Fire Extinguisher 90`, `SCBA 1`
+through `SCBA 4`. Deriving sub-categories from those means stripping a trailing
+number, which is an inference about intent rather than a value the file states,
+so **none are seeded**. An admin who wants them adds `Fire Extinguisher` / `SCBA`
+/ `Fire Truck` in Asset Settings, where `guard_category_parent` keeps them inside
+the unit. Until then an HSSE asset stores the family directly on
+`category_id`, which the form already supported.
+
+### `Type dequipement` is a misnomer, and it is two facts
+
+The workbook's column 6 is named "equipment type" and its values are checklist
+**document codes**:
+
+```
+FORM-PGT-HSE-CL-003-08-2025_Cheklist Fire Extinguisher_ver01
+```
+
+So column 6 is `checklist_form_code` and column 10 is `checklist_name`. Two
+headings, two facts, and the same shape as `Firmware` versus `Firmware Version`
+in the IT workbook — which is why they are two columns rather than one holding
+whichever half was noticed first. A rename should not invalidate the code printed
+on a signed sheet, and vice versa.
+
+### Frequency and unit are one schedule in two columns
+
+`Frequence` is `1` and `Periodicite` is `Monthly`. An integer cannot hold
+`1x Monthly`, and a single text column holding `"1 Monthly"` cannot be indexed for
+"inspected more often than monthly", so the number and the unit are separate and
+`assets_inspection_schedule_paired_check` refuses one without the other — the
+pairing constraint `01200` wrote for `storage_size_gb` / `storage_size_text`.
+The form clears the pair as a pair, in both directions.
+
+### Two of the twelve columns have no data, and one of those was still added
+
+`Checklist Link` is empty in **all 127 rows**, and `Serial Number` is empty in
+every row that is not a placeholder. `Serial Number` maps to an existing column
+and costs nothing. `Checklist Link` was **added anyway** — deliberately
+different from the `img_1` / `img_2` / `img_3` columns `01200` refused, which
+would have been three text columns promising an attachment this project has no
+Storage bucket for. A URL is plain text and promises nothing.
+
+### The closed sets are the file's values, plus two inferences, and they are marked as such
+
+`assets_inspection_generation_mode_check` is `Manual` / `Automatic`, and
+`assets_inspection_period_unit_check` is `Daily` / `Weekly` / `Monthly` /
+`Yearly`. The workbook observes only **`Manual`**, and only **`Daily`** and
+**`Monthly`**. `Automatic` is the counterpart of the French sheet's `Manuel` /
+`Automatique` pair; `Weekly` and `Yearly` are inferred, and they are there
+because an inspection register that cannot express an annual fire-extinguisher
+check would refuse real data with a `23514` the admin cannot act on. The
+migration says so in a comment, so the next reader does not mistake them for the
+file's values.
+
+### The other two sheets, and the 90 rows that are not data
+
+`FR` is **not PGT data**: two example rows belonging to a different company
+(`AGL Liberia`, `AGL Cote d'Ivoire`, dummy serials `XX34JHJ` / `MM45E`). It is
+ignored — this app is English-only, and those rows are a template rather than
+inventory. `Feuil1` is the six-item family list, three English and three French,
+which is where the three seeded categories come from.
+
+**90 of the 127 `EN` rows hold the literal string `on progress`** in nearly every
+column. Only 37 are real. That does not affect the schema, but it is the reason
+nobody should bulk-import this file without filtering it first.
+
+Verified on the local stack, 15 assertions in one transaction that ends in
+`rollback`: the three families seed as HSSE parents with **no invented
+children**, all eight columns exist and are nullable, the workbook's real row is
+accepted verbatim, `assets_sync_department` files it as HSSE **without the client
+sending the unit**, an annual `1 x Yearly` schedule is expressible, an IT asset is
+untouched, and each of `manuel`, `Month`, frequency `0`, frequency-without-unit and
+unit-without-frequency is refused with `23514`.
+
+### The list did not change, and that is a deliberate omission
+
+The request was the **form**, so the seven table columns are unchanged and none of
+the eight new fields are shown there. An HSSE row's schedule is one click away in
+the form. If a column ever is wanted, `Entity` is the likeliest — it is constant
+across every row in the register and so is the one that reads as noise in a
+list.
+
 ### Switching unit clears the category pickers
 
 The chosen category belongs to the unit it was chosen in. Keeping it would leave a
@@ -2384,6 +2498,10 @@ These were deliberate. Do not "clean them up" without asking.
 | `assets.department` is derived from the category, never written by the client | It exists so the list can filter by unit without a join. `assets_sync_department` overwrites rather than raising, because a client cannot tell "the column was not sent" from "the default was sent", and an honest insert that omitted it would otherwise be refused. The trigger is on `update of category_id, department` — both, because an `UPDATE OF` list only fires for a column actually in the SET list |
 | The four HSSE fields are typed columns, not a `jsonb specifications` blob | Their types are already known, so a free-form column would accept `"31/12/2026"` beside a real date with nothing to object, and would make "expire within 30 days" unindexable. Verified: a non-date `expiration_date` is refused |
 | `next_inspection_date` is stored, not derived from the last one | The interval between inspections is a policy, not a fact, and policies change without a migration being the right place to record it |
+| HSSE inspection register: `Equipment Family` became `category_id`, not a column | The workbook's only classification is 3 values that map onto the *top level* of `categories`, so they are seeded as HSSE parents. A separate `equipment_family` beside `category_id` is two classifications on one row that can disagree, which is the problem this repo refused seven times over in the IT inventory. The cost is a missing middle level, hand-managed in Asset Settings |
+| Inspection frequency and period unit are two columns, and neither is writable alone | The register reads `1` + `Monthly`. An integer cannot hold `1x Monthly`, and one text column cannot be indexed for "inspected more often than monthly". `assets_inspection_schedule_paired_check` refuses half of one, and the form clears the pair as a pair in both directions — same treatment `storage_size_gb` / `storage_size_text` got |
+| `Checklist Link` was added although it is empty in all 127 rows | A URL is plain text and promises nothing. This is the deliberate difference from the `img_1` / `img_2` / `img_3` columns `01200` refused, which promised an attachment this project has no Storage bucket for |
+| `Weekly` and `Yearly` are in the period-unit check although the workbook never uses them | Marked as inferred in both the migration comment and this table. The workbook observes `Daily` and `Monthly` only, and a register that cannot express an annual fire-extinguisher check refuses real data with a `23514` the admin cannot act on |
 | HSSE gets three tabs, not five; `usage_status` is hidden for it; the specification tab is renamed **Inspection** | An HSSE item has no network and no device login, and a tab that is empty for every single row of a whole unit is noise rather than a safety net. The earlier "empty tab is better than a vanishing tab" argument holds within a unit and not across units. `usage_status` is the IT workbook's own column and describes computer lending; the `loanStatus` badge stays because it renders `assets.status`, which is true for both units. See The asset form switches on the unit |
 | `status` is not a field on the asset form, and `assigned` is offered nowhere in the module | `available` and `assigned` are derived from the loans and `assets_guard_status` refuses a contradicting write, so a form offering either would offer something the database rejects. `setAssetStatus` takes `Exclude<AssetStatus, "assigned">` so the un-derivable value cannot even be passed |
 | The asset list is readable by every signed-in user, unlike `/users` | Stock belongs to the company rather than one department, and `assets_select_authenticated` is `using (true)`, so gating the read hands every staff member an empty page. Staff lose the Credentials tab and the write actions, and the credential was never in their response |
@@ -2605,6 +2723,20 @@ not go looking for them unprompted.
 - Don't re-add a port-name array beside the `port_*` counts, and don't add a
   fourth free-text column next to a constrained one. Two models for one fact is
   the problem; the count columns are the model the workbook uses.
+- Don't add an `equipment_family` column beside `category_id`. The workbook's
+  `Equipment Family` is the three seeded HSSE parent categories, and a second
+  classification on the same row is a second source of truth. See The
+  inspection register is the specification.
+- Don't let `inspection_frequency` and `inspection_period_unit` be written
+  independently. They are one schedule; the check refuses half of one and the
+  form clears the pair as a pair.
+- Don't add a sub-category by stripping the trailing number off a `Designation`
+  such as `Fire Extinguisher 12`. That is an inference about intent rather than a
+  value the workbook states, which is why none are seeded; add them in Asset
+  Settings instead.
+- Don't bulk-import `Equipement HSSE PGT.xlsx` unfiltered. 90 of its 127 `EN` rows
+  hold the literal string `on progress`, and the `FR` sheet is two example rows
+  from a different company.
 - Don't read the workbook's XML with a regex to decide its shape. A hand-rolled
   reader reported 26 columns for `NETWORK-DEVICES` and missed four port columns
   that exist. `openpyxl` is what reads it correctly.
