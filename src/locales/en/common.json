@@ -409,8 +409,13 @@
     "formTabsLabel": "Asset detail sections",
     "editLabel": "Edit {name}",
     "deleteLabel": "Delete {name}",
-    "statusLabel": "Change the status of {name}",
     "statusLabel2": "New status",
+    "rowActions": {
+      "menuLabel": "Actions for {name}",
+      "edit": "Edit details",
+      "changeStatus": "Change status",
+      "delete": "Delete asset"
+    },
     "table": {
       "assetCode": "Asset Code",
       "name": "Name",
@@ -418,8 +423,7 @@
       "location": "Location",
       "status": "Status",
       "condition": "Condition",
-      "actions": "Actions",
-      "changeStatus": "Status"
+      "actions": "Actions"
     },
     "filters": {
       "search": "Search",

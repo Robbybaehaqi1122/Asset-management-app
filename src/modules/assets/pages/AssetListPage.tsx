@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useTranslation } from "react-i18next";
 
 import PageBreadcrumb from "@/components/common/PageBreadCrumb";
@@ -10,6 +17,7 @@ import TextArea from "@/components/form/input/TextArea";
 import Select from "@/components/form/Select";
 import Badge from "@/components/ui/badge/Badge";
 import Button from "@/components/ui/button/Button";
+import { DropdownItem } from "@/components/ui/dropdown/DropdownItem";
 import { Modal } from "@/components/ui/modal";
 import {
   Table,
@@ -18,9 +26,17 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { useClickOutside } from "@/hooks/useClickOutside";
 import { useIsAdmin } from "@/hooks/useIsAdmin";
 import { useModal } from "@/hooks/useModal";
-import { CloseIcon, PencilIcon, PlusIcon, TrashBinIcon } from "@/icons";
+import {
+  CloseIcon,
+  MoreDotIcon,
+  PencilIcon,
+  PlusIcon,
+  SliderHorizontalIcon,
+  TrashBinIcon,
+} from "@/icons";
 
 import {
   createAsset,
@@ -535,6 +551,181 @@ const NETWORK_PORTS = [
   label: string;
 }>;
 
+/**
+ * The per-row action menu: one trigger, and the three actions behind it.
+ *
+ * **Why this is not the shared `Dropdown` primitive.** That panel is
+ * `absolute inset-e-0`, and it works everywhere else in the app because nothing
+ * here puts it inside a scroll container. The table is wrapped in
+ * `overflow-x-auto`, and that makes the vertical axis a scroll container too —
+ * per CSS, when one axis is not `visible`, `visible` computes to `auto`. An
+ * absolutely positioned menu is out of flow, so it does not extend the scrollable
+ * height, which means it is *clipped* rather than reachable by scrolling. For
+ * every row in the lower part of a long table the menu would open and be
+ * invisible, with no error and no way to tell why.
+ *
+ * `position: fixed` is not clipped by an `overflow` ancestor, so the panel is
+ * positioned from the trigger's viewport rect instead. It would be clipped again
+ * if some ancestor had a `transform`, `filter`, `backdrop-filter` or `will-change`,
+ * because any of those makes that element the containing block for fixed
+ * descendants — there is none on this page, and that is the precondition for this
+ * working at all.
+ *
+ * The panel stays a DOM child of the wrapper on purpose. `useClickOutside` is
+ * attached to the wrapper, so a click on the trigger counts as *inside* and the
+ * toggle is left to close the menu; had the panel been portalled to `document.body`
+ * the same click would have fired the outside handler and then the toggle, and the
+ * menu would refuse to close.
+ */
+function RowActions({
+  row,
+  isOpen,
+  onToggle,
+  onClose,
+  onEdit,
+  onChangeStatus,
+  onDelete,
+}: {
+  row: Asset;
+  isOpen: boolean;
+  onToggle: () => void;
+  onClose: () => void;
+  onEdit: () => void;
+  onChangeStatus: () => void;
+  onDelete: () => void;
+}) {
+  const { t } = useTranslation("common", { keyPrefix: "assets.rowActions" });
+
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  useClickOutside(wrapperRef, onClose);
+
+  /**
+   * Place the panel against the trigger's viewport rect.
+   *
+   * Writes `style.top` / `style.left` on the node rather than through state: the
+   * coordinates are a layout fact rather than application state, and a
+   * `setState` here would mean a render that paints the panel at its previous
+   * position first — a visible jump on the very first open, when `top` is still 0.
+   * `useLayoutEffect` closes even that window, because it runs before paint.
+   */
+  useLayoutEffect(() => {
+    if (!isOpen) return;
+
+    const trigger = triggerRef.current;
+    const panel = panelRef.current;
+    if (!trigger || !panel) return;
+
+    const place = () => {
+      const rect = trigger.getBoundingClientRect();
+
+      // Measured from the panel when there is one, estimated before the first
+      // layout otherwise. Three rows of `menu-dropdown-item` are ~40px each.
+      const height = panel.offsetHeight || MENU_ESTIMATED_HEIGHT;
+      const width = panel.offsetWidth || MENU_WIDTH_PX;
+      const gap = 4;
+      const viewportPad = 8;
+
+      const roomBelow = window.innerHeight - rect.bottom;
+      const roomAbove = rect.top;
+
+      // Flip above the trigger when below would run off the bottom, and only
+      // then: a menu that flips on a hair's difference between two tall windows
+      // is worse than one that consistently hangs down.
+      const top =
+        roomBelow < height + gap + viewportPad && roomAbove > roomBelow
+          ? rect.top - height - gap
+          : rect.bottom + gap;
+
+      // Aligned to the trigger's trailing edge, then clamped so the panel cannot
+      // leave the viewport on a narrow screen where the trigger is at the edge.
+      const left = Math.max(
+        viewportPad,
+        Math.min(rect.right - width, window.innerWidth - width - viewportPad),
+      );
+
+      panel.style.top = `${Math.round(top)}px`;
+      panel.style.left = `${Math.round(left)}px`;
+    };
+
+    place();
+
+    // Repositioned rather than closed, because a fixed panel does not travel with
+    // the page: scroll the table and an absolutely positioned menu would stay put
+    // while its trigger moved away. `true` catches scrolls on any ancestor, not
+    // just the window, which is what a table inside a scroll container needs.
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [isOpen]);
+
+  const itemClass = "menu-dropdown-item menu-dropdown-item-inactive";
+  const dangerClass =
+    "text-error-600 hover:text-error-700 dark:text-error-400 dark:hover:text-error-300";
+
+  return (
+    <div ref={wrapperRef} className="relative flex justify-end">
+      <button
+        ref={triggerRef}
+        type="button"
+        onClick={onToggle}
+        aria-haspopup="menu"
+        aria-expanded={isOpen}
+        aria-label={t("menuLabel", { name: row.name })}
+        className="flex size-8 items-center justify-center rounded-lg text-gray-500 transition hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-white/5 dark:hover:text-white"
+      >
+        <MoreDotIcon className="size-5" />
+      </button>
+
+      {isOpen && (
+        <div
+          ref={panelRef}
+          role="menu"
+          // `fixed` is what escapes the table's scroll container. `z-50` puts the
+          // panel above the table rows it overlaps and the page chrome; there is
+          // no sticky header on this table, so nothing else competes for it.
+          // `w-48` matches `MENU_WIDTH_PX` below.
+          className="fixed z-50 w-48 rounded-xl border border-gray-200 bg-white shadow-theme-lg dark:border-gray-800 dark:bg-gray-dark"
+          style={{ top: 0, left: 0 }}
+        >
+          <DropdownItem
+            onClick={onEdit}
+            baseClassName={itemClass}
+            className={dangerClass}
+          >
+            <PencilIcon className="size-4 shrink-0" />
+            {t("edit")}
+          </DropdownItem>
+
+          <DropdownItem onClick={onChangeStatus} baseClassName={itemClass}>
+            <SliderHorizontalIcon className="size-4 shrink-0" />
+            {t("changeStatus")}
+          </DropdownItem>
+
+          <DropdownItem
+            onClick={onDelete}
+            baseClassName={itemClass}
+            className={dangerClass}
+          >
+            <TrashBinIcon className="size-4 shrink-0" />
+            {t("delete")}
+          </DropdownItem>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** `w-48`, kept as a number because the placement maths needs it in pixels. */
+const MENU_WIDTH_PX = 192;
+/** Fallback height before the panel has been laid out once. */
+const MENU_ESTIMATED_HEIGHT = 128;
+
 export default function AssetListPage({ unit }: { unit: AssetUnit }) {
   const { t } = useTranslation("common", { keyPrefix: "assets" });
   const isAdmin = useIsAdmin();
@@ -565,6 +756,17 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
   const [nextStatus, setNextStatus] =
     useState<SelectableAssetStatus>("maintenance");
   const [pendingDelete, setPendingDelete] = useState<Asset | null>(null);
+
+  /**
+   * Id of the row whose action menu is open, or `null` for none.
+   *
+   * One id rather than a `Set`, and that is the whole reason this is not three
+   * buttons: a table of a hundred rows must not be able to open a hundred menus
+   * at once. An id also identifies the row after a delete — `pendingDelete` is
+   * about the modal, this is about the trigger, and the trigger's row is gone by
+   * the time the modal closes.
+   */
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
 
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -777,6 +979,21 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
     });
   }, [assets, search, filterCategory, filterLocation, filterStatus]);
 
+  /**
+   * Open one row's action menu, or close it if that same row is already open.
+   *
+   * Toggling on the id rather than a boolean is what keeps a single menu open: a
+   * boolean shared by every row would mean clicking one trigger closes whichever
+   * other row was open, and clicking it again reopens the first one. With the id
+   * as state, the two clicks are the same transition and nothing else moves.
+   *
+   * Closing on open of another is not extra logic — it is the same assignment,
+   * because `openMenuId` can only hold one row's id.
+   */
+  const handleToggleMenu = (rowId: string) => {
+    setOpenMenuId((prev) => (prev === rowId ? null : rowId));
+  };
+
   const handleOpenCreate = () => {
     setForm(EMPTY_FORM);
     setSection("identity");
@@ -787,6 +1004,7 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
   };
 
   const handleOpenEdit = (row: Asset) => {
+    setOpenMenuId(null);
     setForm(formFromAsset(row, categories));
     setSection("identity");
     setEditingId(row.id);
@@ -881,6 +1099,7 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
   };
 
   const handleOpenStatus = (row: Asset) => {
+    setOpenMenuId(null);
     setStatusError(null);
     // An asset out on loan is `assigned`, which is not in this list. Defaulting
     // to `maintenance` is the safe landing spot: it is the one status a person
@@ -917,6 +1136,7 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
   };
 
   const handleOpenDelete = (row: Asset) => {
+    setOpenMenuId(null);
     setDeleteError(null);
     setPendingDelete(row);
     deleteModal.openModal();
@@ -1173,32 +1393,15 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
                     </TableCell>
                     {isAdmin && (
                       <TableCell className="px-6 py-3">
-                        <div className="flex items-center justify-end gap-2">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => handleOpenEdit(row)}
-                            aria-label={t("editLabel", { name: row.name })}
-                          >
-                            <PencilIcon className="size-4" />
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => handleOpenStatus(row)}
-                            aria-label={t("statusLabel", { name: row.name })}
-                          >
-                            {t("table.changeStatus")}
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => handleOpenDelete(row)}
-                            aria-label={t("deleteLabel", { name: row.name })}
-                          >
-                            <TrashBinIcon className="size-4" />
-                          </Button>
-                        </div>
+                        <RowActions
+                          row={row}
+                          isOpen={openMenuId === row.id}
+                          onToggle={() => handleToggleMenu(row.id)}
+                          onClose={() => setOpenMenuId(null)}
+                          onEdit={() => handleOpenEdit(row)}
+                          onChangeStatus={() => handleOpenStatus(row)}
+                          onDelete={() => handleOpenDelete(row)}
+                        />
                       </TableCell>
                     )}
                   </TableRow>
