@@ -2199,6 +2199,122 @@ Verified after the fix through PostgREST with a staff session: `assigned` →
 `available`, and an admin issue still flips it back, and a staff INSERT is still
 refused with `42501`.
 
+### The printed document, and what a batch becomes on paper
+
+`src/modules/handover/document/` and `.../components/HandoverPrintModal.tsx` render
+the Word template `260911-MULTI-SOEHARDONO.docx` from handover data, and print it
+with `window.print()`.
+
+**The document is per recipient, not per row, and one batch property makes that
+possible.** A printed form has *one* device table and *one* signature block, so a
+batch of eight assets to one person is one document with eight rows — not eight
+documents. `getHandoverDocument` takes one `assignments` row and returns its
+siblings, grouped on `(user_id, assigned_by, assigned_at)`.
+
+That grouping works **because the batch was sent as one multi-row insert**:
+`assigned_at` defaults to `now()`, and `now()` is the *transaction* timestamp, so
+every row of a single statement carries the identical value. The original reason for
+one statement was all-or-nothing writes; this is a second property that arrived by
+accident. **Changing it to N inserts would break document grouping silently** —
+every row would become its own one-device document. Verified: a three-asset batch
+reads back as exactly three assets, and a second batch issued two seconds later for
+the same person is not pulled in.
+
+**`window.print()`, not a PDF library.** The browser's own pipeline produces A4 with
+the right margins and fonts and adds **nothing to the bundle** — `AGENTS.md` forbids a
+new dependency without asking, and `jsPDF`/`html2pdf` would be 200–400 kB for a worse
+result. "Save as PDF" is one click away in that dialog, which is also the only place
+the user can choose where the file goes: **a browser cannot write to a folder
+silently**, and that is a security boundary rather than an omission.
+
+**The print stylesheet is what makes it work, and the body class is load-bearing.**
+`window.print()` prints the whole page, sidebar and all, so `index.css` has a
+`@media print` block keyed on `body.handover-printing` that removes the whole
+application and leaves only the paper.
+
+**The overlay does not use `Modal`, and it is rendered through a portal onto
+`document.body`.** Both are load-bearing, and both were learned the hard way.
+
+- **`Modal` has no `role="dialog"`.** It renders `<div class="modal …">`, a backdrop
+  div, then the panel. The first version of the stylesheet targeted `[role="dialog"]`
+  to strip the panel's chrome, so **every one of those rules matched nothing**: the
+  panel kept `position: relative`, `max-w-5xl`, and its parent's `flex items-center`
+  centring. Because the panel is `relative`, the paper's `position: absolute`
+  anchored to the *panel*, not the page.
+- **So the paper is a direct child of `<body>`**, and one rule removes everything:
+  `body.handover-printing > *:not(.handover-print-root) { display: none }`. The three
+  hooks between `<body>` and the paper — `handover-print-root`, `-panel`, `-sheet` —
+  are the complete list of classes in the chain, so there is nothing left to guess at.
+  Escape-to-close and backdrop-click are reimplemented; those were the only two
+  behaviours that came from `Modal`.
+
+**`display: none`, not `visibility: hidden` — the earlier reasoning here was wrong.**
+`visibility` takes an element out of sight but **leaves it occupying space**, so every
+hidden ancestor above the paper still reserved its height. The app shell is a
+full-viewport flex layout, so the document printed *below* that reserved space: a
+blank block across the top third of page one, above the letterhead. `display: none`
+removes the box, which is what "not part of the paper" means.
+
+**`@page` sets `size: A4` and `margin: 0`, and both are needed.**
+
+- `margin: 0` because the paper draws its own margins — `article` is `w-[210mm]` with
+  `p-[19mm]`. Any printable margin makes the area narrower than the paper's own fixed
+  width, and the browser resolves that by scaling or clipping sideways. 19mm ≈ 0.75in
+  is inside every printer's unprintable margin.
+- `size: A4` because `@page` otherwise inherits the **printer's default paper**.
+  Measured with headless Chrome: without it the PDF came out `612×792pt` — US Letter —
+  and a 210×297mm sheet cannot fit that, so it spilled onto a second, mostly empty
+  page. Verified as `594.96×841.92pt` with it.
+
+The class is on `<body>` rather than the overlay because the portal puts the overlay on
+the body and no other ancestor exists a stylesheet could hook. **It is removed on
+unmount** — left behind by a cancelled print dialog, the next `window.print()` anywhere
+in the app, including the browser's own Ctrl+P, would print a blank page.
+
+**A canvas is not printable, and it must not be scaled twice.** The printed signature
+is the PNG `SignaturePad` emits, never the `<canvas>`. Its context is put into
+CSS-pixel space with `ctx.scale(dpr, dpr)`, so pointer coordinates are **not**
+multiplied by `dpr` again — doing both scales by `dpr²`, and on a 2× display a stroke
+aimed at the middle of the box lands four times too far out, outside it.
+
+**The issuer's Department is read from the document, never from their name.** The
+print form seeds both department dropdowns from the loaded handover. The issuer's used
+to be seeded with `issuerName`, which is a *person's* name, so it matched no option on
+every document and fell through to the first department in the list — a signed form
+naming a department the issuer is not in, with nothing on screen to suggest it.
+`getHandoverDocument` therefore embeds `issuedBy:…(department:departments(name))` and
+returns `issuerDepartment`.
+
+**Qty and Unit are print-form state and are deliberately not saved.** A handover row
+*is* one asset, so the quantity is always 1 and there is no column for it. But the
+paper template has a Qty column and an admin handing over "3 mice" has a real use for
+it, so it lives in the modal and nowhere else. Inventing a column would be a second
+source of truth for a number that only exists on paper. Each cell prints the typed
+value and shows the input only on screen, because **a form control does not print**.
+
+**The Name line is not an input.** The recipient's name comes from the roster and the
+issuer's from the account; making either editable would mean a document signed for
+somebody other than the person recorded as holding the assets. Department and date
+*are* editable, because both vary per printing and neither is a fact about the
+handover. `pickAvailable` falls back to the first department option when the recorded
+one is not in the list, because a `<select>` matching no option renders blank and
+blank would read as "no department" rather than "moved since".
+
+**The legal text is data, not i18n, and a script proves it.** `documentContent.ts`
+holds the bilingual Terms of Use verbatim from the .docx. A translation system is for
+interface text a translator keeps current; a legal clause is a fixed artefact that
+must print identically every time, and a missing key must not be able to remove a
+clause from a form somebody is about to sign. `scripts/verify_handover_document.py`
+compares every long literal in that file against the .docx and exits non-zero on a
+mismatch.
+
+**That script earned its place immediately.** It caught two corruptions that `tsc`,
+`eslint` and `prettier` all passed: a mangled clause 3c, and a footer where a space
+had been added before the pipe. Both came from the same root cause — the first
+extraction's regex `<w:t[^>]*>` also matched `<w:tab/>`, silently dropping a word.
+The correct pattern is `<w:t(?![a-z])[^>]*>`. A legal document is not something to
+retype by hand, and this is the mechanical check that says so.
+
 ### Several assets to one person, and why there is still no child table
 
 Handing somebody a laptop without its charger is not the thing anyone does, and
@@ -3351,6 +3467,37 @@ not go looking for them unprompted.
   error**. See Asset handover is the loans table, finally.
 - Don't delete an open handover. Return it first; `deleteHandover` throws
   `HandoverOpenError` on purpose.
+- Don't retype the document's legal text from the .docx by hand, and don't trust
+  `tsc` to catch a mistyped clause. `python scripts/verify_handover_document.py`
+  compares it verbatim; run it after touching `documentContent.ts`.
+- Don't send a handover batch as N inserts. It breaks document grouping, because
+  `getHandoverDocument` finds the batch by `(user_id, assigned_by, assigned_at)` and
+  `now()` only repeats within one transaction. Every row would print as its own
+  one-device form.
+- Don't let `body.handover-printing` survive a closed modal, and don't add a reset-
+  on-close effect to the print modal to compensate. The parent already unmounts it
+  (`printHandoverId !== null && …`), which resets signatures and quantities for free —
+  and a reset effect is a synchronous `setState` in an effect on top of that.
+- Don't style the handover print overlay through `[role="dialog"]`, and don't put it
+  back inside `@/components/ui/modal`. `Modal` renders no such attribute, so every
+  rule written against it silently matches nothing and the paper prints underneath a
+  `relative`, `max-w-5xl`, flex-centred panel — a blank block above the letterhead and
+  the sheet scaled to fit. Keep the overlay a portal onto `<body>` and its three
+  `handover-print-*` hooks.
+- Don't hide the app with `visibility: hidden` to print something. `visibility`
+  leaves the box in flow, and the full-viewport shell then reserves its height above
+  the document. `display: none` on `body.handover-printing > *:not(…)` is what
+  "not part of the paper" means.
+- Don't leave `size: A4` off `@page`, and don't give `@page` a printable margin. The
+  paper is `w-[210mm] p-[19mm]` and draws its own; without `size` the PDF inherits
+  the printer's default paper (measured as 612×792pt US Letter under headless Chrome)
+  and a 210×297mm sheet spills onto a second, mostly empty page.
+- Don't multiply `SignaturePad` pointer coordinates by `devicePixelRatio` **and** call
+  `ctx.scale(dpr, dpr)`. That scales by `dpr²`, so on a 2× display a stroke aimed at
+  the middle of the box is drawn four times too far out and lands outside it. The
+  context is already in CSS-pixel space; `lastRef` stores CSS pixels for this reason.
+- Don't make the signature block's Name field an input. The name is a fact about the
+  handover; the department and date are facts about the printing.
 - Don't order an embedded resource with `alias:column` or `alias.column`. It is
   `alias(column)` — parentheses. The first two are hard `PGRST100`s, and the real
   trap is leaving the old bare `.order("column")` in place, which returns 200 and

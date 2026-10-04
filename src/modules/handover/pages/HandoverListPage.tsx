@@ -7,6 +7,7 @@ import Label from "@/components/form/Label";
 import Checkbox from "@/components/form/input/Checkbox";
 import Input from "@/components/form/input/InputField";
 import Select from "@/components/form/Select";
+import HandoverPrintModal from "@/modules/handover/components/HandoverPrintModal";
 import TextArea from "@/components/form/input/TextArea";
 import Badge from "@/components/ui/badge/Badge";
 import Button from "@/components/ui/button/Button";
@@ -136,6 +137,14 @@ export default function HandoverListPage() {
 
   const issueModal = useModal();
   const deleteModal = useModal();
+  /**
+   * The handover whose document is open, or null.
+   *
+   * A single id rather than a boolean because the modal has to know **which** row to
+   * read — one handover row is one device, and the document is the whole batch that
+   * row belongs to.
+   */
+  const [printHandoverId, setPrintHandoverId] = useState<string | null>(null);
 
   const [issueForm, setIssueForm] = useState<IssueForm>(EMPTY_ISSUE);
   const [targets, setTargets] = useState<HandoverTarget[]>([]);
@@ -762,6 +771,7 @@ export default function HandoverListPage() {
                           setOpenMenuId={setOpenMenuId}
                           onReturn={() => void handleReturn(row)}
                           onDelete={() => handleOpenDelete(row)}
+                          onPrint={() => setPrintHandoverId(row.id)}
                         />
                       </td>
                     </tr>
@@ -772,6 +782,16 @@ export default function HandoverListPage() {
           </div>
         )}
       </div>
+
+      {/* The printable document. Mounted only once an id exists so its data fetch
+          cannot fire for a null row on a page that never opened it. */}
+      {printHandoverId !== null && (
+        <HandoverPrintModal
+          handoverId={printHandoverId}
+          isOpen
+          onClose={() => setPrintHandoverId(null)}
+        />
+      )}
 
       <Modal
         isOpen={issueModal.isOpen}
@@ -1178,6 +1198,7 @@ function HandoverRowActions({
   setOpenMenuId,
   onReturn,
   onDelete,
+  onPrint,
 }: {
   row: Handover;
   isOpen: boolean;
@@ -1189,6 +1210,7 @@ function HandoverRowActions({
   setOpenMenuId: (id: string | null) => void;
   onReturn: () => void;
   onDelete: () => void;
+  onPrint: () => void;
 }) {
   const { t } = useTranslation("common", { keyPrefix: "handover" });
   const isMenuOpen = openMenuId === row.id;
@@ -1245,6 +1267,12 @@ function HandoverRowActions({
 
       {isMenuOpen && (
         <Dropdown isOpen onClose={() => setOpenMenuId(null)}>
+          {/* Print first, and always offered: a document is wanted whether the
+              handover is still out or already back, and this item can never be
+              refused — there is no rule that stops somebody printing a record they
+              are allowed to read. */}
+          <DropdownItem onClick={run(onPrint)}>{t("print")}</DropdownItem>
+
           {/* Return only while the handover is open. A closed one has nothing to
               close, and offering it would produce a `23514` from
               `assignments_guard_asset_available` for a nonsensical edit. */}

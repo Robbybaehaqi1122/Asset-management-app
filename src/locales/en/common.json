@@ -762,6 +762,50 @@
       "delete": "The handover could not be deleted.",
       "notAvailableNamed": "Nothing was saved, because {assets} is no longer available to hand over. It may have been handed to somebody else while this form was open. Reload and pick again."
     },
-    "issuedMany": "{count} handovers issued."
+    "issuedMany": "{count} handovers issued.",
+    "print": "Print handover sheet"
+  },
+  "handoverPrint": {
+    "title": "Handover document",
+    "toolbarHint": "Check the details, sign the boxes, then print or save as PDF.",
+    "close": "Close",
+    "print": "Print / Save as PDF",
+    "loading": "Preparing the document…",
+    "loadError": "This document could not be prepared. Please try again.",
+    "notFound": "That handover record could not be found. It may have been deleted.",
+    "documentTitle": "Company Device Handover & Disclaimer",
+    "documentTitleId": "Serah Terima & Pernyataan Perangkat Perusahaan",
+    "companyLabel": "Company",
+    "partyLineEn": "Mr/Ms. ______________________________, (\"Employee\").",
+    "partyLineId": "Bapak/Ibu",
+    "partyTitleId": "(\"Karyawan\").",
+    "employeeLabel": "Employee",
+    "noNumber": "(no document number on this asset)",
+    "devicesHeading": "Devices Handed Over",
+    "devicesHeadingId": "Perangkat yang Diserahkan",
+    "termsHeadingId": "Terms of Use / Ketentuan Penggunaan",
+    "signatureHeading": "Signatures",
+    "signatureHeadingId": "Tanda Tangan",
+    "colNo": "No",
+    "colDevice": "Device Details (Type / Brand / Model)",
+    "colDeviceId": "Rincian Perangkat (Jenis / Merek / Model)",
+    "colAssetTag": "Asset Tag / Serial Number",
+    "colAssetTagId": "No. Aset / No. Seri",
+    "colQty": "Qty",
+    "colUnit": "Unit",
+    "colNotes": "Notes",
+    "colNotesId": "Keterangan",
+    "defaultUnit": "Unit",
+    "qtyLabel": "Quantity for {code}",
+    "unitLabel": "Unit for {code}",
+    "fieldName": "Name",
+    "fieldDept": "Dept",
+    "fieldDate": "Date",
+    "signatureLabel": "Signature of {role}",
+    "signaturePlaceholder": "Click here and sign",
+    "signatureClear": "Clear signature",
+    "errors": {
+      "print": "The document could not be printed. Please try again."
+    }
   }
 }

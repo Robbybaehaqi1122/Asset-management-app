@@ -491,6 +491,211 @@ export async function getHandoverUserOptions(): Promise<HandoverUserOption[]> {
 }
 
 /**
+ * Everything the printed document needs about one handover.
+ *
+ * **A separate read rather than a wider `HANDOVER_COLUMNS`.** The list needs a code,
+ * a name and a condition; the document needs the serial number, the category and
+ * the location as well. Widening the list constant would ship those three columns on
+ * every list load and every row, to serve a screen opened once per printing.
+ *
+ * ## How one handover row is turned back into a whole batch
+ *
+ * A printed document is **per recipient, not per row** — the template has one device
+ * table and one signature block, and a batch of eight assets to one person is one
+ * document with eight rows in it. So this takes one `assignments` row and returns
+ * its siblings.
+ *
+ * The grouping key is `(user_id, assigned_by, assigned_at)`, and that works because
+ * of how the batch was written: `issueHandover` sends **one** multi-row insert,
+ * `assigned_at` is left to its `now()` default, and `now()` is the *transaction*
+ * timestamp — identical for every row of a single statement. So the three columns
+ * match exactly for one batch, and differ between any two separate handovers even
+ * one issued a second apart.
+ *
+ * That is a second property of the batch being one statement, and it arrived by
+ * accident: the original reason was all-or-nothing writes. Worth knowing, because
+ * changing it to N inserts would break the document grouping silently — every row
+ * would become its own one-device document.
+ */
+export type HandoverDocumentAsset = {
+  id: string;
+  assetCode: string;
+  serialNumber: string | null;
+  name: string;
+  /** The category, which is the template's "Type / Brand / Model". */
+  categoryName: string | null;
+  /** Where the asset is registered — the document's "Notes" column. */
+  locationName: string | null;
+  condition: AssetCondition;
+  handoverDocNo: string | null;
+};
+
+export type HandoverDocument = {
+  /** The whole batch, in the order the rows were inserted. */
+  assets: HandoverDocumentAsset[];
+  /** Recipient: name, position and department from the roster. */
+  holderName: string;
+  holderPosition: string | null;
+  holderDepartment: string | null;
+  /** Issuer: the account that recorded it. */
+  issuerName: string;
+  issuerEmail: string | null;
+  /**
+   * The issuer's own department, for the signature block's Department line.
+   *
+   * Separate from `issuerName` because the two are different facts and the print form
+   * needs both. It is read here rather than left to the form to guess: the form seeds
+   * that dropdown from this value, and a `<select>` seeded with a person's **name**
+   * matches no option and silently falls through to the first department in the list,
+   * which signs the form for a department the issuer is not in.
+   */
+  issuerDepartment: string | null;
+  issuedAt: string;
+  dueDate: string | null;
+  notes: string | null;
+};
+
+/**
+ * One column list for the document's asset read, with the two embeds it needs.
+ *
+ * `category` and `location` are aliases so they arrive as single objects rather than
+ * arrays, matching `getHandoverUserOptions`. Neither is `!inner`: an asset whose
+ * category has been deleted should print as an unclassified device rather than
+ * vanish from the middle of the document — a blank cell is bad, but a device that
+ * is genuinely part of what is being signed for silently missing is worse.
+ */
+const DOCUMENT_ASSET_COLUMNS =
+  "id, asset_code, serial_number, name, condition, handover_doc_no, category:categories(name), location:locations(area_name, room_name)";
+
+/**
+ * The document for one handover row, covering its whole batch.
+ *
+ * Three steps, and the order is forced: read the row to learn the batch key, read
+ * the batch, then read the assets those rows point at. One query cannot do it — the
+ * batch is the row's *neighbours*, which is the direction PostgREST has no embed
+ * for.
+ */
+export async function getHandoverDocument(
+  handoverId: string,
+): Promise<HandoverDocument> {
+  const { data: seed, error: seedError } = await supabase
+    .from("assignments")
+    .select(
+      "id, user_id, assigned_by, assigned_at, due_date, notes, holder:handover_users!assignments_user_id_fkey(name, position:positions(name), department:departments(name)), issuedBy:profiles!assignments_assigned_by_fkey(full_name, email, department:departments(name))",
+    )
+    .eq("id", handoverId)
+    .maybeSingle();
+
+  if (seedError) throw seedError;
+  if (!seed) throw new HandoverNotFoundError();
+
+  const row = seed as Record<string, unknown>;
+
+  // The batch: same recipient, same issuer, same transaction timestamp.
+  const { data: batch, error: batchError } = await supabase
+    .from("assignments")
+    .select("id, asset_id")
+    .eq("user_id", String(row.user_id))
+    .eq("assigned_by", String(row.assigned_by))
+    .eq("assigned_at", String(row.assigned_at))
+    .order("id", { ascending: true });
+
+  if (batchError) throw batchError;
+
+  const rows = (batch ?? []) as { id: string; asset_id: string }[];
+
+  const assetIds = rows.map((r) => r.asset_id);
+  const { data: assetRows, error: assetError } = await supabase
+    .from("assets")
+    .select(DOCUMENT_ASSET_COLUMNS)
+    .in(
+      "id",
+      // The placeholder uuid keeps the query well-formed when the batch is empty,
+      // which cannot happen for a real `handoverId` but stops `.in()` producing
+      // `in ()` — a syntax error rather than an empty result.
+      assetIds.length > 0 ? assetIds : ["00000000-0000-0000-0000-000000000000"],
+    );
+
+  if (assetError) throw assetError;
+
+  const byId = new Map(
+    ((assetRows ?? []) as Record<string, unknown>[]).map((a) => [
+      String(a.id),
+      a,
+    ]),
+  );
+
+  /**
+   * Assets in **batch order**, not asset order.
+   *
+   * The rows come back in `assignments.id` order and the document lists what was
+   * handed over in the order it was ticked. Sorting by `asset_code` instead would
+   * print a valid document in a different order from the one on screen.
+   */
+  const assets: HandoverDocumentAsset[] = rows
+    .map((r) => byId.get(r.asset_id))
+    .filter((a): a is Record<string, unknown> => a !== undefined)
+    .map((a) => {
+      const location = a.location as Record<string, unknown> | null | undefined;
+      const category = a.category as Record<string, unknown> | null | undefined;
+      return {
+        id: String(a.id),
+        assetCode: String(a.asset_code ?? ""),
+        serialNumber: str(a.serial_number),
+        name: String(a.name ?? ""),
+        categoryName: category ? str(category.name) : null,
+        locationName: location ? locationLabel(location) : null,
+        condition: String(a.condition ?? "") as AssetCondition,
+        handoverDocNo: str(a.handover_doc_no),
+      };
+    });
+
+  const holder = (row.holder ?? {}) as Record<string, unknown>;
+  const holderPosition = holder.position as
+    Record<string, unknown> | null | undefined;
+  const holderDepartment = holder.department as
+    Record<string, unknown> | null | undefined;
+  const issuer = (row.issuedBy ?? {}) as Record<string, unknown>;
+  const issuerDepartment = issuer.department as
+    Record<string, unknown> | null | undefined;
+
+  return {
+    assets,
+    holderName: String(holder.name ?? ""),
+    holderPosition: holderPosition ? str(holderPosition.name) : null,
+    holderDepartment: holderDepartment ? str(holderDepartment.name) : null,
+    issuerName: str(issuer.full_name) ?? str(issuer.email) ?? "",
+    issuerEmail: str(issuer.email),
+    issuerDepartment: issuerDepartment ? str(issuerDepartment.name) : null,
+    issuedAt: String(row.assigned_at ?? ""),
+    dueDate: str(row.due_date),
+    notes: str(row.notes),
+  };
+}
+
+/**
+ * "Area / Room", the same string the asset list shows.
+ *
+ * A copy rather than an import from `assetService`, because `locationDisplayName`
+ * there is module-private — and because both lists print the same fact in the same
+ * shape: a bare area when there is no room, and never "N/A".
+ */
+function locationLabel(location: Record<string, unknown>): string | null {
+  const area = str(location.area_name);
+  const room = str(location.room_name);
+  if (room) return area ? `${area} / ${room}` : room;
+  return area;
+}
+
+/** Raised when a handover id no longer resolves to a row. */
+export class HandoverNotFoundError extends Error {
+  constructor() {
+    super("That handover record could not be read");
+    this.name = "HandoverNotFoundError";
+  }
+}
+
+/**
  * Which roster entries belong to the signed-in account.
  *
  * **This exists because of one line of UI.** The Return button used to be gated on

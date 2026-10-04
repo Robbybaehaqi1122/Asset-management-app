@@ -696,3 +696,130 @@ span.flatpickr-weekday,
     min-width: 580px;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Printing the handover document
+   ---------------------------------------------------------------------------
+
+   `window.print()` prints the whole document, which would mean the sidebar, the
+   header, the filter bar and every other screen as well as the form. `HandoverPrintModal`
+   renders itself through a **portal onto `<body>`** and tags the overlay with
+   `handover-print-root`, so the paper is a direct child of the body and one rule
+   removes the entire application from the page:
+
+   ```css
+   body.handover-printing > *:not(.handover-print-root) { display: none }
+   ```
+
+   ## Why `display: none` and not `visibility: hidden`
+
+   The first version of this stylesheet used `visibility`, on the reasoning that
+   `display: none` "collapses the page to nothing and the browser re-lays-out the
+   one visible element across a full page width". That reasoning was wrong, and it
+   cost a blank third of every page.
+
+   `visibility: hidden` takes an element out of sight but **leaves it occupying
+   space**, so every hidden ancestor above the document still reserved its height.
+   The app shell is a full-viewport flex layout, so the document — now correctly
+   pulled to the top of the page — was printed *below* that reserved space, which is
+   the empty grey block that appeared above the letterhead. `display: none` removes
+   the box entirely, which is what "not part of the paper" actually means, and the
+   document then starts at the page origin with nothing above it.
+
+   ## Why the portal, and not the shared `Modal`
+
+   The overlay deliberately does **not** use `@/components/ui/modal`. `Modal` has no
+   hook a stylesheet can rely on: it renders `<div class="modal …"><div
+   class="fixed …backdrop…"><div class="relative …panel…">`, with **no `role="dialog"`
+   anywhere**. The first version of this block targeted `[role="dialog"]` to
+   neutralise the panel, so every one of those rules matched nothing and the panel
+   kept `position: relative`, `max-w-5xl`, and its parent's `flex items-center`
+   centring. Because the panel is `relative`, the document's `position: absolute`
+   anchored to the *panel* instead of the page.
+
+   Owning the overlay means the three hooks below are the only ones in the chain
+   between `<body>` and the paper, so there is nothing left to guess at. It also
+   keeps a change to printing from reaching every other modal in the app.
+
+   The class is added to `<body>` on mount and removed on unmount. Removing it is
+   load-bearing rather than tidy: left behind by a cancelled print dialog, the next
+   `window.print()` anywhere in the app — including the browser's own Ctrl+P — would
+   print a blank page.
+   --------------------------------------------------------------------------- */
+@media print {
+  /* Everything else in the document is gone, not merely invisible. */
+  body.handover-printing > *:not(.handover-print-root) {
+    display: none !important;
+  }
+
+  body.handover-printing {
+    margin: 0;
+    background: #fff;
+  }
+
+  /* The overlay is a centred, scrollable, dimmed dialog on screen and nothing at
+     all on paper. */
+  body.handover-printing .handover-print-root {
+    position: static !important;
+    inset: auto !important;
+    width: auto !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+    background: none !important;
+    padding: 0 !important;
+  }
+
+  /* The white card the document sits in on screen. */
+  body.handover-printing .handover-print-panel {
+    position: static !important;
+    width: auto !important;
+    max-width: none !important;
+    max-height: none !important;
+    overflow: visible !important;
+    border-radius: 0 !important;
+    background: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+  }
+
+  /* The grey wash the paper is previewed against, and its scroll box. */
+  body.handover-printing .handover-print-sheet {
+    max-height: none !important;
+    overflow: visible !important;
+    padding: 0 !important;
+    background: none !important;
+  }
+
+  /* The paper's own fixed width is in millimetres so it survives the printer's
+     scaling; the shadow is a screen affordance and would print as a grey block
+     down one edge of every page. */
+  body.handover-printing article {
+    box-shadow: none !important;
+    margin: 0 auto !important;
+  }
+
+  /* Page breaks inside a signature block would put a name on one page and its
+     department on the next, which is worse than a little extra whitespace. */
+  body.handover-printing .avoid-break {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  /* No page margin, because the paper draws its own: `article` is `w-[210mm]` with
+     `p-[19mm]`, so it *is* an A4 page at the template's own margins. Leaving
+     `@page` at its default — or at an explicit 12mm — makes the printable area
+     narrower than 210mm while the paper insists on being 210mm wide, and the
+     browser resolves the overflow by scaling or clipping the sheet sideways.
+     19mm ≈ 0.75in, comfortably inside every printer's unprintable margin.
+
+     `size: A4` is explicit because `@page` otherwise inherits the printer's own
+     default paper, and Chrome on a Letter-default profile produces a
+     612×792pt page — against which a 210×297mm sheet cannot fit and spills onto a
+     second, mostly empty page. The template is A4, so the stylesheet says so rather
+     than letting a driver setting decide. */
+  @page {
+    size: A4;
+    margin: 0;
+  }
+}

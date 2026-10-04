@@ -1,0 +1,854 @@
+import { useTranslation } from "react-i18next";
+
+import Select from "@/components/form/Select";
+import Input from "@/components/form/input/InputField";
+import Button from "@/components/ui/button/Button";
+import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
+
+import { getDepartmentOptions } from "@/modules/departments/services/departmentService";
+import type { DepartmentRef } from "@/lib/profiles";
+
+import { SignaturePad } from "./SignaturePad";
+import {
+  ACKNOWLEDGEMENT,
+  COMPANY_NAME,
+  FOOTER_LINES,
+  HEADER_ISSUER,
+  PARTIES,
+  SIGNATURE_ROLES,
+  TERMS,
+} from "../document/documentContent";
+import {
+  getHandoverDocument,
+  HandoverNotFoundError,
+  type HandoverDocument,
+} from "../services/handoverService";
+
+/**
+ * The printable handover document, shown in a modal and printed with
+ * `window.print()`.
+ *
+ * ## Why a modal and not a route
+ *
+ * The document is a **view of a handover that already exists**, not a page of its
+ * own. Opening it in a route would need a URL, and the natural one
+ * (`/handover/:id/print`) would then be linkable — which would mean a printable
+ * document anyone could reach by typing a path, and a browser Back that leaves the
+ * user somewhere unhelpful. A modal keeps it attached to the row it came from.
+ *
+ * ## Why `window.print()` and not a PDF library
+ *
+ * The browser's own print pipeline is the one that can produce a PDF at A4 with the
+ * fonts and margins right, and it does it with **nothing added to the bundle** —
+ * `AGENTS.md` forbids a new dependency without asking, and `html2pdf`/`jsPDF` would
+ * be 200–400 kB for a worse result.
+ *
+ * "Save as PDF" is one click away in that dialog, and it is where the file actually
+ * goes: **a browser cannot write to a folder silently.** That is a security boundary,
+ * not an omission — the print dialog is the only place the user gets to see and
+ * choose where a copy of a signed document lands.
+ *
+ * ## Why this does not use the shared `Modal`
+ *
+ * It used to, and the print stylesheet tried to neutralise it through
+ * `[role="dialog"]`. **That attribute is not in `Modal`'s markup** — it renders
+ * `<div class="modal …">`, a backdrop div, then the panel — so every rule meant to
+ * strip the panel's chrome matched nothing, and the document printed underneath a
+ * full-height, vertically-centred, `max-w-5xl` panel: a blank block above the
+ * letterhead, and the paper scaled to fit what was left.
+ *
+ * The overlay is therefore rendered here, through a **portal onto `document.body`**,
+ * so the paper is a direct child of the body. `index.css` then removes the whole
+ * application with one `display: none` and leaves no ancestor whose height, width
+ * or positioning could still push the page around. The same fix means the three
+ * print hooks — `handover-print-root`, `-panel`, `-sheet` — are the complete list of
+ * classes between `<body>` and the paper, so there is nothing left to guess at.
+ *
+ * Escape and backdrop-click closing are reimplemented here, which is the only
+ * behaviour that came from `Modal` and had to be kept.
+ *
+ * ## The print stylesheet is what makes it work
+ *
+ * `window.print()` prints the whole document, app chrome included. `index.css` has a
+ * `@media print` block keyed on `body.handover-printing` that hides everything and
+ * reveals only the paper. That class is added on mount and removed on unmount, and
+ * it has to be a **body class** — the portal puts the overlay on the body, and no
+ * other ancestor exists that a stylesheet could hook without depending on the whole
+ * component hierarchy.
+ */
+export default function HandoverPrintModal({
+  handoverId,
+  isOpen,
+  onClose,
+}: {
+  handoverId: string | null;
+  isOpen: boolean;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation("common", { keyPrefix: "handoverPrint" });
+
+  const [doc, setDoc] = useState<HandoverDocument | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  /**
+   * `qty` and `unit` are **print-form state, not database state**.
+   *
+   * A handover is one asset per row and always 1 — that is what the row *is*. But
+   * the paper template has a Qty column, and an admin handing over "3 mice" to one
+   * person has a real use for it. So these live here and nowhere else: they are
+   * entered once, printed, and deliberately **not saved**, because there is no column
+   * for them and inventing one would be a second source of truth for a number that
+   * only exists on the paper.
+   */
+  const [qty, setQty] = useState<Record<string, string>>({});
+  const [unit, setUnit] = useState<Record<string, string>>({});
+
+  /** Departments for the two signature blocks, both editable. */
+  const [departments, setDepartments] = useState<DepartmentRef[]>([]);
+  const [issuerDept, setIssuerDept] = useState("");
+  const [employeeDept, setEmployeeDept] = useState("");
+
+  /** Signed today by default; the form's own date field, not the handover's. */
+  const [signDate, setSignDate] = useState(() => todayInputValue());
+
+  const [issuerSignature, setIssuerSignature] = useState<string | null>(null);
+  const [employeeSignature, setEmployeeSignature] = useState<string | null>(
+    null,
+  );
+
+  /**
+   * Loads the document whenever the modal opens or the id changes.
+   *
+   * **`.then()` with a `cancelled` flag rather than `void load()`**, and that is the
+   * shape `HandoverListPage` already uses for the same job. Two reasons, one of them a
+   * lint rule and one of them real:
+   *
+   * - `react-hooks/set-state-in-effect` rejects calling anything that sets state
+   *   synchronously from an effect body, and a `useCallback` that ends in five
+   *   `setState` calls is exactly that. Setting state inside a promise callback is
+   *   the accepted form, because by then the effect has returned.
+   * - `cancelled` closes a real race. Closing the modal while the read is in flight
+   *   would otherwise land a response on an unmounted component — and here the
+   *   payload is a signature form, so the state it would have set is worth not
+   *   setting after the admin has moved on.
+   */
+  useEffect(() => {
+    if (!isOpen || handoverId === null) return;
+    let cancelled = false;
+
+    void Promise.all([
+      getHandoverDocument(handoverId),
+      getDepartmentOptions(),
+    ]).then(
+      ([loaded, deptRows]) => {
+        if (cancelled) return;
+        setDoc(loaded);
+        setDepartments(deptRows);
+
+        // Default both departments from the data, and fall back to the first
+        // available one. A `<select>` whose value matches no option renders blank,
+        // which would read as "no department" rather than "the department this
+        // person has since been moved out of".
+        //
+        // **Both are department names, never people.** The issuer's used to be seeded
+        // with `loaded.issuerName`, which is a person's name, so it matched no option
+        // on every document and silently fell through to the first department in the
+        // list — a signed form naming the wrong department for the issuer, with
+        // nothing on screen to suggest it.
+        setIssuerDept((current) =>
+          pickAvailable(loaded.issuerDepartment, deptRows, current),
+        );
+        setEmployeeDept((current) =>
+          pickAvailable(loaded.holderDepartment, deptRows, current),
+        );
+
+        // Every row defaults to 1 — the one quantity that is always true.
+        const defaultQty: Record<string, string> = {};
+        for (const asset of loaded.assets) defaultQty[asset.id] = "1";
+        setQty(defaultQty);
+        setUnit(
+          Object.fromEntries(
+            loaded.assets.map((a) => [a.id, t("defaultUnit")]),
+          ),
+        );
+        setIsLoading(false);
+      },
+      (error: unknown) => {
+        if (cancelled) return;
+        setDoc(null);
+        // Two different failures, two different sentences: a row that has been
+        // deleted is something the admin can act on by reloading, while a network
+        // or RLS failure is not, and telling them the same thing wastes their time.
+        setLoadError(
+          error instanceof HandoverNotFoundError
+            ? t("notFound")
+            : t("loadError"),
+        );
+        setIsLoading(false);
+      },
+    );
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, handoverId, t]);
+
+  /**
+   * There is deliberately **no reset-on-close effect**, and the absence is the
+   * mechanism rather than an oversight.
+   *
+   * `HandoverListPage` renders this component only while a handover id is set —
+   * `{printHandoverId !== null && <HandoverPrintModal … />}` — so closing destroys
+   * the component and every piece of state goes with it: signatures, quantities,
+   * units. Reopening builds a fresh document from the initial values.
+   *
+   * That matters because a signature is a **one-printing** thing. Carrying the last
+   * drawing over would be actively wrong: the previous ink belonged to the previous
+   * printing, and quietly reusing it would put one person's signature under another
+   * person's name with nothing to notice it. A reset effect would also have been a
+   * synchronous `setState` in an effect, which is the cascading-render pattern
+   * `react-hooks/set-state-in-effect` exists to catch — and it would have been doing
+   * work the unmount already does.
+   */
+
+  /**
+   * Adds `handover-printing` to `<body>` for as long as the document is open.
+   *
+   * The cleanup removes it unconditionally, which matters when a print is cancelled
+   * or the user navigates away mid-dialog: without the removal, the next
+   * `window.print()` anywhere in the app — including the browser's own Ctrl+P — would
+   * print a blank page.
+   */
+  useEffect(() => {
+    if (!isOpen) return;
+    document.body.classList.add("handover-printing");
+    return () => document.body.classList.remove("handover-printing");
+  }, [isOpen]);
+
+  /**
+   * Escape to close, and the page behind locked.
+   *
+   * Both were `Modal`'s job and are reimplemented here because the overlay no longer
+   * is one. `body { overflow: hidden }` matters for the same reason it did in
+   * `Modal`: without it, scrolling the wheel over a full-height overlay scrolls the
+   * page underneath and the header slides out from under it.
+   */
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [isOpen, onClose]);
+
+  const departmentOptions = useMemo(
+    () => departments.map((row) => ({ value: row.name, label: row.name })),
+    [departments],
+  );
+
+  /**
+   * The document's own number, taken from the assets.
+   *
+   * `assets.handover_doc_no` is where the admin typed it on the asset form, and it
+   * is deliberately **not** written here. A batch can span assets with different or
+   * no numbers, so the distinct ones are listed rather than one being picked — and
+   * an asset with none contributes an em dash rather than being dropped, so a
+   * document cannot silently omit one of the things being signed for.
+   */
+  const docNumbers = useMemo(() => {
+    if (!doc) return [];
+    const distinct = new Set<string>();
+    for (const asset of doc.assets) {
+      distinct.add(asset.handoverDocNo ?? "");
+    }
+    return [...distinct];
+  }, [doc]);
+
+  /**
+   * The printed number: the first real one, or a blank rule.
+   *
+   * A batch is usually handed over from one place and therefore shares a number, so
+   * the first is normally the only one. When they genuinely differ there is no honest
+   * single answer, which is why the table's Notes column is left to carry the detail.
+   */
+  const printNumber = useMemo(() => {
+    if (!doc) return null;
+    const real = docNumbers.find((n) => n !== "");
+    return real ?? null;
+  }, [doc, docNumbers]);
+
+  const handlePrint = () => {
+    // `window.print()` is synchronous and blocking by spec — the dialog is modal and
+    // the page is frozen until it closes. No `await`, no state change, nothing that
+    // could re-render the document between the click and the snapshot.
+    window.print();
+  };
+
+  if (!isOpen) return null;
+
+  // Portal, not `Modal` — see the file header. The `handover-print-*` classes are the
+  // print stylesheet's only hooks and the only classes between `<body>` and the paper.
+  return createPortal(
+    <div
+      role="dialog"
+      aria-modal="true"
+      onClick={(event) => {
+        // Backdrop click closes. Comparing against `currentTarget` is what stops a
+        // click that started on the paper from closing it underneath the admin.
+        if (event.target === event.currentTarget) onClose();
+      }}
+      className="handover-print-root fixed inset-0 z-99999 flex items-center justify-center bg-gray-400/50 p-4"
+    >
+      <div className="handover-print-panel flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl dark:bg-gray-900">
+        {/* The toolbar is hidden in print, so it lives outside the printed root's
+            stylesheet scope but inside the modal — see the `body` class above. */}
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 p-4 dark:border-gray-800 print:hidden">
+          <div>
+            <h3 className="text-base font-semibold text-gray-800 dark:text-white/90">
+              {t("title")}
+            </h3>
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              {t("toolbarHint")}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={onClose}>
+              {t("close")}
+            </Button>
+            <Button onClick={handlePrint} disabled={isLoading || doc === null}>
+              {t("print")}
+            </Button>
+          </div>
+        </div>
+
+        <div className="handover-print-sheet overflow-y-auto bg-gray-100 p-4 dark:bg-gray-900">
+          {isLoading ? (
+            <p className="py-10 text-center text-sm text-gray-500 dark:text-gray-400">
+              {t("loading")}
+            </p>
+          ) : loadError !== null ? (
+            <p className="py-10 text-center text-sm text-error-600 dark:text-error-500">
+              {loadError}
+            </p>
+          ) : doc === null ? null : (
+            <article
+              // The paper. Fixed A4 width so what is reviewed on screen is what
+              // prints, rather than a fluid layout that reflows at the printer's
+              // width and silently moves the signature block off the page.
+              className="mx-auto min-h-[297mm] w-[210mm] bg-white p-[19mm] text-[9.5pt] leading-[1.45] text-gray-900 shadow-lg"
+            >
+              <Header issuer={HEADER_ISSUER} />
+
+              <h1 className="text-center text-[13pt] font-bold tracking-wide uppercase">
+                {t("documentTitle")}
+              </h1>
+              <p className="text-center text-[11pt] font-semibold">
+                {t("documentTitleId")}
+              </p>
+
+              <div className="mt-3 flex justify-end gap-2 text-[9pt]">
+                <span className="font-semibold">No.</span>
+                {printNumber !== null ? (
+                  <span className="border-b border-gray-400 px-1">
+                    {printNumber}
+                  </span>
+                ) : (
+                  <span className="text-gray-500">{t("noNumber")}</span>
+                )}
+              </div>
+
+              <Bilingual className="mt-4" en={PARTIES.en} id={PARTIES.id} />
+
+              <ol className="mt-2 space-y-1 pl-4">
+                <li>
+                  <span className="font-semibold">{COMPANY_NAME}</span> ("
+                  {t("companyLabel")}")
+                </li>
+                {/* Three lines, because that is what the template prints: the
+                    English line with its blank rule, then "Bapak/Ibu", then the
+                    name with its label. Collapsing them into one sentence is
+                    readable but no longer the document being signed. */}
+                <li>
+                  <span className="block">{t("partyLineEn")}</span>
+                  <span className="block italic">{t("partyLineId")}</span>
+                  <span className="block">
+                    <span className="font-semibold">{doc.holderName}</span>{" "}
+                    {t("partyTitleId")}
+                  </span>
+                </li>
+              </ol>
+
+              <Bilingual
+                className="mt-4"
+                en={ACKNOWLEDGEMENT.en}
+                id={ACKNOWLEDGEMENT.id}
+              />
+
+              <h2 className="mt-4 text-center text-[10.5pt] font-bold">
+                {t("devicesHeading")}
+              </h2>
+              <h3 className="text-center text-[9.5pt] font-semibold">
+                {t("devicesHeadingId")}
+              </h3>
+
+              <DeviceTable
+                assets={doc.assets}
+                qty={qty}
+                unit={unit}
+                onQtyChange={(id, value) =>
+                  setQty((p) => ({ ...p, [id]: value }))
+                }
+                onUnitChange={(id, value) =>
+                  setUnit((p) => ({ ...p, [id]: value }))
+                }
+                t={t}
+              />
+
+              <h2 className="mt-5 text-center text-[10.5pt] font-bold">
+                {SIGNATURE_ROLES.company.en} · {t("termsHeadingId")}
+              </h2>
+
+              <div className="mt-2 grid grid-cols-2 gap-6 text-[8.5pt]">
+                <div>
+                  <p className="font-semibold">ENGLISH</p>
+                  <div className="mt-1 space-y-1.5">
+                    {TERMS.map((clause, i) => (
+                      <p key={`en-${i}`}>{clause.en}</p>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <p className="font-semibold">INDONESIA</p>
+                  <div className="mt-1 space-y-1.5">
+                    {TERMS.map((clause, i) => (
+                      <p key={`id-${i}`}>{clause.id}</p>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <h2 className="mt-5 text-center text-[10.5pt] font-bold">
+                {t("signatureHeading")}
+              </h2>
+              <h3 className="text-center text-[9.5pt] font-semibold">
+                {t("signatureHeadingId")}
+              </h3>
+
+              <div className="mt-5 grid grid-cols-2 gap-10 text-[9pt]">
+                <SignatureBlock
+                  roleEn={SIGNATURE_ROLES.company.en}
+                  roleId={SIGNATURE_ROLES.company.id}
+                  name={doc.issuerName}
+                  department={issuerDept}
+                  departmentOptions={departmentOptions}
+                  onDepartmentChange={setIssuerDept}
+                  date={signDate}
+                  onDateChange={setSignDate}
+                  signature={issuerSignature}
+                  onSignatureChange={setIssuerSignature}
+                  t={t}
+                />
+                <SignatureBlock
+                  roleEn={SIGNATURE_ROLES.employee.en}
+                  roleId={SIGNATURE_ROLES.employee.id}
+                  name={doc.holderName}
+                  department={employeeDept}
+                  departmentOptions={departmentOptions}
+                  onDepartmentChange={setEmployeeDept}
+                  date={signDate}
+                  onDateChange={setSignDate}
+                  signature={employeeSignature}
+                  onSignatureChange={setEmployeeSignature}
+                  t={t}
+                />
+              </div>
+
+              <Footer />
+            </article>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+/** The document's letterhead. Logo left, issuer right, as the template prints it. */
+function Header({ issuer }: { issuer: string }) {
+  return (
+    <header className="mb-3 flex items-start justify-between border-b border-[#1B3B6F] pb-2">
+      {/* The template embeds the company logo as an image. This uses the app's own
+          logo file rather than shipping a second copy of the artwork: two copies of
+          one logo is two things that can drift, and the app's `logo-pgt.png` is the
+          current one. */}
+      <img
+        src="/images/logo/logo-pgt.png"
+        alt=""
+        className="h-12 w-auto object-contain"
+      />
+      <p className="text-[8pt] font-semibold text-[#1B3B6F]">{issuer}</p>
+    </header>
+  );
+}
+
+/** One bilingual pair, printed one above the other as the template does. */
+function Bilingual({
+  en,
+  id,
+  className = "",
+}: {
+  en: string;
+  id: string;
+  className?: string;
+}) {
+  return (
+    <div className={className}>
+      <p>{en}</p>
+      <p className="text-gray-600 italic">{id}</p>
+    </div>
+  );
+}
+
+/**
+ * The device table, with Qty and Unit editable.
+ *
+ * The inputs are `print:hidden` and their **text** is printed instead, because a
+ * form control does not print: a `<input>` renders as an empty box on paper, which
+ * would put the quantity the admin typed nowhere on the document. Each cell prints
+ * the value and shows the box only on screen.
+ */
+function DeviceTable({
+  assets,
+  qty,
+  unit,
+  onQtyChange,
+  onUnitChange,
+  t,
+}: {
+  assets: HandoverDocument["assets"];
+  qty: Record<string, string>;
+  unit: Record<string, string>;
+  onQtyChange: (id: string, value: string) => void;
+  onUnitChange: (id: string, value: string) => void;
+  t: (key: string, options?: Record<string, unknown>) => string;
+}) {
+  return (
+    <table className="mt-2 w-full border-collapse text-[8.5pt]">
+      <thead>
+        <tr>
+          <Th className="w-[4%]">{t("colNo")}</Th>
+          <Th className="w-[34%]">
+            {t("colDevice")}
+            <br />
+            <span className="font-normal italic">{t("colDeviceId")}</span>
+          </Th>
+          <Th className="w-[22%]">
+            {t("colAssetTag")}
+            <br />
+            <span className="font-normal italic">{t("colAssetTagId")}</span>
+          </Th>
+          <Th className="w-[7%]">{t("colQty")}</Th>
+          <Th className="w-[10%]">{t("colUnit")}</Th>
+          <Th className="w-[23%]">
+            {t("colNotes")}
+            <br />
+            <span className="font-normal italic">{t("colNotesId")}</span>
+          </Th>
+        </tr>
+      </thead>
+      <tbody>
+        {assets.map((asset, index) => (
+          <tr key={asset.id}>
+            <Td>{index + 1}</Td>
+            <Td>
+              <span className="block">{asset.name}</span>
+              {asset.categoryName && (
+                <span className="block text-gray-600">
+                  {asset.categoryName}
+                </span>
+              )}
+            </Td>
+            <Td>
+              <span className="block">{asset.assetCode}</span>
+              {asset.serialNumber && (
+                <span className="block text-gray-600">
+                  {asset.serialNumber}
+                </span>
+              )}
+            </Td>
+            <Td>
+              {/* The printed value and the input are siblings rather than one inside
+                  the other, so `print:hidden` on the input leaves the text alone. */}
+              <span className="print:hidden">
+                <input
+                  type="number"
+                  min={1}
+                  value={qty[asset.id] ?? "1"}
+                  onChange={(e) => onQtyChange(asset.id, e.target.value)}
+                  aria-label={t("qtyLabel", { code: asset.assetCode })}
+                  className="w-10 [appearance:textfield] border border-gray-300 px-1 text-center [&::-webkit-inner-spin-button]:appearance-none"
+                />
+              </span>
+              <span className="hidden print:inline">
+                {qty[asset.id] ?? "1"}
+              </span>
+            </Td>
+            <Td>
+              <span className="print:hidden">
+                <input
+                  type="text"
+                  value={unit[asset.id] ?? ""}
+                  onChange={(e) => onUnitChange(asset.id, e.target.value)}
+                  aria-label={t("unitLabel", { code: asset.assetCode })}
+                  className="w-16 border border-gray-300 px-1 text-center"
+                />
+              </span>
+              <span className="hidden print:inline">
+                {unit[asset.id] ?? ""}
+              </span>
+            </Td>
+            <Td>{asset.locationName ?? "—"}</Td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function Th({
+  children,
+  className = "",
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <th
+      className={`border border-gray-400 bg-gray-100 px-1.5 py-1 text-start font-semibold ${className}`}
+    >
+      {children}
+    </th>
+  );
+}
+
+function Td({
+  children,
+  className = "",
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <td className={`border border-gray-400 px-1.5 py-1 align-top ${className}`}>
+      {children}
+    </td>
+  );
+}
+
+/**
+ * One signature block: role, drawable box, and the three printed fields.
+ *
+ * The `Name` line is **not** an input. The name is a fact about the handover — the
+ * roster entry for the recipient, the account for the issuer — and making it
+ * editable would mean a document signed for somebody other than the person recorded
+ * as holding the assets. The department and the date *are* editable, because both
+ * genuinely vary per printing and neither is a fact about the handover.
+ */
+function SignatureBlock({
+  roleEn,
+  roleId,
+  name,
+  department,
+  departmentOptions,
+  onDepartmentChange,
+  date,
+  onDateChange,
+  signature,
+  onSignatureChange,
+  t,
+}: {
+  roleEn: string;
+  roleId: string;
+  name: string;
+  department: string;
+  departmentOptions: { value: string; label: string }[];
+  onDepartmentChange: (value: string) => void;
+  date: string;
+  onDateChange: (value: string) => void;
+  signature: string | null;
+  onSignatureChange: (value: string | null) => void;
+  t: (key: string, options?: Record<string, unknown>) => string;
+}) {
+  return (
+    // `avoid-break` is read by the print stylesheet: a signature block split
+    // across a page boundary would print the name on one sheet and its department
+    // on the next, which is a worse outcome than a little extra whitespace.
+    <div className="avoid-break">
+      <p className="font-semibold">
+        {roleEn}, <span className="font-normal italic">{roleId}</span>
+      </p>
+
+      <div className="print:hidden">
+        <SignaturePad
+          value={signature}
+          onChange={onSignatureChange}
+          label={t("signatureLabel", { role: roleEn })}
+          placeholder={t("signaturePlaceholder")}
+          clearLabel={t("signatureClear")}
+          className="mt-2"
+        />
+      </div>
+
+      {/* Printed signature: the PNG, or an empty ruled line. Never the canvas —
+          a canvas does not print. */}
+      <div className="hidden min-h-12 items-end justify-center print:flex">
+        {signature !== null ? (
+          <img src={signature} alt="" className="max-h-12 object-contain" />
+        ) : (
+          <div className="mb-1 h-px w-full bg-gray-400" />
+        )}
+      </div>
+
+      <p className="mt-1 border-t border-gray-400 pt-1 text-center font-semibold">
+        {name}
+      </p>
+
+      <div className="mt-1 space-y-1 print:hidden">
+        <LabelledRow label={t("fieldName")}>
+          <span className="font-semibold">{name}</span>
+        </LabelledRow>
+
+        <LabelledRow label={t("fieldDept")}>
+          <Select
+            // Keyed on the value because `Select` reads `defaultValue` once; without
+            // it, changing department elsewhere would leave this showing the old one.
+            key={`dept-${roleEn}-${department}`}
+            id={`print-dept-${roleEn}`}
+            options={departmentOptions}
+            defaultValue={department}
+            onChange={onDepartmentChange}
+          />
+        </LabelledRow>
+
+        <LabelledRow label={t("fieldDate")}>
+          <Input
+            id={`print-date-${roleEn}`}
+            type="date"
+            value={date}
+            onChange={(e) => onDateChange(e.target.value)}
+          />
+        </LabelledRow>
+      </div>
+
+      {/* Printed values, so the paper carries all three lines whatever the screen shows. */}
+      <div className="mt-1 hidden space-y-0.5 print:block">
+        <p>
+          <span className="font-semibold">{t("fieldName")} : </span>
+          {name}
+        </p>
+        <p>
+          <span className="font-semibold">{t("fieldDept")} : </span>
+          {department}
+        </p>
+        <p>
+          <span className="font-semibold">{t("fieldDate")} : </span>
+          {formatLongDate(date)}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function LabelledRow({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="w-16 shrink-0 text-[8pt] font-semibold">{label}</span>
+      <div className="min-w-0 flex-1">{children}</div>
+    </div>
+  );
+}
+
+/** The address block, as the template's footer prints it. */
+function Footer() {
+  return (
+    <footer className="mt-6 border-t border-gray-300 pt-1.5 text-center text-[7pt] leading-[1.35] text-gray-600">
+      <p className="font-bold text-gray-800">{FOOTER_LINES.company}</p>
+      <p>{FOOTER_LINES.address}</p>
+      <p>{FOOTER_LINES.contact}</p>
+    </footer>
+  );
+}
+
+/** Today as `YYYY-MM-DD`, which is what `input[type=date]` needs. */
+function todayInputValue(): string {
+  const now = new Date();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${now.getFullYear()}-${month}-${day}`;
+}
+
+/**
+ * `YYYY-MM-DD` as the template writes it: `14 September 2026`.
+ *
+ * **Not `new Date(value)` and not `toLocaleDateString`.** A `date` column parsed as
+ * a date rolls a day backwards for anyone west of UTC, and the template's format is
+ * a long English month name rather than the browser's locale short form. The parts
+ * are already in the string, so they are put back together directly — the same
+ * reasoning as `formatDateOnly` in the handover list.
+ */
+function formatLongDate(value: string): string {
+  if (!value) return "";
+  const [year, month, day] = value.split("-");
+  if (!year || !month || !day) return value;
+  const months = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+  ];
+  const name = months[Number(month) - 1] ?? month;
+  return `${Number(day)} ${name} ${year}`;
+}
+
+/**
+ * Keeps a department value that is still in the list, else falls back to the first.
+ *
+ * The recorded department is preferred so the document opens showing what the
+ * handover says; the fallback exists because a `<select>` whose value matches no
+ * option renders blank, and "blank" would read as "no department" rather than "the
+ * department this person has since been moved out of".
+ */
+function pickAvailable(
+  recorded: string | null | undefined,
+  rows: DepartmentRef[],
+  current: string,
+): string {
+  if (current !== "" && rows.some((r) => r.name === current)) return current;
+  if (recorded && rows.some((r) => r.name === recorded)) return recorded;
+  return rows[0]?.name ?? "";
+}
