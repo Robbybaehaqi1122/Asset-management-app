@@ -147,7 +147,17 @@ export type LocationRow = {
 export type HandoverUserRow = {
   id: string;
   name: string;
+  /**
+   * The position's **name**, resolved from `position_id` by the embed.
+   *
+   * A name rather than the id because this is what the table shows and what the
+   * form writes back. The form stores the id and this row is the read side, so
+   * the two do not disagree — the id is on `HandoverUserRow.positionId` below for
+   * the cases that need to compare rather than display.
+   */
   position: string;
+  /** The referenced `positions` row, for comparisons rather than display. */
+  positionId: string;
   /** The person's department, or null once that department is deleted. */
   departmentName: string | null;
   /** The linked account, or null for someone who does not sign in. */
@@ -163,7 +173,14 @@ export type HandoverUserRow = {
 /** Create/update payload for one roster entry. */
 export type HandoverUserInput = {
   name: string;
-  position: string;
+  /**
+   * A `positions` id, and **required** — `position_id` is `not null` since `02200`.
+   *
+   * It is an id rather than a name for the same reason `profileId` is: the row is
+   * read with an aliased embed so the *name* is available to show, and a form that
+   * carries the name would need a second lookup to resolve it back on save.
+   */
+  positionId: string;
   departmentId?: string | null;
   profileId?: string | null;
   notes?: string | null;
@@ -198,7 +215,7 @@ const CURRENT_LOCATION_COLUMNS =
  * `tsc` then fails on every `.select()` in the file.
  */
 const HANDOVER_USER_COLUMNS =
-  "id, name, position, department_id, profile_id, notes, created_at, department:departments(name), profile:profiles(full_name), assignments!assignments_user_id_fkey(count)";
+  "id, name, position_id, department_id, profile_id, notes, created_at, position:positions(name), department:departments(name), profile:profiles(full_name), assignments!assignments_user_id_fkey(count)";
 
 /**
  * The units pinned into the category filter, whatever the `departments` table
@@ -647,15 +664,26 @@ export async function getHandoverUsers(): Promise<HandoverUserRow[]> {
   const { data, error } = await supabase
     .from("handover_users")
     .select(HANDOVER_USER_COLUMNS)
+    // `position(name)` — **parentheses, not a dot or a colon.** `position` became an
+    // aliased embed in `02200`, and PostgREST orders an embedded resource with
+    // `alias(column)`. Both other spellings are hard errors; leaving the old
+    // `.order("position")` in place would instead have returned rows and quietly
+    // stopped sorting, which is the version that survives review.
     .order("name", { ascending: true })
-    .order("position", { ascending: true });
+    .order("position(name)", { ascending: true });
 
   if (error) throw error;
 
   return ((data ?? []) as Record<string, unknown>[]).map((row) => ({
     id: String(row.id),
     name: String(row.name ?? ""),
-    position: String(row.position ?? ""),
+    // The aliased `position` embed is an object, so `embeddedName` is what reads
+    // it — a plain `row.position` would be `"[object Object]"`. The em dash is the
+    // same fallback `PlaceRow` uses for a missing note: `position_id` is `not
+    // null` with a `restrict` foreign key, so a row with no resolvable name can
+    // only mean the referenced position was deleted by a privileged write.
+    position: embeddedName(row.position) ?? "\u2014",
+    positionId: str(row.position_id) ?? "",
     departmentName: embeddedName(row.department),
     profileId: str(row.profile_id),
     profileName: embeddedFullName(row.profile),
@@ -684,7 +712,7 @@ export async function createHandoverUser(
     .from("handover_users")
     .insert({
       name: input.name.trim(),
-      position: input.position.trim(),
+      position_id: input.positionId,
       department_id: input.departmentId || null,
       profile_id: input.profileId || null,
       notes: trimmed(input.notes),
@@ -714,7 +742,7 @@ export async function updateHandoverUser(
     .from("handover_users")
     .update({
       name: input.name.trim(),
-      position: input.position.trim(),
+      position_id: input.positionId,
       department_id: input.departmentId || null,
       profile_id: input.profileId || null,
       notes: trimmed(input.notes),

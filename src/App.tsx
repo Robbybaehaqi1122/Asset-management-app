@@ -7,6 +7,7 @@ import AssetSettingsPage from "./modules/asset-settings/pages/AssetSettingsPage"
 import AssetListPage from "./modules/assets/pages/AssetListPage";
 import HandoverListPage from "./modules/handover/pages/HandoverListPage";
 import DepartmentListPage from "./modules/departments/pages/DepartmentListPage";
+import PositionListPage from "./modules/positions/pages/PositionListPage";
 import UserListPage from "./modules/users/pages/UserListPage";
 import SignIn from "./pages/AuthPages/SignIn";
 import Calendar from "./pages/Calendar";
@@ -34,6 +35,13 @@ export default function App() {
                   UI yang tidak menambah keamanan. */}
               <Route path="/users" element={<UserListPage />} />
               <Route path="/departments" element={<DepartmentListPage />} />
+              {/* Positions: the job titles the handover roster's position
+                  dropdown offers. `getPositionOptions` reads `positions`, which is
+                  `using (true)` for every signed-in user, so this screen could be
+                  opened by anyone — but writes are admin-only, so it is gated the
+                  way `/users` and `/departments` are: the page refuses to render,
+                  and RLS is the real boundary. */}
+              <Route path="/positions" element={<PositionListPage />} />
               {/* `assets_select_authenticated` adalah `using (true)` dan stok
                   bukan milik satu departemen, jadi kedua halaman ini juga untuk
                   staff. Yang admin-only di dalamnya adalah kredensial: RLS

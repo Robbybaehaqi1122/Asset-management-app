@@ -30,6 +30,8 @@ import {
 } from "@/icons";
 
 import { getDepartmentOptions } from "@/modules/departments/services/departmentService";
+import { getPositionOptions } from "@/modules/positions/services/positionService";
+import type { PositionRef } from "@/modules/positions/services/positionService";
 import { getAllUsers } from "@/modules/users/services/userService";
 
 import {
@@ -141,7 +143,19 @@ type LocationForm = {
  */
 type HandoverUserForm = {
   name: string;
-  position: string;
+  /**
+   * A `positions` **id**, unlike `department` beside it which holds a name.
+   *
+   * The asymmetry is deliberate and it follows from what each row is read with.
+   * `HandoverUserRow` carries both `positionId` (a uuid, for comparison) and
+   * `position` (the resolved name, for display), so the form can round-trip the
+   * id without a second lookup — while the department picker resolves a name
+   * back to an id on save because the roster row is only read with the department's
+   * *name*.
+   *
+   * Either would work. Storing the id is fewer moving parts.
+   */
+  positionId: string;
   department: string;
   profileId: string;
   notes: string;
@@ -163,7 +177,7 @@ const EMPTY_LOCATION: LocationForm = {
 
 const EMPTY_HANDOVER_USER: HandoverUserForm = {
   name: "",
-  position: "",
+  positionId: "",
   department: "",
   profileId: "",
   notes: "",
@@ -187,6 +201,16 @@ export default function AssetSettingsPage() {
    * name cannot be resolved to one without a second query.
    */
   const [departments, setDepartments] = useState<DepartmentRef[]>([]);
+
+  /**
+   * The job titles the roster's position dropdown offers, loaded with everything
+   * else rather than on modal open.
+   *
+   * Same reasoning as `departments` above: this is one more request on an
+   * admin-only screen that already loads four, and a second loading path would be
+   * a second thing to get wrong.
+   */
+  const [positions, setPositions] = useState<PositionRef[]>([]);
   const [categories, setCategories] = useState<CategoryRow[]>([]);
   const [locations, setLocations] = useState<LocationRow[]>([]);
   const [currentLocations, setCurrentLocations] = useState<
@@ -268,6 +292,7 @@ export default function AssetSettingsPage() {
       // roster modal, and only the id and name are read.
       getAllUsers(),
       getDepartmentOptions(),
+      getPositionOptions(),
     ]).then(
       ([
         categoryRows,
@@ -277,6 +302,7 @@ export default function AssetSettingsPage() {
         handoverUserRows,
         profileRows,
         departmentRows,
+        positionRows,
       ]) => {
         if (cancelled) return;
         setCategories(categoryRows);
@@ -285,6 +311,7 @@ export default function AssetSettingsPage() {
         setUnits(unitNames);
         setHandoverUsers(handoverUserRows);
         setDepartments(departmentRows);
+        setPositions(positionRows);
         setLinkableProfiles(
           profileRows.map((row) => ({
             id: row.id,
@@ -302,6 +329,7 @@ export default function AssetSettingsPage() {
         setUnits([]);
         setHandoverUsers([]);
         setDepartments([]);
+        setPositions([]);
         setLoadFailed(true);
         setIsLoading(false);
       },
@@ -380,6 +408,12 @@ export default function AssetSettingsPage() {
   const departmentChoices = useMemo(
     () => departments.map((row) => ({ value: row.id, label: row.name })),
     [departments],
+  );
+
+  /** The position dropdown's options, in the same `{value,label}` shape. */
+  const positionChoices = useMemo(
+    () => positions.map((row) => ({ value: row.id, label: row.name })),
+    [positions],
   );
 
   /**
@@ -577,7 +611,7 @@ export default function AssetSettingsPage() {
     setEditingHandoverUserId(row.id);
     setHandoverUserForm({
       name: row.name,
-      position: row.position,
+      positionId: row.positionId,
       department: row.departmentName ?? "",
       profileId: row.profileId ?? "",
       notes: row.notes ?? "",
@@ -601,15 +635,17 @@ export default function AssetSettingsPage() {
 
   const handleSaveHandoverUser = async () => {
     const name = handoverUserForm.name.trim();
-    const position = handoverUserForm.position.trim();
-    // Both are `not null` with a blank check in the database, so this is the same
-    // validation as the price field in the asset form: catch it before the write
-    // so the refusal names the box instead of arriving as a bare `23514`.
+    // Both are `not null` in the database — `name` by a blank check on the column,
+    // `position_id` by the constraint `02200` added — so this is the same
+    // validation as the price field in the asset form: catch it before the write so
+    // the refusal names the box instead of arriving as a bare `23502`.
     if (name === "") {
       setSaveError(t("errors.handoverUserNameRequired"));
       return;
     }
-    if (position === "") {
+    // An empty dropdown is `""`, which is not a `positions` id, so this is the
+    // only place a missing position can be caught.
+    if (handoverUserForm.positionId === "") {
       setSaveError(t("errors.handoverUserPositionRequired"));
       return;
     }
@@ -619,7 +655,7 @@ export default function AssetSettingsPage() {
     try {
       const input = {
         name,
-        position,
+        positionId: handoverUserForm.positionId,
         departmentId:
           departmentIdByName.get(handoverUserForm.department) ?? null,
         profileId: handoverUserForm.profileId || null,
@@ -1508,18 +1544,46 @@ export default function AssetSettingsPage() {
                 {t("table.handoverUserPosition")}{" "}
                 <span className="text-error-500">*</span>
               </Label>
-              <Input
+              {/* A dropdown of the admin-managed list, not a text box. That was
+                  the point of `02200`: free text could only hold the positions
+                  somebody remembered to type, so `Technician` and `technician`
+                  were two entries with nothing able to tell them apart.
+
+                  No "type a new one here" path on purpose — a typo typed into a
+                  box becomes a position of its own, permanently, which is the
+                  exact failure the table exists to remove. Adding a title means a
+                  deliberate trip to the Position list.
+
+                  Keyed on the editing id *and* the current value, like the
+                  department picker below: `Select` reads `defaultValue` once, so
+                  an unkeyed one would keep showing whatever it mounted with after
+                  an edit opened the modal on a different row. */}
+              <Select
+                key={`handover-user-position-${
+                  editingHandoverUserId ?? "new"
+                }-${handoverUserForm.positionId}`}
                 id="setting-handover-user-position"
-                name="position"
-                value={handoverUserForm.position}
-                onChange={(event) =>
+                options={[
+                  { value: "", label: t("fields.choosePosition") },
+                  ...positionChoices,
+                ]}
+                defaultValue={handoverUserForm.positionId}
+                onChange={(value) =>
                   setHandoverUserForm((prev) => ({
                     ...prev,
-                    position: event.target.value,
+                    positionId: value,
                   }))
                 }
-                placeholder={t("fields.handoverUserPositionPlaceholder")}
               />
+              {positionChoices.length === 0 ? (
+                <p className="mt-1.5 text-xs text-warning-600 dark:text-warning-500">
+                  {t("fields.noPositionsYet")}
+                </p>
+              ) : (
+                <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                  {t("fields.handoverUserPositionHint")}
+                </p>
+              )}
             </div>
 
             <div>

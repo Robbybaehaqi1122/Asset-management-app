@@ -4,16 +4,19 @@ import { useTranslation } from "react-i18next";
 import PageBreadcrumb from "@/components/common/PageBreadCrumb";
 import PageMeta from "@/components/common/PageMeta";
 import Label from "@/components/form/Label";
+import Checkbox from "@/components/form/input/Checkbox";
 import Input from "@/components/form/input/InputField";
 import Select from "@/components/form/Select";
 import TextArea from "@/components/form/input/TextArea";
 import Badge from "@/components/ui/badge/Badge";
 import Button from "@/components/ui/button/Button";
 import { Modal } from "@/components/ui/modal";
+import { Dropdown } from "@/components/ui/dropdown/Dropdown";
+import { DropdownItem } from "@/components/ui/dropdown/DropdownItem";
 import { useAuth } from "@/context/AuthContext";
 import { useIsAdmin } from "@/hooks/useIsAdmin";
 import { useModal } from "@/hooks/useModal";
-import { CloseIcon, PlusIcon, TrashBinIcon } from "@/icons";
+import { CloseIcon, HorizontaLDots, PlusIcon } from "@/icons";
 import type {
   AssetCondition,
   AssetUnit,
@@ -23,6 +26,7 @@ import { ASSET_DEPARTMENTS } from "@/modules/assets/services/assetService";
 import {
   deleteHandover,
   getHandovers,
+  findUnavailableAssets,
   getHandoverTargets,
   getHandoverUserOptions,
   getOwnHandoverUserIds,
@@ -31,6 +35,7 @@ import {
   issueHandover,
   returnHandover,
   HandoverOpenError,
+  NoAssetsSelectedError,
   NoRowsWrittenError,
 } from "../services/handoverService";
 import type {
@@ -40,15 +45,31 @@ import type {
 } from "../services/handoverService";
 
 type IssueForm = {
-  assetId: string;
+  /**
+   * The assets going out together, as ids.
+   *
+   * A list rather than a single id, and the database was always the thing that
+   * allowed it: `assignments_one_open_per_asset` is unique *per asset*, so one
+   * `user_id` holding three assets was legal from the first migration. The form
+   * was the only thing forcing one device at a time.
+   *
+   * Order is preserved so the notice can name what went out in the order it was
+   * picked, and so a batch is built the way it was read.
+   */
+  assetIds: string[];
   userId: string;
   dueDate: string;
+  /**
+   * One value for the whole batch, or `""` for none of them.
+   *
+   * See `HandoverInput.conditionAtHandover` for why this is not per asset.
+   */
   conditionAtHandover: string;
   notes: string;
 };
 
 const EMPTY_ISSUE: IssueForm = {
-  assetId: "",
+  assetIds: [],
   userId: "",
   dueDate: "",
   conditionAtHandover: "",
@@ -135,6 +156,15 @@ export default function HandoverListPage() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+
+  /**
+   * Which row's action menu is open, or null.
+   *
+   * One id at the page rather than a `useState` per row, for the same reason
+   * `UserListPage` does it: a boolean per row would mean a component per row just
+   * to hold it, and only one menu can usefully be open anyway.
+   */
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
 
   const reload = useCallback(() => setReloadToken((prev) => prev + 1), []);
 
@@ -237,12 +267,46 @@ export default function HandoverListPage() {
    * common case is one click and nobody has to remember.
    */
   /**
-   * The asset chosen in the issue form, so its own document number can be shown
-   * as a read-only reference. The form never writes it — `assets.handover_doc_no`
-   * is edited on the asset form, and a handover must not overwrite the number the
-   * previous handover was recorded under.
+   * The assets currently ticked, in the order they were picked.
+   *
+   * Derived rather than stored twice: `issueForm.assetIds` holds the ids, and the
+   * rows are looked up here so the list cannot show an asset that is not in it.
    */
-  const selectedTarget = targets.find((row) => row.id === issueForm.assetId);
+  const selectedTargets = useMemo(
+    () =>
+      issueForm.assetIds
+        .map((id) => targets.find((row) => row.id === id))
+        .filter((row): row is HandoverTarget => row !== undefined),
+    [issueForm.assetIds, targets],
+  );
+
+  /**
+   * Every document number in the batch, as one line.
+   *
+   * Read-only either way, and with several assets there is no single number to
+   * show — so this lists the distinct ones. An asset with no document number is
+   * named so its absence is visible rather than silently shortening the list: the
+   * admin handed over three things and can see that one of them has no document
+   * number on file, which is exactly the thing worth noticing.
+   */
+  const batchDocNo = useMemo(() => {
+    const withDoc = [
+      ...new Set(
+        selectedTargets
+          .map((row) => row.handoverDocNo)
+          .filter((value): value is string => value !== null && value !== ""),
+      ),
+    ];
+    const withoutDoc = selectedTargets.filter(
+      (row) => !row.handoverDocNo,
+    ).length;
+
+    if (withDoc.length === 0 && withoutDoc === 0) return null;
+    return {
+      numbers: withDoc,
+      withoutDoc,
+    };
+  }, [selectedTargets]);
 
   /**
    * The roster entry chosen in the issue form, so its department can be shown
@@ -266,17 +330,63 @@ export default function HandoverListPage() {
    */
   const issuerName = profile?.full_name || user?.email || "";
 
-  const handleChangeAsset = (assetId: string) => {
-    const target = targets.find((row) => row.id === assetId);
+  /**
+   * Add or remove one asset from the batch.
+   *
+   * **The condition snapshot is recomputed from the whole selection, not from the
+   * box just clicked.** Prefilling on a single toggle would leave the field
+   * showing the condition of whichever asset was picked last, which reads as "this
+   * is the condition of the batch" and is not true whenever the assets disagree.
+   *
+   * So the rule is one sentence and it is enforced here rather than trusted:
+   * prefill only when every selected asset agrees, blank otherwise. Two assets
+   * both `good` prefill `good`; add a `fair` one and the field clears rather than
+   * silently claiming a shared value. The admin can still type one value to
+   * deliberately record across the batch — that is a choice, and this is what
+   * keeps it from looking like an accident.
+   */
+  const handleToggleAsset = (assetId: string) => {
+    setIssueForm((prev) => {
+      const assetIds = prev.assetIds.includes(assetId)
+        ? prev.assetIds.filter((id) => id !== assetId)
+        : [...prev.assetIds, assetId];
+
+      const conditions = new Set(
+        assetIds
+          .map((id) => targets.find((row) => row.id === id)?.condition)
+          .filter((value): value is AssetCondition => value !== undefined),
+      );
+
+      return {
+        ...prev,
+        assetIds,
+        conditionAtHandover: conditions.size === 1 ? [...conditions][0] : "",
+      };
+    });
+  };
+
+  const handleSelectAllAssets = () => {
+    setIssueForm((prev) => {
+      const assetIds = targets.map((row) => row.id);
+      const conditions = new Set(targets.map((row) => row.condition));
+      return {
+        ...prev,
+        assetIds,
+        conditionAtHandover: conditions.size === 1 ? [...conditions][0] : "",
+      };
+    });
+  };
+
+  const handleClearAssets = () => {
     setIssueForm((prev) => ({
       ...prev,
-      assetId,
-      conditionAtHandover: target ? target.condition : prev.conditionAtHandover,
+      assetIds: [],
+      conditionAtHandover: "",
     }));
   };
 
   const handleIssue = async () => {
-    if (issueForm.assetId === "") {
+    if (issueForm.assetIds.length === 0) {
       setSaveError(t("errors.assetRequired"));
       return;
     }
@@ -288,8 +398,8 @@ export default function HandoverListPage() {
     setIsSaving(true);
     setSaveError(null);
     try {
-      await issueHandover({
-        assetId: issueForm.assetId,
+      const created = await issueHandover({
+        assetIds: issueForm.assetIds,
         userId: issueForm.userId,
         issuedBy: user?.id ?? "",
         dueDate: issueForm.dueDate || null,
@@ -298,15 +408,45 @@ export default function HandoverListPage() {
         notes: issueForm.notes,
       });
       issueModal.closeModal();
-      setNotice(t("issued"));
+      // Counted from the rows that came back rather than from the ids that went
+      // out: the batch is all-or-nothing, so the two agree — but counting the
+      // response means the notice can never claim more handovers than exist.
+      setNotice(
+        created.length === 1
+          ? t("issued")
+          : t("issuedMany", { count: created.length }),
+      );
       reload();
     } catch (error) {
-      // Two refusals worth telling apart, both from the database rather than
-      // from a check here. `23514` is the asset not being available — retired,
-      // damaged, already out, or in maintenance — and the status is named in the
-      // message. `23505` is two handovers of the same asset racing.
-      if (isUnavailableAssetError(error)) {
-        setSaveError(t("errors.notAvailable"));
+      // Three refusals worth telling apart, all from the database rather than from
+      // a check here.
+      //
+      // `23514` is an asset not being available — retired, damaged, already out,
+      // or in maintenance — and with a batch it names a bare uuid the admin cannot
+      // match to anything on screen. So the message is followed by one extra read
+      // that resolves those ids back to asset codes. That read is deliberately
+      // **after** the failure and never before the insert: a pre-check would be a
+      // second source of truth that a second admin can invalidate between the two,
+      // whereas the trigger is the boundary.
+      if (error instanceof NoAssetsSelectedError) {
+        // Reachable only if the button were pressed with nothing ticked, which the
+        // guard above the button is meant to stop. Kept anyway: the service
+        // refusing an empty batch is what makes "the service reported success for
+        // nothing" impossible, and swallowing that here would undo the point.
+        setSaveError(t("errors.assetRequired"));
+      } else if (isUnavailableAssetError(error)) {
+        try {
+          const gone = await findUnavailableAssets(issueForm.assetIds, unit);
+          setSaveError(
+            gone.length === 0
+              ? t("errors.notAvailable")
+              : t("errors.notAvailableNamed", {
+                  assets: gone.map((row) => row.assetCode).join(", "),
+                }),
+          );
+        } catch {
+          setSaveError(t("errors.notAvailable"));
+        }
       } else if (isAlreadyHandedOverError(error)) {
         setSaveError(t("errors.alreadyHandedOver"));
       } else {
@@ -611,39 +751,18 @@ export default function HandoverListPage() {
                           </p>
                         )}
                       </td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center justify-end gap-2">
-                          {/* Return is offered to the holder, which is what
-                              `assignments_update_own_or_admin` allows. The
-                              membership test is the roster id, NOT
-                              `row.userId === user?.id` — see `ownUserIds`. */}
-                          {isOpen &&
-                            (isAdmin || ownUserIds.has(row.userId)) && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                disabled={isSaving}
-                                onClick={() => void handleReturn(row)}
-                              >
-                                {t("return")}
-                              </Button>
-                            )}
-                          {isAdmin && (
-                            <span
-                              title={isOpen ? t("deleteOpenHint") : undefined}
-                            >
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                disabled={isSaving}
-                                onClick={() => handleOpenDelete(row)}
-                                aria-label={t("deleteLabel")}
-                              >
-                                <TrashBinIcon className="size-4" />
-                              </Button>
-                            </span>
-                          )}
-                        </div>
+                      <td className="px-4 py-3 text-end">
+                        <HandoverRowActions
+                          row={row}
+                          isOpen={isOpen}
+                          canReturn={isAdmin || ownUserIds.has(row.userId)}
+                          canDelete={isAdmin}
+                          isSaving={isSaving}
+                          openMenuId={openMenuId}
+                          setOpenMenuId={setOpenMenuId}
+                          onReturn={() => void handleReturn(row)}
+                          onDelete={() => handleOpenDelete(row)}
+                        />
                       </td>
                     </tr>
                   );
@@ -666,22 +785,82 @@ export default function HandoverListPage() {
 
           <div className="mt-5 space-y-4">
             <div>
-              <Label htmlFor="handover-asset">
-                {t("fields.asset")} <span className="text-error-500">*</span>
-              </Label>
-              <Select
-                key={`asset-${formToken}`}
-                id="handover-asset"
-                className="mt-1"
-                options={[
-                  { value: "", label: t("fields.assetPlaceholder") },
-                  ...targets.map((row) => ({
-                    value: row.id,
-                    label: `${row.assetCode} — ${row.name}`,
-                  })),
-                ]}
-                onChange={handleChangeAsset}
-              />
+              <div className="flex items-center justify-between gap-3">
+                <Label htmlFor="handover-assets-label">
+                  {t("fields.assets")} <span className="text-error-500">*</span>
+                </Label>
+                {/* Both buttons are absent rather than disabled when there is
+                    nothing to act on, so the row never shows two controls that do
+                    nothing. "Select all" only appears once something is ticked,
+                    because with nothing ticked it and "clear" are the same action. */}
+                {targets.length > 1 &&
+                  (issueForm.assetIds.length === targets.length ? (
+                    <button
+                      type="button"
+                      onClick={handleClearAssets}
+                      className="shrink-0 text-xs font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                    >
+                      {t("fields.assetsClearAll")}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleSelectAllAssets}
+                      className="shrink-0 text-xs font-medium text-brand-600 hover:text-brand-700 dark:text-brand-400 dark:hover:text-brand-300"
+                    >
+                      {t("fields.assetsSelectAll")}
+                    </button>
+                  ))}
+              </div>
+
+              {/* A checkbox list rather than a `MultiSelect`, and that is a
+                  decision rather than an oversight. The asset list is every
+                  available asset in the unit — potentially hundreds — and
+                  `MultiSelect` has no search, so finding one code means opening a
+                  dropdown and scrolling. It also renders its own `<label>` from a
+                  string prop, which cannot be tied to this form's `Label` the way
+                  every other field here is.
+
+                  A list shows the asset code, the name and the condition together,
+                  and the selection is visible without opening anything. */}
+              <div
+                role="group"
+                aria-labelledby="handover-assets-label"
+                className="mt-1 max-h-56 overflow-y-auto rounded-lg border border-gray-200 dark:border-gray-700"
+              >
+                {targets.length === 0 ? (
+                  <p className="p-3 text-sm text-gray-500 dark:text-gray-400">
+                    {t("fields.assetPlaceholder")}
+                  </p>
+                ) : (
+                  targets.map((row) => (
+                    <label
+                      key={row.id}
+                      className="flex cursor-pointer items-center gap-3 border-b border-gray-100 px-3 py-2 last:border-b-0 hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-white/3"
+                    >
+                      <Checkbox
+                        id={`handover-asset-${row.id}`}
+                        checked={issueForm.assetIds.includes(row.id)}
+                        onChange={() => handleToggleAsset(row.id)}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm font-medium text-gray-800 dark:text-white/90">
+                          {row.assetCode}
+                        </span>
+                        <span className="block truncate text-xs text-gray-500 dark:text-gray-400">
+                          {row.name}
+                        </span>
+                      </span>
+                      <span className="shrink-0 text-xs text-gray-500 dark:text-gray-400">
+                        {t(`condition.${row.condition}`)}
+                      </span>
+                    </label>
+                  ))
+                )}
+              </div>
+              <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                {t("fields.assetsHint", { count: issueForm.assetIds.length })}
+              </p>
             </div>
 
             <div>
@@ -752,9 +931,31 @@ export default function HandoverListPage() {
 
             <div>
               <Label htmlFor="handover-doc">{t("fields.doc")}</Label>
+              {/* Read-only, and never written — `assets.handover_doc_no` is edited
+                  on the asset form, and a handover must not overwrite the number
+                  the previous handover was recorded under.
+
+                  With several assets there is no single number, so this lists the
+                  distinct ones. An asset with no document number is counted
+                  rather than dropped, because "one of the three I handed over has
+                  no document number on file" is worth noticing and a shorter list
+                  would hide it. */}
               <Input
                 id="handover-doc"
-                value={selectedTarget?.handoverDocNo ?? ""}
+                value={
+                  batchDocNo === null
+                    ? ""
+                    : [
+                        ...batchDocNo.numbers,
+                        ...(batchDocNo.withoutDoc > 0
+                          ? [
+                              t("fields.docMissing", {
+                                count: batchDocNo.withoutDoc,
+                              }),
+                            ]
+                          : []),
+                      ].join(", ")
+                }
                 readOnly
                 placeholder={t("fields.docPlaceholder")}
                 className="mt-1"
@@ -811,6 +1012,14 @@ export default function HandoverListPage() {
             <Button variant="outline" onClick={issueModal.closeModal}>
               {t("cancel")}
             </Button>
+            {/* Three independent reasons this cannot be submitted, and only two of them are
+                knowable before pressing. `people.length === 0` and
+                `targets.length === 0` are disabled rather than reported, because
+                they are already visible on screen — an empty roster is an empty
+                list right there. A **ticked-nothing** batch is different: the
+                screen looks filled in and the button says no, which is the
+                "control that looks actionable and is not" problem. So that one
+                reports itself instead. */}
             <Button
               onClick={() => void handleIssue()}
               disabled={isSaving || targets.length === 0 || people.length === 0}
@@ -937,4 +1146,138 @@ function formatTimestamp(value: string | null): string {
     month: "short",
     year: "numeric",
   });
+}
+
+/**
+ * One row's actions, behind a single menu.
+ *
+ * **A menu rather than two inline buttons**, matching `UserListPage`'s row menu,
+ * and the reason there is a real gain rather than a style preference: the Action
+ * column was the widest cell in the table while carrying two small controls, so
+ * it was taking horizontal space to say nothing. One `HorizontaLDots` trigger
+ * gives it back.
+ *
+ * **Which items appear is a UI convenience, never the enforcement point.**
+ * `assignments_update_own_or_admin` and `assignments_delete_admin` refuse whatever
+ * the gate lets through. What the gate buys is not showing an item that cannot
+ * work — and for Return specifically the membership test is the **roster id**
+ * against `ownUserIds`, never `row.userId === user?.id`, which went false for every
+ * row once `user_id` moved onto `handover_users` in `02000`.
+ *
+ * Only one menu is open at a time, and the page owns which one: `openMenuId` lives
+ * here as a prop rather than a `useState` per row, because a boolean per row would
+ * mean a component per row just to hold it.
+ */
+function HandoverRowActions({
+  row,
+  isOpen,
+  canReturn,
+  canDelete,
+  isSaving,
+  openMenuId,
+  setOpenMenuId,
+  onReturn,
+  onDelete,
+}: {
+  row: Handover;
+  isOpen: boolean;
+  /** Whether this caller may close this handover, per the policy above. */
+  canReturn: boolean;
+  canDelete: boolean;
+  isSaving: boolean;
+  openMenuId: string | null;
+  setOpenMenuId: (id: string | null) => void;
+  onReturn: () => void;
+  onDelete: () => void;
+}) {
+  const { t } = useTranslation("common", { keyPrefix: "handover" });
+  const isMenuOpen = openMenuId === row.id;
+
+  /**
+   * What the menu would actually contain, computed **before** the early return.
+   *
+   * Testing the permissions instead of the rendered items is the trap here, and it
+   * produces an empty menu in the most ordinary case on the screen: a staff member
+   * looking at a handover that has already come back. They may return it
+   * (`canReturn` is true) but there is nothing to close, so the Return item is not
+   * rendered — and they cannot delete, so the menu ends up with no items at all
+   * behind a kebab that opens.
+   *
+   * So the guard asks the question the menu actually answers: is there an item?
+   */
+  const showReturn = isOpen && canReturn;
+  const showDelete = canDelete;
+
+  /**
+   * Nothing to act on, so no trigger at all rather than a disabled one. A staff
+   * member looking at somebody else's handover has neither. A kebab that opens
+   * onto an empty list is a control that looks actionable and is not.
+   */
+  if (!showReturn && !showDelete) return null;
+
+  /**
+   * Wraps a handler so the menu closes first.
+   *
+   * Closing before the work rather than after matters for the two actions that
+   * open a modal: the modal renders over the page, and a menu still open behind
+   * it is the layer that ends up focused when it closes.
+   */
+  const run = (action: () => void) => () => {
+    setOpenMenuId(null);
+    action();
+  };
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpenMenuId(isMenuOpen ? null : row.id)}
+        aria-label={t("actionsLabel", {
+          name: assetLabel(row, t("fields.unknown")),
+        })}
+        aria-haspopup="menu"
+        aria-expanded={isMenuOpen}
+        className="dropdown-toggle rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-50 dark:text-gray-400 dark:hover:bg-white/5 dark:hover:text-gray-200"
+        disabled={isSaving}
+      >
+        <HorizontaLDots className="size-5" />
+      </button>
+
+      {isMenuOpen && (
+        <Dropdown isOpen onClose={() => setOpenMenuId(null)}>
+          {/* Return only while the handover is open. A closed one has nothing to
+              close, and offering it would produce a `23514` from
+              `assignments_guard_asset_available` for a nonsensical edit. */}
+          {showReturn && (
+            <DropdownItem
+              onClick={run(onReturn)}
+              className={isSaving ? "pointer-events-none opacity-50" : ""}
+            >
+              {t("return")}
+            </DropdownItem>
+          )}
+
+          {showDelete && (
+            /* The title sits on a wrapper, not on the item: a disabled control
+               does not receive pointer events, so a tooltip on it would never
+               show — and the wording is the point, because the real reason an open
+               handover cannot be deleted is that deleting it would put the asset
+               back in stock while the person still has it. */
+            <span title={isOpen ? t("deleteOpenHint") : undefined}>
+              <DropdownItem
+                onClick={run(onDelete)}
+                className={
+                  isOpen
+                    ? "pointer-events-none opacity-50"
+                    : "text-error-600 hover:bg-error-50 dark:text-error-500 dark:hover:bg-error-500/10"
+                }
+              >
+                {t("delete")}
+              </DropdownItem>
+            </span>
+          )}
+        </Dropdown>
+      )}
+    </div>
+  );
 }

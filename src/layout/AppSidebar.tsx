@@ -109,13 +109,21 @@ const navItems: NavItem[] = [
     name: "User Management",
     key: "userManagement",
     adminOnly: true,
-    // A submenu rather than two separate top-level rows, because these are two
-    // screens of one thing: the people, and the departments they belong to. The
-    // one with an open submenu is derived from the active route, so navigating
-    // into either screen opens this group on its own.
+    // A submenu rather than separate top-level rows, because these are screens of
+    // one thing: the people, and the reference data they are described by. The one
+    // with an open submenu is derived from the active route, so navigating into any
+    // of them opens this group on its own.
+    //
+    // `adminOnly` is on the **group**, so a new sub-item inherits it without
+    // repeating it — and a group whose every sub-item is admin-only is dropped
+    // entirely rather than rendered as a dead row for a staff member.
     subItems: [
       { name: "User List", key: "userList", path: "/users" },
       { name: "Department", key: "department", path: "/departments" },
+      // Positions feed the `position` dropdown on the handover roster's Add User
+      // tab, so it belongs with the other list that feeds a picker rather than
+      // under Asset Settings.
+      { name: "Position", key: "position", path: "/positions" },
     ],
   },
 ];

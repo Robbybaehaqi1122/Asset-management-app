@@ -58,6 +58,21 @@ export class HandoverOpenError extends Error {
   }
 }
 
+/**
+ * Raised when a batch is issued with nothing in it.
+ *
+ * A separate class rather than reusing `NoRowsWrittenError`, because the two mean
+ * different things to the caller: that one says the database filtered the write,
+ * this one says the form was submitted empty. Folding them together would make
+ * the empty case look like an RLS refusal.
+ */
+export class NoAssetsSelectedError extends Error {
+  constructor() {
+    super("No asset was selected, so there was nothing to hand over");
+    this.name = "NoAssetsSelectedError";
+  }
+}
+
 /** The asset, trimmed to what the handover list shows. */
 export type HandoverAsset = {
   id: string;
@@ -219,7 +234,7 @@ export type HandoverTarget = {
  * why the list below has to be read when a column changes.
  */
 const HANDOVER_COLUMNS =
-  `id, asset_id, user_id, assigned_by, assigned_at, due_date, returned_at, notes, condition_at_handover, asset:assets!assignments_asset_id_fkey!inner(id, asset_code, name, status, condition, department, handover_doc_no), holder:handover_users!assignments_user_id_fkey(name, position, department:departments(name)), issuedBy:profiles!assignments_assigned_by_fkey(full_name, email)` as const;
+  `id, asset_id, user_id, assigned_by, assigned_at, due_date, returned_at, notes, condition_at_handover, asset:assets!assignments_asset_id_fkey!inner(id, asset_code, name, status, condition, department, handover_doc_no), holder:handover_users!assignments_user_id_fkey(name, position:positions(name), department:departments(name)), issuedBy:profiles!assignments_assigned_by_fkey(full_name, email)` as const;
 
 /** What PostgREST hands back before it is flattened. */
 type RawHandover = Record<string, unknown>;
@@ -349,9 +364,21 @@ export async function getHandoverTargets(
 }
 
 export type HandoverInput = {
-  assetId: string;
   /**
-   * The person receiving it — a **`handover_users` id**, not an account id.
+   * The assets going out together — a **`handover_users` id** is `userId` below,
+   * and these are `assets` ids.
+   *
+   * A **list**, not a single id, because handing a laptop to somebody without its
+   * charger is not the thing anyone does, and the database already allowed it:
+   * `assignments_one_open_per_asset` is unique *per asset*, so N assets pointed at
+   * one `user_id` were always legal. Only the form was single-asset. Verified on
+   * the local stack before this change: three assets to one person, three rows,
+   * all three assets `assigned`, and returning two of three leaves the third out
+   * while the first two go back to `available`.
+   */
+  assetIds: string[];
+  /**
+   * The person receiving them — a **`handover_users` id**, not an account id.
    *
    * That is the whole change in `02000`, and getting it wrong fails loudly rather
    * than silently: a profile id here matches no roster row and the insert is
@@ -359,7 +386,7 @@ export type HandoverInput = {
    */
   userId: string;
   /**
-   * The authenticated account handing it over; recorded as `assigned_by`.
+   * The authenticated account handing them over; recorded as `assigned_by`.
    *
    * Still a profile id, deliberately. The issuer is who used this application,
    * which is not something a roster row can answer.
@@ -367,6 +394,20 @@ export type HandoverInput = {
   issuedBy: string;
   dueDate?: string | null;
   notes?: string | null;
+  /**
+   * One value recorded on every row of the batch, or null for none of them.
+   *
+   * **Not per asset, and the form says so.** `assets.condition` is a free column
+   * per asset, so a set of five will usually not agree — a charger may be `new`
+   * while the laptop is `fair` — and recording one value across all of them is a
+   * deliberate simplification rather than a claim that they match. The form only
+   * prefills when the selected assets already agree, and leaves the field blank
+   * otherwise so each row keeps its own condition in `assets`.
+   *
+   * A per-asset editor inside a multi-select form is the alternative, and it is a
+   * second form nested in the first. Not built; the honest cost is named here
+   * rather than hidden behind a field that pretends to be per-row.
+   */
   conditionAtHandover?: AssetCondition | null;
 };
 
@@ -407,9 +448,20 @@ export type HandoverUserOption = {
 export async function getHandoverUserOptions(): Promise<HandoverUserOption[]> {
   const { data, error } = await supabase
     .from("handover_users")
-    .select("id, name, position, department:departments(name)")
+    .select("id, name, position:positions(name), department:departments(name)")
+    // `position(name)` — **parentheses, not a dot or a colon.** `position` became an
+    // aliased embed in `02200`, and PostgREST's ordering syntax for an embedded
+    // resource is `alias(column)`. Both other spellings are hard errors rather than
+    // silent no-ops, which is the better failure:
+    //
+    //   position:name  -> PGRST100 unexpected ':'
+    //   position.name  -> PGRST100 expecting "asc", "desc", …
+    //   position       -> 200, and sorts nothing at all
+    //
+    // That third one is the trap: leaving the old `.order("position")` in place
+    // would have compiled, returned rows, and quietly stopped sorting.
     .order("name", { ascending: true })
-    .order("position", { ascending: true });
+    .order("position(name)", { ascending: true });
 
   if (error) throw error;
 
@@ -417,7 +469,13 @@ export async function getHandoverUserOptions(): Promise<HandoverUserOption[]> {
     const department = row.department as
       Record<string, unknown> | null | undefined;
     const name = String(row.name ?? "");
-    const position = String(row.position ?? "");
+    // Both are aliased embeds — objects, not strings. See `mapHolder`.
+    const positionRow = row.position as
+      Record<string, unknown> | null | undefined;
+    const position =
+      positionRow && typeof positionRow === "object"
+        ? String(positionRow.name ?? "")
+        : "";
     const departmentName =
       department && typeof department === "object"
         ? str(department.name)
@@ -478,7 +536,19 @@ async function currentUserId(): Promise<string | null> {
 }
 
 /**
- * Hand one asset over to one person.
+ * Hand one or more assets over to one person, as **one batch or none**.
+ *
+ * **All-or-nothing, and the reason it is one statement.** PostgREST inserts an
+ * array of rows in a single transaction, so if the third of five assets is no
+ * longer `available` the whole batch rolls back and nothing is created. The
+ * alternative — five separate inserts — leaves two records behind that the admin
+ * did not expect and has to unpick by hand, which for a register whose job is to
+ * say who is holding what is worse than a refusal.
+ *
+ * The trigger still runs per row, so `assignments_guard_asset_available` fires
+ * once per asset and `assignments_sync_asset_status` flips each one to `assigned`.
+ * The batch is only ever one row per *asset*, so the per-asset guards and
+ * `assignments_one_open_per_asset` keep exactly the meaning they had.
  *
  * `assigned_at` is left to its `now()` default rather than sent from the browser:
  * it is the server's clock, and a client clock is a second source of truth for
@@ -486,33 +556,105 @@ async function currentUserId(): Promise<string | null> {
  * and the database has no way to know who asked.
  *
  * `status` is not sent and cannot be. `assignments_sync_asset_status` is an
- * `after insert` trigger and owns that transition — the same reason
- * `createAsset` does not send one.
+ * `after insert` trigger and owns that transition — the same reason `createAsset`
+ * does not send one.
  *
  * Refusals the client should be able to say something useful about:
- * - `23514` — the asset is not `available`: retired, damaged, already out, or in
- *   maintenance. One code for all four, because the message names the status.
- * - `23505` — two handovers of the same asset raced; the index caught it.
- * - `23503` — `userId` is not a `handover_users` row. A client bug, not user
- *   error, so `issueHandover` lets it through rather than mapping it.
+ * - `23514` — one of the assets is not `available`: retired, damaged, already out,
+ *   or in maintenance. One code for all four, because the message names the status.
+ * - `23505` — two handovers of the same asset raced; the index caught it. With a
+ *   batch this fires for the whole statement, not one row.
+ * - `23503` — `userId` is not a `handover_users` row. A client bug, not user error,
+ *   so this is left unmapped rather than dressed up as a user-facing message.
  */
-export async function issueHandover(input: HandoverInput): Promise<Handover> {
+export async function issueHandover(input: HandoverInput): Promise<Handover[]> {
+  // An empty batch would insert zero rows, and PostgREST answers that with an
+  // empty array rather than an error — so `issueHandover` would report success for
+  // a handover that never happened. The form checks this too; checking here as
+  // well is because a service that can report success for doing nothing is the
+  // exact failure this codebase keeps documenting.
+  if (input.assetIds.length === 0) {
+    throw new NoAssetsSelectedError();
+  }
+
+  const rows = input.assetIds.map((assetId) => ({
+    asset_id: assetId,
+    user_id: input.userId,
+    assigned_by: input.issuedBy,
+    due_date: input.dueDate || null,
+    notes: input.notes?.trim() || null,
+    condition_at_handover: input.conditionAtHandover ?? null,
+  }));
+
   const { data, error } = await supabase
     .from("assignments")
-    .insert({
-      asset_id: input.assetId,
-      user_id: input.userId,
-      assigned_by: input.issuedBy,
-      due_date: input.dueDate || null,
-      notes: input.notes?.trim() || null,
-      condition_at_handover: input.conditionAtHandover ?? null,
-    })
-    .select(HANDOVER_COLUMNS)
-    .maybeSingle();
+    .insert(rows)
+    .select(HANDOVER_COLUMNS);
 
   if (error) throw error;
-  if (!data) throw new NoRowsWrittenError("inserted");
-  return mapHandover(data as RawHandover);
+
+  // An insert that returns no rows means the write was filtered, which for an
+  // INSERT against a row filter is the `assignments_insert_admin` policy refusing
+  // a non-admin — reported as `42501`, but checked here too because "the service
+  // returned an empty array" must never reach the screen as "handed over".
+  if (!data || data.length === 0) throw new NoRowsWrittenError("inserted");
+
+  return (data as RawHandover[]).map(mapHandover);
+}
+
+/**
+ * Which of these assets are no longer `available`.
+ *
+ * Called **only after a `23514`**, never before the insert, and that ordering is
+ * the point. A pre-check would be a second source of truth that a second admin
+ * can invalidate between the read and the write; the trigger is the boundary. So
+ * this exists purely to turn the trigger's message — which names a bare uuid —
+ * into something an admin can act on.
+ *
+ * It reuses the same read as the issue form's picker, filtered to the ids that
+ * were attempted, so the answer is "these of the ones you picked are gone" rather
+ * than a second interpretation of availability.
+ */
+export async function findUnavailableAssets(
+  assetIds: string[],
+  unit: AssetUnit,
+): Promise<HandoverTarget[]> {
+  if (assetIds.length === 0) return [];
+
+  const { data, error } = await supabase
+    .from("assets")
+    .select("id, asset_code, name, condition, handover_doc_no")
+    .eq("department", unit)
+    .eq("status", "available")
+    .in("id", assetIds);
+
+  if (error) throw error;
+
+  const stillAvailable = new Set(
+    ((data ?? []) as RawHandover[]).map((row) => String(row.id)),
+  );
+
+  // Returned as the *missing* ones, so the caller's message can name them
+  // directly rather than subtract two lists itself.
+  return await Promise.all(
+    assetIds
+      .filter((id) => !stillAvailable.has(id))
+      .map(async (id) => {
+        const { data: row } = await supabase
+          .from("assets")
+          .select("id, asset_code, name, condition, handover_doc_no")
+          .eq("id", id)
+          .maybeSingle();
+        const r = (row ?? {}) as RawHandover;
+        return {
+          id,
+          assetCode: String(r.asset_code ?? id),
+          name: String(r.name ?? ""),
+          condition: String(r.condition ?? "") as AssetCondition,
+          handoverDocNo: str(r.handover_doc_no),
+        };
+      }),
+  );
 }
 
 /**

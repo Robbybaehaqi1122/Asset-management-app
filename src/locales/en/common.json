@@ -12,7 +12,8 @@
       "assetIt": "Asset IT",
       "assetHsse": "Asset HSSE",
       "handover": "Asset Handover",
-      "assetSettings": "Asset Settings"
+      "assetSettings": "Asset Settings",
+      "position": "Position"
     }
   },
   "header": {
@@ -160,6 +161,49 @@
       "inUse": "{name} still has {count} person/people in it. Move them to another department first."
     }
   },
+  "positions": {
+    "pageTitle": "Position",
+    "pageDescription": "The job titles a person on the handover roster can hold",
+    "subtitle": "The Add User tab in Asset Settings offers these as a dropdown, so a position added here is available immediately when adding someone to the handover roster.",
+    "checkingAccess": "Checking your access…",
+    "noAccess": "This page is only available to administrators.",
+    "loading": "Loading positions…",
+    "empty": "No positions yet. Add the job titles your company actually uses before adding anyone to the handover roster.",
+    "dismiss": "Dismiss",
+    "addPosition": "Add position",
+    "createTitle": "Add position",
+    "editTitle": "Edit position",
+    "save": "Save",
+    "created": "{name} was added to the position list.",
+    "updated": "{name} was updated.",
+    "deleteTitle": "Delete this position?",
+    "deleteBody": "{name} will be removed from the list of positions.",
+    "deleteInUse": "Move everyone holding this position first — deleting it would leave them without one.",
+    "deleteLabel": "Delete {name}",
+    "editLabel": "Edit {name}",
+    "deleteConfirm": "Delete",
+    "deleting": "Deleting…",
+    "deleted": "{name} was deleted.",
+    "noHolders": "Unused",
+    "holders": "{count} holder(s)",
+    "cancel": "Cancel",
+    "saving": "Saving…",
+    "fields": {
+      "name": "Name",
+      "namePlaceholder": "e.g. Field Technician",
+      "description": "Description",
+      "descriptionPlaceholder": "What this position covers"
+    },
+    "errors": {
+      "load": "The position list could not be loaded.",
+      "nameRequired": "A name is required.",
+      "duplicate": "A position with that name already exists. Names are case-sensitive, so check the spelling.",
+      "save": "The position could not be saved. Please try again.",
+      "delete": "The position could not be deleted. Please try again.",
+      "inUse": "{name} is still held by {count} person/people. Move them to another position first."
+    },
+    "optional": "optional"
+  },
   "assetSettings": {
     "pageTitle": "Asset Settings",
     "pageDescription": "The categories and locations the asset form offers",
@@ -265,11 +309,13 @@
       "notes": "Notes",
       "notesPlaceholder": "Anything worth recording about this location",
       "handoverUserNamePlaceholder": "e.g. Budi Santoso",
-      "handoverUserPositionPlaceholder": "e.g. Field Technician",
       "handoverUserDepartmentHint": "Leave empty if this person has no department. This is a person’s department, so it offers every department rather than only the two asset units.",
       "noAccount": "No account",
       "handoverUserAccountHint": "Optional. Link an account only if this person also signs in — it is what lets them see and return their own handovers. Leave empty for a contractor or a visitor.",
-      "handoverUserNotesPlaceholder": "Anything worth recording about this person"
+      "handoverUserNotesPlaceholder": "Anything worth recording about this person",
+      "handoverUserPositionHint": "Pick from the Position list in User Management. Add a new title there first — this dropdown only offers positions that already exist, so a misspelling here would become a position of its own.",
+      "choosePosition": "Select a position",
+      "noPositionsYet": "There are no positions yet. Add one from User Management → Position before adding someone to the handover roster."
     },
     "errors": {
       "load": "The reference data could not be loaded.",
@@ -285,7 +331,7 @@
       "locationInUse": "This location still has {count} asset(s) pointing at it. Move them first.",
       "currentLocationInUse": "This current location still has {count} asset(s) pointing at it. Move them first.",
       "handoverUserNameRequired": "A name is required.",
-      "handoverUserPositionRequired": "A position is required.",
+      "handoverUserPositionRequired": "Choose a position. Add new job titles from the Position list in User Management.",
       "handoverUserInUse": "This person still appears on {count} handover record(s). Return or reassign them before removing the person."
     }
   },
@@ -642,6 +688,8 @@
     "deleteTitle": "Delete this handover",
     "deleteBody": "The record is removed. The asset itself is not affected.",
     "deleteLabel": "Delete handover",
+    "actionsLabel": "Actions for {name}",
+    "delete": "Delete handover",
     "deleteOpenHint": "This handover is still open. Return the asset before deleting the record.",
     "issued": "Handover issued.",
     "returned": "{name} was returned.",
@@ -679,6 +727,10 @@
       "HSSE": "HSSE"
     },
     "fields": {
+      "assets": "Assets",
+      "assetsSelectAll": "Select all",
+      "assetsClearAll": "Clear",
+      "assetsHint": "{count} selected. Handing over several assets at once creates one handover record per asset, all to the same person. Nothing is saved unless every selected asset can be handed over.",
       "asset": "Asset",
       "assetPlaceholder": "Select an available asset",
       "person": "Handed to",
@@ -688,6 +740,7 @@
       "doc": "Document no",
       "docPlaceholder": "This asset has no document number",
       "docReadOnlyHint": "Taken from the asset record, where it is edited. A handover does not change it, so every handover of this asset prints the same number.",
+      "docMissing": "{count} with no document number",
       "due": "Due date",
       "notes": "Notes",
       "notesPlaceholder": "Anything worth recording",
@@ -699,14 +752,16 @@
     "errors": {
       "load": "Handovers could not be loaded.",
       "pickers": "The asset and person lists could not be loaded, so nothing can be issued from here.",
-      "assetRequired": "Choose an asset.",
+      "assetRequired": "Choose at least one asset.",
       "personRequired": "Choose who is receiving it.",
       "notAvailable": "That asset is not available to hand over. It may be retired, damaged, already out, or in maintenance.",
       "alreadyHandedOver": "That asset was handed to somebody else first. Reload and try again.",
       "issue": "The handover could not be saved.",
       "returnDenied": "That handover could not be returned. You may only return one you are holding.",
       "open": "This handover is still open, so deleting it would put the asset back into stock while the person still has it. Return it first.",
-      "delete": "The handover could not be deleted."
-    }
+      "delete": "The handover could not be deleted.",
+      "notAvailableNamed": "Nothing was saved, because {assets} is no longer available to hand over. It may have been handed to somebody else while this form was open. Reload and pick again."
+    },
+    "issuedMany": "{count} handovers issued."
   }
 }

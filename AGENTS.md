@@ -25,7 +25,7 @@ nothing in `src/` schedules a repair, so `maintenance` is written by nothing but
 the test fixtures. See The asset inventory, Asset handover is the loans table,
 finally, and Database.
 
-**All twenty-one migrations through `20260927002100` are applied to the remote.**
+**All twenty-two migrations through `20260927002200` are applied to the remote.**
 `01900` (asset handover) was pushed on 2026-10-02 after a clean
 `db reset --local` of all nineteen files, and `migration list --linked` now shows
 local and remote agreeing on every version. `pg_indexes` returns 32 for `public`
@@ -191,6 +191,7 @@ src/
 │       ├── users/             the user-management feature: pages/ services/
 │       │                      see User management
 │       ├── departments/       the department feature: list + create, feeds the pickers
+│       └── positions/         the position feature: list + rename, feeds the roster
 │       ├── asset-settings/    the reference-data editor: pages/ services/
 │       │                      see Asset settings manages the reference data
 │       ├── assets/            the asset inventory: pages/ services/
@@ -235,7 +236,8 @@ supabase/
     └── 20260927001800_asset_hsse_inspection_register.sql  HSSE register
     ├── 20260927001900_asset_handover.sql  condition snapshot + available-only guard
     └── 20260927002000_handover_users.sql  the roster; repoints user_id
-    └── 20260927002100_sync_trigger_security_definer.sql  fixes the stranded asset
+    ├── 20260927002100_sync_trigger_security_definer.sql  fixes the stranded asset
+    └── 20260927002200_positions.sql  the job-title list; position becomes a FK
 
 .github/
 ├── ISSUES_KNOWN.md            known problems, grouped by severity
@@ -272,12 +274,13 @@ vercel.json                    SPA rewrite only — no framework, no buildComman
 | `20260927001900_asset_handover.sql` | `assignments.condition_at_handover` and the available-only guard; see Asset handover is the loans table, finally |
 | `20260927002000_handover_users.sql` | the `handover_users` roster, `assignments.user_id` repointed off `profiles`, and two RLS policies rewritten; see The recipient is not an account |
 | `20260927002100_sync_trigger_security_definer.sql` | `sync_asset_status_from_assignment` becomes `security definer`; see The return that left the asset stranded |
+| `20260927002200_positions.sql` | the `positions` list, `handover_users.position` replaced by `position_id`; see Position is a list, not a text box |
 
-**All twenty-one are applied to the remote**, confirmed by reading
-`supabase_migrations.schema_migrations` after the `02100` push, which lists 21
-rows with `20260927002100 sync_trigger_security_definer` at the top. The remote
-carries **10 tables** and **36 indexes** in `public`, measured after the push;
-`02000` adds `handover_users` and three indexes, `02100` adds nothing. `db diff --linked`
+**All twenty-two are applied to the remote**, confirmed by reading
+`supabase_migrations.schema_migrations` after the `02200` push, which lists 22
+rows. The remote carries **11 tables** and **40 indexes** in `public`, measured
+after the push; `02000` added three indexes, `02100` none, `02200` added
+`positions_name_idx` and `handover_users_position_idx`. `db diff --linked`
 reported `No schema changes found`, which is the independent proof that the
 checked-in migrations and the live database agree. Before the `01100` push it
 reported fourteen `drop column` statements; that was the diff saying the remote
@@ -293,8 +296,8 @@ applying 004, with no "Applying migration" line. That message is not a reliable
 signal in either direction — confirm a push landed by reading
 `supabase_migrations.schema_migrations`, not by trusting the CLI's wording.
 
-`pg_indexes` reports **36** for `public`, measured on the remote after the
-`02100` push, and after a clean `db reset --local` that replayed all twenty-one
+`pg_indexes` reports **40** for `public`, measured on the remote after the
+`02200` push, and after a clean `db reset --local` that replayed all twenty-two
 files. Before `02000` it was 32; that migration added `handover_users_name_idx`,
 `handover_users_department_idx` and `handover_users_profile_idx`, the last of
 which exists purely for the join in the two rewritten `assignments` policies.
@@ -307,8 +310,9 @@ has existed since `001`, which is the kind of thing that only surfaces on a clea
 `db reset --local`. Postgres creates the index for a primary key or a unique constraint
 itself, which is why none of the 14 are in the migration files.
 
-There are now **10 tables** in `public`, not 6: `01000` added `asset_credentials`,
-`01600` added `current_locations`, and `02000` added `handover_users`. Two earlier claims that this file made about
+There are now **11 tables** in `public`, not 6: `01000` added `asset_credentials`,
+`01600` added `current_locations`, `02000` added `handover_users`, and `02200`
+added `positions`. Two earlier claims that this file made about
 "6 tables" were true when written and are listed in the table rows above for `001`
 and `003` — those describe what those two files did, not the current schema.
 
@@ -448,8 +452,9 @@ triggers, `20260927000300` rls, `20260927000400` drop first-admin grant,
 `20260927001500` asset_hsse_fields, `20260927001600` asset_current_locations,
 `20260927001700` asset_unit_scoping, `20260927001800` asset_hsse_inspection_register,
 `20260927001900` asset_handover, `20260927002000` handover_users,
-`20260927002100` sync_trigger_security_definer.
-Read out of the linked project after the `02100` push, which is all twenty-one
+`20260927002100` sync_trigger_security_definer,
+`20260927002200` positions.
+Read out of the linked project after the `02200` push, which is all twenty-two
 and therefore nothing pending. That table, not
 the schema itself, is what the CLI consults to decide what is pending, and it is
 also the only trustworthy way to confirm a push landed.
@@ -2041,18 +2046,73 @@ outlives any account; the issuer is a fact about this application's audit trail
 and does not. `assigned_by` is deliberately **not** repointed — it is the one thing
 the app must be able to say "who did this", and a roster row cannot answer it.
 
-**The three fields are name, position and a department FK**, administered on a
-fourth `/asset-settings` tab. `department_id` references `departments` rather than
-repeating the free-text `categories.department` trap: `01400`'s free text is
-defensible because a *category's* unit is the closed IT/HSSE pair the asset routes
-serve, while a *person's* department has no such closed set — and `departments` is
-already documented as the department of a person. `position` is free text with a
-`not null` and a blank check, deliberately not a fourth table.
+**The three fields are name, a position FK and a department FK**, both
+administered on the fourth `/asset-settings` tab. `department_id` references
+`departments` rather than repeating the free-text `categories.department` trap:
+`01400`'s free text is defensible because a *category's* unit is the closed IT/HSSE
+pair the asset routes serve, while a *person's* department has no such closed set —
+and `departments` is already documented as the department of a person.
+
+`position` **was** free text and stopped being, in `02200`. See Position is a list,
+not a text box.
 
 **`name` is not unique, and that is a decision.** Two people can genuinely share a
 name, and refusing the second is worse than a picker showing two identical labels
 — which the form resolves by also carrying the position and the department. The
 list, the picker and the form all show all three for that reason.
+
+### Position is a list, not a text box
+
+`handover_users.position` was `text not null` from `02000`, and the reasoning was
+recorded: the issue asked for a name, a position and a department, and a table for
+a value nobody had enumerated yet is a screen with nothing in it. That reasoning
+has now run out, because **free text means the list of positions is only the ones
+somebody remembered to type**. `Technician` and `technician` and `Technician ` are
+three spellings of one job and nothing can tell them apart.
+
+`02200` makes it a reference list, administered at `/positions` and offering itself
+as the dropdown on the roster's form. **There is deliberately no "type a new one
+here" path** — a typo typed into a box becomes a position of its own, permanently,
+which is the exact failure the table exists to remove.
+
+**Three things the migration had to get right, and each was a mistake first.**
+
+1. **A CHECK constraint cannot contain a subquery.** The natural way to restate the
+   old blank check — `check (position_id is not null or exists (select … from
+   positions …))` — is **not valid Postgres**. The check belongs on
+   `positions.name`, where it also protects every future reference, and the roster
+   inherits it through the key. Asserting it on `handover_users` instead would mean
+   re-asserting it on every table that joins to `positions`.
+2. **`.order("position:name")` is not valid PostgREST either.** Ordering an embedded
+   resource is `alias(column)` — parentheses. Both other spellings are hard
+   errors, which is the better outcome: `position:name` gives `PGRST100 unexpected
+   ':'`, and `position.name` gives `PGRST100 expecting "asc"`. The trap is the
+   **third** option, leaving the old `.order("position")` in place, which compiles,
+   returns 200, and silently stops sorting. Found by running the query, not by
+   reading it.
+3. **The alias is an object, not a string.** `position:positions(name)` arrives as
+   `{"name": "Field Technician"}`, so `String(row.position)` puts
+   `[object Object]` in the "Held by" column. Both `mapHolder` and
+   `getHandoverUserOptions` read it through the same shape check that already
+   handled the `department` embed beside it.
+
+**`position_id` is `not null`, and that is a tightening.** It is the same rule the
+free-text column had, so nothing that was legal before became illegal. The backfill
+raises rather than guessing when a row's position was blank or unmatchable, because
+there is no correct value to invent — and because `not null` would otherwise fail
+the whole file several statements later with a far less obvious message.
+
+**Nothing was seeded.** There is no source to read job titles from: the Excel
+inventories are about assets, not about people. The menu starts empty and the admin
+fills it with the titles this company actually uses, which is the opposite of a
+guessed list that then looks real.
+
+**The Position screen can rename; `/departments` cannot.** `DepartmentListPage` has
+create and delete and no edit, so a misspelled department can only be fixed by
+deleting it — and only while nobody is in it. A job title is typed by hand far more
+often than a department name, so a typo here is the commonest event rather than the
+rarest, and "add a second one and leave the wrong spelling" fragments the list this
+module exists to keep whole. The department page is the one with the gap, not this.
 
 ### `user_id` was the access-control anchor, and repointing it silently broke staff
 
@@ -2139,11 +2199,55 @@ Verified after the fix through PostgREST with a staff session: `assigned` →
 `available`, and an admin issue still flips it back, and a staff INSERT is still
 refused with `42501`.
 
+### Several assets to one person, and why there is still no child table
+
+Handing somebody a laptop without its charger is not the thing anyone does, and
+the form would only take one device at a time. **The database had never objected**:
+`assignments_one_open_per_asset` is `unique (asset_id) where returned_at is
+null`, which is *per asset*, so three assets pointing at one `user_id` were legal
+from migration `001`. Only the form was single-asset.
+
+So `issueHandover` takes `assetIds: string[]` and sends **one** multi-row insert.
+
+**One statement, and that is the all-or-nothing decision.** PostgREST inserts an
+array of rows in a single transaction, so if the third of five assets is no longer
+`available` the whole batch rolls back and nothing exists. Verified through
+PostgREST: a batch of one available plus one retired asset returned `23514`, and
+the available one had **no** record and was still `available`. The alternative —
+five inserts — leaves two records behind that the admin did not expect and has to
+unpick by hand, which for a register whose job is to say who is holding what is
+worse than a refusal.
+
+**The batch is N rows, not one row with children, and the three rows stay
+separable on purpose.** Returning a laptop but keeping the mouse is a real
+outcome, so `returnHandover` is still per asset. Verified: two of three returned,
+those two went `available`, the third stayed `assigned`. A child table would have
+made that one operation, and would also have made "the mouse came back" a fact
+the schema cannot record without the parent being re-opened.
+
+**A checkbox list rather than the `MultiSelect` primitive**, which is one of the
+13 retained and has no consumer. `MultiSelect` has no search, and this list is
+every available asset in the unit — finding one code would mean opening a dropdown
+and scrolling. It also renders its own `<label>` from a string prop, which cannot
+be tied to this form's `Label` the way every other field here is.
+
+**The condition snapshot is one value for the batch, not per asset**, and that is
+a simplification rather than a claim that they match — a charger may be `new`
+while the laptop is `fair`. The field is prefilled **only when every selected
+asset already agrees**, and clears the moment one disagrees, so it never looks
+like a shared reading that nobody chose. A per-asset editor inside a multi-select
+form is the alternative; not built, and the honest cost is named on the type.
+
+**`findUnavailableAssets` runs only after a `23514`, never before the insert.** A
+pre-check would be a second source of truth a second admin can invalidate between
+the read and the write; the trigger is the boundary. The extra read exists purely
+to turn the trigger's bare uuid into asset codes the admin can see on screen.
+
 ### What the page does not do
 
 No transfer between holders, no disposal, no maintenance scheduling, no
 child-table inventory. Issue / Return / Delete on the loan record, filtered by
-unit, is the whole surface. `maintenance` still has no UI, so
+unit, is the whole surface. A batch is several rows, not a parent with children. `maintenance` still has no UI, so
 `guard_maintenance_assignment` remains reachable only from SQL — the same gap
 recorded under The asset inventory.
 
@@ -2783,10 +2887,10 @@ something local, which is itself the bug.
 - i18next is bootstrapped once in `src/i18n/index.ts`, imported by `src/main.tsx`.
   Never re-initialise it.
 - One namespace, `"common"`. One locale, `en`. The file is
-  `src/locales/en/common.json` — add new keys there. It holds 599 leaf keys
+  `src/locales/en/common.json` — add new keys there. It holds 649 leaf keys
   today, under `sidebar`, `header`, `userDropdown`, `auth`, `profile`,
-  `mustChangePassword`, `departments`, `assetSettings`, `users`, `assets`, and
-  `handover`.
+  `mustChangePassword`, `departments`, `positions`, `assetSettings`, `users`,
+  `assets`, and `handover`.
 - **Do not repeat a key inside one object.** JSON resolves a duplicate by taking
   the last one, silently, and `require()` will not complain. `users.fields` and
   `users.emailManagedElsewhere` both existed twice for a while; the two copies
@@ -2866,6 +2970,8 @@ These were deliberate. Do not "clean them up" without asking.
 | Only `available` assets can be handed over, so `retired` / `damaged` / `maintenance` are refused too | Not an oversight in the guard. Those three are judgements rather than loan state, and `00500`'s triggers do not reason about them. A wider guard would make the refusal message depend on which judgement it was and reintroduce a state the status triggers ignore. The target picker is `status = 'available'` to match, rather than being wider than the trigger |
 | The available-only guard is `before insert` only, and takes `FOR UPDATE` on the asset | Insert-only is what lets the existing `assignments_sync_asset_status` keep owning the return. The row lock is what makes two admins racing on the same asset produce `23514` ("that asset just went out") instead of `23505` from the index — correct, but a duplicate-key error the admin cannot act on |
 | The recipient is `handover_users`, and the issuer stays `profiles` | One column conflated *who received the asset* with *who can log in*, and those came apart the first time a hard hat went to a contractor. Splitting them means the recipient outlives the account, so deleting somebody no longer erases their handover history — and `assigned_by` still answers "which admin did this", which a roster row cannot |
+| `position` is a reference table, and `handover_users.position_id` replaced the text column | Free text means the list of positions is only the ones somebody remembered to type — `Technician` and `technician` are two entries with nothing able to tell them apart. The old column is dropped rather than kept beside the new one, which is the same two-columns-for-one-fact rule the schema refuses elsewhere. See Position is a list, not a text box |
+| The roster's position dropdown offers no "type a new one here" path | A typo typed into a box becomes a position of its own, permanently — the exact failure the table exists to remove. Adding a title is a deliberate trip to the Position screen, and that screen can rename, so a mistake stays cheap to fix |
 | `assignments.user_id` stays `not null` with `on delete restrict` | Cascade was the old behaviour and it took loan history with the account. `set null` would preserve history but needs `not null` dropped, and then `mapHandover` and the Return gate both have to learn about a null neither can see. `restrict` keeps the column honest and hands the decision to a human, who is told the count by `HandoverUserInUseError` |
 | `handover_users.profile_id` is nullable and not unique | Most roster entries are people who never sign in — that is the case the table exists for. Two entries sharing one account is a data-entry mistake worth allowing, and `unique` on a nullable column permits NULLs anyway. Emptying it silently removes that person's self-service, which is the one thing to know before editing the roster |
 | `sync_asset_status_from_assignment` is `security definer` | An invoker-rights *write* filters to nothing for exactly the caller the policy permits. It is the same asymmetry `assets_guard_status` was already fixed for, with the roles reversed — and it went unnoticed because the RLS suite measured its assertion after an admin action |
@@ -3222,6 +3328,18 @@ not go looking for them unprompted.
 - Don't drop the `!inner` from the handover embeds to "simplify" them. A
   wrong-direction embed is an HTTP **200 with a null**, not an error, so the
   page would render an em dash and look like the record has no asset.
+- Don't send a handover as N separate inserts when the admin ticked N assets in
+  one go. A partial failure leaves records the admin did not expect and cannot
+  unpick; one multi-row insert is one transaction, so either all the assets went
+  out or none did. Verified: a batch containing one retired asset wrote **no**
+  rows at all.
+- Don't prefill `condition_at_handover` from the last asset the admin clicked. It
+  looks like a reading for the batch and is a reading for one row. Prefill only
+  when every selected asset agrees, and clear the moment one does not.
+- Don't run an availability pre-check before issuing a batch. It is a second
+  source of truth a second admin can invalidate between the read and the write;
+  `assignments_guard_asset_available` is the boundary. Resolve the uuid to an
+  asset code *after* the refusal, which is what `findUnavailableAssets` is for.
 - Don't hand an `in_use`-looking status to the handover target picker. It reads
   `status = 'available'` because `assignments_guard_asset_available` refuses
   everything else with `23514`; offering an asset the trigger rejects would be
@@ -3233,6 +3351,15 @@ not go looking for them unprompted.
   error**. See Asset handover is the loans table, finally.
 - Don't delete an open handover. Return it first; `deleteHandover` throws
   `HandoverOpenError` on purpose.
+- Don't order an embedded resource with `alias:column` or `alias.column`. It is
+  `alias(column)` — parentheses. The first two are hard `PGRST100`s, and the real
+  trap is leaving the old bare `.order("column")` in place, which returns 200 and
+  silently stops sorting. See Position is a list, not a text box.
+- Don't put a subquery in a CHECK constraint. It is not valid Postgres, and the
+  check belongs on the referenced table's own column anyway — the same reasoning
+  `assignments_condition_at_handover_check` records.
+- Don't assert an embedded resource's alias as a string. `position:positions(name)`
+  arrives as an object, so `String(row.position)` renders `[object Object]`.
 - Don't let a `security definer` *write* trigger run as the invoker.
   `sync_asset_status_from_assignment` did, and it meant a staff member's return
   left the asset `assigned` — stranded, invisible in the picker, no error. An
