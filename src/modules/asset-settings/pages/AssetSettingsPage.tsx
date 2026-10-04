@@ -791,12 +791,23 @@ export default function AssetSettingsPage() {
               the row wraps rather than becoming two full-width bars. The
               selector is here rather than in the table toolbar because it filters
               the table, not the page, and on a narrow screen the toolbar is where
-              it collided with the Collapse and Add buttons. */}
+              it collided with the Collapse and Add buttons.
+
+              **The strip itself wraps too, and it has to.** Four tabs with labels
+              this long do not fit a 360px screen on one line, and the three ways
+              they can fail are all bad: `inline-flex` without `flex-wrap` clips
+              the last tab off the card with nothing to scroll to; shrinking the
+              buttons to fit wraps "Current locations" onto two lines inside its own
+              pill so the row heights disagree; and a horizontal scroll hides the
+              *selected* tab off-screen after the reader picks it. Wrapping between
+              tabs is the only one where every tab stays reachable and the selected
+              one stays visible. `w-full` below `sm` lets the strip take the line it
+              needs instead of competing with the selector for the same row. */}
           <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
             <div
               role="tablist"
               aria-label={t("tabsLabel")}
-              className="inline-flex gap-1 rounded-lg bg-gray-100 p-1 dark:bg-white/5"
+              className="flex w-full flex-wrap gap-1 rounded-lg bg-gray-100 p-1 sm:w-auto dark:bg-white/5"
             >
               {TABS.map((key) => (
                 <button
@@ -808,9 +819,22 @@ export default function AssetSettingsPage() {
                   aria-controls={`asset-settings-panel-${key}`}
                   onClick={() => setTab(key)}
                   className={
+                    // `whitespace-nowrap` on the label, not on the row: the strip
+                    // wraps *between* tabs, and a label broken across two lines
+                    // inside its own pill reads as a rendering fault.
+                    //
+                    // `px-3` below `sm` is what keeps it to **two** rows on a
+                    // 360px phone instead of three. The four labels need ~497px
+                    // against the ~272px available after the layout's own `p-4` and
+                    // this card's `p-6`, so wrapping is unavoidable — and where the
+                    // line breaks falls is decided purely by padding. At `px-4`
+                    // (32px a tab) "User Handover" misses the second row by about
+                    // 7px and lands alone on a third. At `px-3` (24px) both long
+                    // labels fit side by side. `sm:px-4` restores the roomier
+                    // desktop spacing, where the strip is one line anyway.
                     tab === key
-                      ? "rounded-md bg-white px-4 py-2 text-sm font-medium text-gray-900 shadow-theme-xs dark:bg-white/10 dark:text-white"
-                      : "rounded-md px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                      ? "rounded-md bg-white px-3 py-2 text-sm font-medium whitespace-nowrap text-gray-900 shadow-theme-xs sm:px-4 dark:bg-white/10 dark:text-white"
+                      : "rounded-md px-3 py-2 text-sm font-medium whitespace-nowrap text-gray-500 hover:text-gray-700 sm:px-4 dark:text-gray-400 dark:hover:text-gray-200"
                   }
                 >
                   {t(`tabs.${key}`)}

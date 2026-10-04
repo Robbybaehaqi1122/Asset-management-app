@@ -1556,9 +1556,13 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
                 aria-controls="asset-form-panel"
                 onClick={() => setSection(s)}
                 className={
+                  // `whitespace-nowrap` for the same reason as the settings strip:
+                  // this one already wraps *between* tabs, and a label broken
+                  // across two lines inside its own tab reads as a fault. Five
+                  // tabs with "Administration" in them do not fit a phone.
                   section === s
-                    ? "border-b-2 border-brand-500 px-3 py-2 text-sm font-medium text-brand-600 dark:text-brand-400"
-                    : "border-b-2 border-transparent px-3 py-2 text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                    ? "border-b-2 border-brand-500 px-3 py-2 text-sm font-medium whitespace-nowrap text-brand-600 dark:text-brand-400"
+                    : "border-b-2 border-transparent px-3 py-2 text-sm whitespace-nowrap text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
                 }
               >
                 {t(sectionLabelKey(s))}
