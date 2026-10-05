@@ -19,6 +19,49 @@ import {
   SIGNATURE_ROLES,
   TERMS,
 } from "../document/documentContent";
+/**
+ * The document's own palette, read out of `260911-MULTI-SOEHARDONO.docx`.
+ *
+ * ## Why these are literals rather than theme tokens
+ *
+ * This is a **legal document the company signs**, and the template's colours are
+ * part of what is being reproduced: the navy `#1B3B6F` on the title and on the table
+ * header, the grey `#595959` on every Indonesian line, the pale blue `#D8E0EE` on the
+ * Indonesian sub-labels inside that navy header. A theme token would follow the app's
+ * light/dark switch and print a different document in a different mode.
+ *
+ * They were extracted by reading `w:color` and `w:shd w:fill` out of the file rather
+ * than by eye, because "it looks navy" is not a value: the header row is
+ * `<w:shd w:fill="1B3B6F">` with `FFFFFF` English labels and `D8E0EE` Indonesian
+ * ones, and the body rows are plain `FFFFFF` with no banding.
+ *
+ * The one thing that is **not** blue is the table grid: every border in the file is
+ * `w:val="single" w:color="auto"`, and the letterhead rule in `header2.xml` is
+ * `auto` too. `auto` means "the default text colour", which is why the rule under the
+ * logo is black here — an earlier version used the navy, which was an invention.
+ */
+const DOC = {
+  /** Title, section headings, table header fill, and the row-number column. */
+  navy: "#1B3B6F",
+  /** Every Indonesian line, and the sub-labels' surroundings. */
+  grey: "#595959",
+  /** The Indonesian sub-label inside the navy header row. */
+  paleBlue: "#D8E0EE",
+  /** English labels inside the navy header row. */
+  white: "#FFFFFF",
+  /** The `Name / Dept / Date` labels under each signature. */
+  field: "#444444",
+  /**
+   * The vertical rule between the English and Indonesian columns of the terms.
+   *
+   * `<w:tcBorders><w:right w:val="single" w:color="B9C2D0" w:sz="4"/></w:tcBorders>`
+   * on the **English** cell only — a pale blue-grey, and the one border in the whole
+   * document that is not `auto`. It is not a table grid: the terms table declares no
+   * `tblBorders` at all, so this single divider is the only line it draws.
+   */
+  divider: "#B9C2D0",
+} as const;
+
 import {
   getHandoverDocument,
   HandoverNotFoundError,
@@ -374,23 +417,33 @@ export default function HandoverPrintModal({
             >
               <Header issuer={HEADER_ISSUER} />
 
-              <h1 className="text-center text-[13pt] font-bold tracking-wide uppercase">
+              <h1
+                className="text-center text-[13pt] font-bold tracking-wide uppercase"
+                style={{ color: DOC.navy }}
+              >
                 {t("documentTitle")}
               </h1>
-              <p className="text-center text-[11pt] font-semibold">
+              <p
+                className="text-center text-[11pt] font-semibold"
+                style={{ color: DOC.grey }}
+              >
                 {t("documentTitleId")}
               </p>
 
-              <div className="mt-3 flex justify-end gap-2 text-[9pt]">
-                <span className="font-semibold">No.</span>
+              {/* `No.:` is **left aligned** and set inline with the number, which is
+                  what the template prints — paragraph 2 is `<w:t>No.:</w:t>` followed by
+                  the document number in the same paragraph, with no `w:jc` and no
+                  underline. It was right-aligned with a ruled blank, which is a form
+                  field someone is meant to fill by hand, and it is not: the number comes
+                  from `assets.handover_doc_no`. */}
+              <p className="mt-3 text-[9pt]">
+                <span className="font-semibold">No.: </span>
                 {printNumber !== null ? (
-                  <span className="border-b border-gray-400 px-1">
-                    {printNumber}
-                  </span>
+                  printNumber
                 ) : (
-                  <span className="text-gray-500">{t("noNumber")}</span>
+                  <span style={{ color: DOC.grey }}>{t("noNumber")}</span>
                 )}
-              </div>
+              </p>
 
               <Bilingual className="mt-4" en={PARTIES.en} id={PARTIES.id} />
 
@@ -434,10 +487,16 @@ export default function HandoverPrintModal({
                 id={ACKNOWLEDGEMENT.id}
               />
 
-              <h2 className="mt-4 text-center text-[10.5pt] font-bold">
+              <h2
+                className="mt-4 text-center text-[10.5pt] font-bold"
+                style={{ color: DOC.navy }}
+              >
                 {t("devicesHeading")}
               </h2>
-              <h3 className="text-center text-[9.5pt] font-semibold">
+              <h3
+                className="text-center text-[9.5pt] font-semibold"
+                style={{ color: DOC.grey }}
+              >
                 {t("devicesHeadingId")}
               </h3>
 
@@ -458,33 +517,25 @@ export default function HandoverPrintModal({
                 t={t}
               />
 
-              <h2 className="mt-5 text-center text-[10.5pt] font-bold">
+              <h2
+                className="mt-5 text-center text-[10.5pt] font-bold"
+                style={{ color: DOC.navy }}
+              >
                 {SIGNATURE_ROLES.company.en} · {t("termsHeadingId")}
               </h2>
 
-              <div className="mt-2 grid grid-cols-2 gap-6 text-[8.5pt]">
-                <div>
-                  <p className="font-semibold">ENGLISH</p>
-                  <div className="mt-1 space-y-1.5">
-                    {TERMS.map((clause, i) => (
-                      <p key={`en-${i}`}>{clause.en}</p>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <p className="font-semibold">INDONESIA</p>
-                  <div className="mt-1 space-y-1.5">
-                    {TERMS.map((clause, i) => (
-                      <p key={`id-${i}`}>{clause.id}</p>
-                    ))}
-                  </div>
-                </div>
-              </div>
+              <TermsTable />
 
-              <h2 className="mt-5 text-center text-[10.5pt] font-bold">
+              <h2
+                className="mt-5 text-center text-[10.5pt] font-bold"
+                style={{ color: DOC.navy }}
+              >
                 {t("signatureHeading")}
               </h2>
-              <h3 className="text-center text-[9.5pt] font-semibold">
+              <h3
+                className="text-center text-[9.5pt] font-semibold"
+                style={{ color: DOC.grey }}
+              >
                 {t("signatureHeadingId")}
               </h3>
 
@@ -530,7 +581,7 @@ export default function HandoverPrintModal({
 /** The document's letterhead. Logo left, issuer right, as the template prints it. */
 function Header({ issuer }: { issuer: string }) {
   return (
-    <header className="mb-3 flex items-start justify-between border-b border-[#1B3B6F] pb-2">
+    <header className="mb-3 flex items-start justify-between border-b border-black pb-2">
       {/* The template embeds the company logo as an image. This uses the app's own
           logo file rather than shipping a second copy of the artwork: two copies of
           one logo is two things that can drift, and the app's `logo-pgt.png` is the
@@ -540,8 +591,85 @@ function Header({ issuer }: { issuer: string }) {
         alt=""
         className="h-12 w-auto object-contain"
       />
-      <p className="text-[8pt] font-semibold text-[#1B3B6F]">{issuer}</p>
+      <p className="text-[8pt] font-semibold" style={{ color: DOC.navy }}>
+        {issuer}
+      </p>
     </header>
+  );
+}
+
+/**
+ * The Terms of Use block, which in the template is a **two-column table**.
+ *
+ * It was rendered here as a `grid` with two `<div>`s and no lines at all, and that is
+ * the difference the browser found: the printout had the clauses but neither of the two
+ * things that make the block read as a document — the navy `ENGLISH` / `INDONESIA`
+ * header bar, and the pale vertical rule between the columns.
+ *
+ * ## Why a table and not a grid
+ *
+ * Reading the `.docx` settles it: the block is `<w:tbl>` with `gridCol 4520` twice, a
+ * header row, and **one row per clause** — which is why the rule runs unbroken down
+ * the whole block rather than stopping at each clause. The vertical line is
+ * `<w:tcBorders><w:right w:val="single" w:color="B9C2D0" w:sz="4"/></w:tcBorders>` on
+ * the **English** cell only.
+ *
+ * ## Why there is no grid around it
+ *
+ * This table declares **no `tblBorders`** — the device table declares all six and every
+ * one of them is `w:color="auto"`. So the single divider is the only line it draws, and
+ * adding an outline would invent borders the template does not have. The cells below
+ * therefore set their own borders rather than reusing `Th`/`Td`, which draw a grid for
+ * the device table.
+ *
+ * `avoid-break` keeps a clause and its Indonesian half on the same sheet: they are one
+ * fact in two languages, and a break between them makes the reader match lines.
+ */
+function TermsTable() {
+  return (
+    <table className="mt-2 w-full border-collapse align-top text-[8.5pt]">
+      <thead>
+        <tr>
+          {/* The navy bar. `sz=15` in the template — half-points, so 7.5pt, a size
+              smaller than the body text. */}
+          <th
+            className="px-3 py-1.5 text-start text-[7.5pt] font-semibold"
+            style={{ backgroundColor: DOC.navy, color: DOC.white }}
+          >
+            ENGLISH
+          </th>
+          <th
+            className="px-3 py-1.5 text-start text-[7.5pt] font-semibold"
+            style={{ backgroundColor: DOC.navy, color: DOC.white }}
+          >
+            INDONESIA
+          </th>
+        </tr>
+      </thead>
+      <tbody>
+        {TERMS.map((clause, i) => (
+          <tr key={`clause-${i}`}>
+            {/* The divider is on the English cell, exactly as in the file. Cell margins
+                are `left: 0 / right: 160 dxa` in the template, which is the gap the
+                `pe-4` reproduces. */}
+            <td
+              className="avoid-break py-1 pe-4 align-top"
+              style={{ borderRight: `1px solid ${DOC.divider}` }}
+            >
+              {clause.en}
+            </td>
+            {/* Every Indonesian line on this document is `#595959`, which is what tells
+                a reader which half is which. */}
+            <td
+              className="avoid-break py-1 ps-4 align-top"
+              style={{ color: DOC.grey }}
+            >
+              {clause.id}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 
@@ -599,26 +727,44 @@ function DeviceTable({
             <Th className="w-[34%]">
               {t("colDevice")}
               <br />
-              <span className="font-normal italic">{t("colDeviceId")}</span>
+              <span
+                className="font-normal italic"
+                style={{ color: DOC.paleBlue }}
+              >
+                {t("colDeviceId")}
+              </span>
             </Th>
             <Th className="w-[22%]">
               {t("colAssetTag")}
               <br />
-              <span className="font-normal italic">{t("colAssetTagId")}</span>
+              <span
+                className="font-normal italic"
+                style={{ color: DOC.paleBlue }}
+              >
+                {t("colAssetTagId")}
+              </span>
             </Th>
             <Th className="w-[7%]">{t("colQty")}</Th>
             <Th className="w-[10%]">{t("colUnit")}</Th>
             <Th className="w-[23%]">
               {t("colNotes")}
               <br />
-              <span className="font-normal italic">{t("colNotesId")}</span>
+              <span
+                className="font-normal italic"
+                style={{ color: DOC.paleBlue }}
+              >
+                {t("colNotesId")}
+              </span>
             </Th>
           </tr>
         </thead>
         <tbody>
           {assets.map((asset, index) => (
             <tr key={asset.id}>
-              <Td>{index + 1}</Td>
+              {/* The row number is navy in the template too, matching its header. */}
+              <Td>
+                <span style={{ color: DOC.navy }}>{index + 1}</span>
+              </Td>
               <Td>
                 <span className="block">{asset.name}</span>
                 {asset.categoryName && (
@@ -701,6 +847,14 @@ function DeviceTable({
   );
 }
 
+/**
+ * A header cell: **navy fill, white text.**
+ *
+ * The template's header row is `<w:shd w:fill="1B3B6F">` on every one of its six
+ * cells, with the English label in `FFFFFF` and the Indonesian sub-label in `D8E0EE`.
+ * It was a `bg-gray-100` row with default text here, which is neither colour from the
+ * file and is the most visible difference between the printout and the template.
+ */
 function Th({
   children,
   className = "",
@@ -710,7 +864,8 @@ function Th({
 }) {
   return (
     <th
-      className={`border border-gray-400 bg-gray-100 px-1.5 py-1 text-start font-semibold ${className}`}
+      className={`border border-gray-500 px-1.5 py-1 text-start font-semibold ${className}`}
+      style={{ backgroundColor: DOC.navy, color: DOC.white }}
     >
       {children}
     </th>
@@ -727,7 +882,7 @@ function Td({
   className?: string;
 }) {
   return (
-    <td className={`border border-gray-400 px-1.5 py-1 align-top ${className}`}>
+    <td className={`border border-gray-500 px-1.5 py-1 align-top ${className}`}>
       {children}
     </td>
   );
@@ -797,7 +952,7 @@ function SignatureBlock({
         )}
       </div>
 
-      <p className="mt-1 border-t border-gray-400 pt-1 text-center font-semibold">
+      <p className="mt-1 border-t border-gray-500 pt-1 text-center font-semibold">
         {name}
       </p>
 
@@ -831,15 +986,15 @@ function SignatureBlock({
       {/* Printed values, so the paper carries all three lines whatever the screen shows. */}
       <div className="mt-1 hidden space-y-0.5 print:block">
         <p>
-          <span className="font-semibold">{t("fieldName")} : </span>
+          <span style={{ color: DOC.field }}>{t("fieldName")} : </span>
           {name}
         </p>
         <p>
-          <span className="font-semibold">{t("fieldDept")} : </span>
+          <span style={{ color: DOC.field }}>{t("fieldDept")} : </span>
           {department}
         </p>
         <p>
-          <span className="font-semibold">{t("fieldDate")} : </span>
+          <span style={{ color: DOC.field }}>{t("fieldDate")} : </span>
           {formatLongDate(date)}
         </p>
       </div>

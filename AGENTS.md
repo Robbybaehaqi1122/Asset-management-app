@@ -2280,6 +2280,65 @@ without its serial is not enough for that. It is added to `HANDOVER_COLUMNS` rat
 than fetched per row, because a list of ten assets triggering ten queries to display
 ten things already known would be the wrong shape.
 
+### The document's own palette, read out of the .docx
+
+The print form's colours are **not** theme tokens, and the difference was found in the
+browser: the first version used `bg-gray-100` for the table header and inherited text
+colour for the title, and a printout came back looking nothing like the template. The
+values were then extracted by reading `w:color` and `w:shd w:fill` out of
+`260911-MULTI-SOEHARDONO.docx` — **by reading the file rather than by eye**, because
+"it looks navy" is not a value.
+
+| Constant | Value | Where |
+|---|---|---|
+| `DOC.navy` | `#1B3B6F` | title, `Devices Handed Over`, `Terms of Use`, `Signatures`, the row-number column, **and the table header's fill** |
+| `DOC.grey` | `#595959` | every Indonesian line, and `ENGLISH`/`INDONESIA` read grey against black English text |
+| `DOC.paleBlue` | `#D8E0EE` | the Indonesian sub-label **inside** the navy header row |
+| `DOC.white` | `#FFFFFF` | the English labels inside the navy header row |
+| `DOC.field` | `#444444` | the `Name / Dept / Date` labels under each signature |
+
+| `DOC.divider` | `#B9C2D0` | the vertical rule between the Terms' two language columns |
+
+Two things are deliberately **not** blue, and both were wrong before:
+
+- **The table grid.** Every border in the file is `w:val="single" w:color="auto"`,
+  and `auto` means the default text colour. The borders stayed dark neutral.
+- **The rule under the letterhead.** It was navy, which was an invention: `header2.xml`
+  has `<w:bottom w:val="single" w:color="auto" w:sz="18"/>`, so the rule is black.
+
+**The Terms of Use block is a two-column table, not a grid of `<div>`s.** It was
+rendered as a `grid` with no lines at all, and that is what the browser found: the
+clauses printed, but neither of the two things that make the block read as a document.
+Reading the `.docx` settled it — the block is `<w:tbl>` with `gridCol 4520` twice, a
+header row, and **one row per clause**, which is why the rule runs unbroken down the
+whole block rather than stopping at each clause:
+
+- **The blue marker is the header bar.** Both header cells are
+  `<w:shd w:fill="1B3B6F">` with bold white `ENGLISH` / `INDONESIA` at `sz=15`
+  half-points, i.e. **7.5pt** — a size smaller than the body text.
+- **The line is `#B9C2D0`**, and it is *the only border the block draws*:
+  `<w:tcBorders><w:right w:val="single" w:color="B9C2D0" w:sz="4"/></w:tcBorders>` on
+  the **English** cell only. This table declares **no `tblBorders`** at all, unlike the
+  device table which declares all six. So `TermsTable` sets its own borders rather than
+  reusing `Th`/`Td`, which draw a grid for the device table — reusing them would invent
+  an outline the template does not have.
+
+`avoid-break` is on each clause's pair of cells, because the English and Indonesian
+halves are one fact in two languages and a page break between them makes the reader
+match lines.
+
+**`No.:` is left-aligned and inline, with no ruled blank.** It was right-aligned over
+an underlined empty span, which reads as a field to be filled by hand — and it is not
+one, because the number comes from `assets.handover_doc_no`. The template's paragraph 2
+is `<w:t>No.:</w:t>` followed by the number in the *same* paragraph, with no `w:jc` and
+no underline.
+
+The template's row 17 — `Add or remove rows as needed — table expands to fit any number
+of devices` — is an instruction to whoever edits the template and is **not printed**.
+
+`verify_handover_document.py` is unaffected by the palette: these values are in the
+component, not in `documentContent.ts`, and a hex is not a translatable literal.
+
 ### The printed document, and what a batch becomes on paper
 
 `src/modules/handover/document/` and `.../components/HandoverPrintModal.tsx` render
@@ -3323,9 +3382,12 @@ not go looking for them unprompted.
 - Don't put a long sentence and a button in the same `sm:flex-row
   sm:justify-between` without `shrink-0` on the button. The text is the flexible
   element and takes the shrink, until the button's own label wraps onto two lines.
-- Don't hardcode hex colors in `className`. The one exception is
-  `src/icons/google.svg`, which is a multi-colour brand logo; see the Decisions
-  table.
+- Don't hardcode hex colors in `className`. There are two exceptions, and both are
+  values that cannot come from a token: `src/icons/google.svg`, which is a multi-colour
+  brand logo; and the handover print document's `DOC` palette, which is read out of the
+  `.docx` and reproduces a signed legal document — a theme token would follow the app's
+  light/dark switch and print a different document in a different mode. Keep those
+  values in the `DOC` constant rather than spreading hexes through the component.
 - Don't use physical directional utilities (see Styling).
 - Don't inline SVG markup.
 - Don't use CSS-in-JS or CSS Modules.
@@ -3646,6 +3708,14 @@ not go looking for them unprompted.
   Notes cells empty. The template's Notes column sits beside one device, so a batch-wide
   sentence under the table is not in the column that names it and empty cells read as a
   form nobody filled in.
+- Don't render the Terms of Use block as a `grid` of `<div>`s. It is a `<w:tbl>` in
+  the `.docx` with a navy `1B3B6F` header bar (`ENGLISH` / `INDONESIA` in white at
+  7.5pt) and **one row per clause**, so the `#B9C2D0` vertical rule runs unbroken down
+  the block. As a grid with no lines, the clauses printed but the block stopped reading
+  as a document — that is what the browser found.
+- Don't give the Terms block a grid of borders. That table declares **no
+  `tblBorders`**; its only line is the `tcBorders` right edge on the English cell, so
+  reusing `Th`/`Td` would invent an outline the template does not have.
 - Don't order an embedded resource with `alias:column` or `alias.column`. It is
   `alias(column)` — parentheses. The first two are hard `PGRST100`s, and the real
   trap is leaving the old bare `.order("column")` in place, which returns 200 and
