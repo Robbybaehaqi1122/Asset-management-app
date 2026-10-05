@@ -78,6 +78,12 @@ export type HandoverAsset = {
   id: string;
   assetCode: string;
   name: string;
+  /**
+   * The device's own serial, which is what an admin checks against the physical
+   * unit in their hand. Read here for the Detail modal's list, so the list can answer
+   * "is this the device I think it is" without a second lookup per row.
+   */
+  serialNumber: string | null;
   status: string;
   condition: AssetCondition;
   department: string;
@@ -259,7 +265,13 @@ function mapHolder(value: unknown): HandoverHolder | null {
     Record<string, unknown> | null | undefined;
   return {
     name: String(row.name ?? ""),
-    position: str(row.position),
+    // `position:positions(name)` arrives as an **object**, so `str()` on it would
+    // hand back "[object Object]" — which is exactly what the list showed. The
+    // department embed below is read through the same shape check.
+    position:
+      row.position && typeof row.position === "object"
+        ? str((row.position as Record<string, unknown>).name)
+        : null,
     departmentName:
       department && typeof department === "object"
         ? str(department.name)
@@ -296,6 +308,7 @@ function mapHandover(row: RawHandover): Handover {
         ? {
             id: String(asset.id),
             assetCode: String(asset.asset_code ?? ""),
+            serialNumber: str(asset.serial_number),
             handoverDocNo: str(asset.handover_doc_no),
             name: String(asset.name ?? ""),
             status: String(asset.status ?? ""),

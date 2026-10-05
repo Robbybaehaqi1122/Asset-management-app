@@ -139,6 +139,7 @@ export default function HandoverListPage() {
 
   const issueModal = useModal();
   const deleteModal = useModal();
+  const detailModal = useModal();
   /**
    * The handover whose document is open, or null.
    *
@@ -147,6 +148,16 @@ export default function HandoverListPage() {
    * row belongs to.
    */
   const [printHandoverId, setPrintHandoverId] = useState<string | null>(null);
+
+  /**
+   * The batch whose asset list is open, or null.
+   *
+   * The **batch**, not a row id: the menu item opens a list of what went out
+   * together, which is a group. Reading it back off `batches` on render rather than
+   * copying it into state means a Return taken while the modal is open cannot leave
+   * a stale copy of a device listed as still out.
+   */
+  const [detailBatchKey, setDetailBatchKey] = useState<string | null>(null);
 
   const [issueForm, setIssueForm] = useState<IssueForm>(EMPTY_ISSUE);
   const [targets, setTargets] = useState<HandoverTarget[]>([]);
@@ -483,6 +494,67 @@ export default function HandoverListPage() {
     }
   };
 
+  /**
+   * One entry per **batch**, not per row.
+   *
+   * `getHandovers` returns one row per asset, because a handover *is* one asset —
+   * that is what makes returning the laptop but keeping the mouse a real operation
+   * rather than a workaround. But **one batch of assets to one recipient is one
+   * printed document**: `getHandoverDocument` finds the batch by
+   * `(user_id, assigned_by, assigned_at)`, the three values that are identical
+   * across every row written by one multi-row insert.
+   *
+   * Rendering rows ungrouped therefore showed N rows for N assets and **no way to
+   * tell which one to print**, even though every one of them prints the same
+   * document. With batches accumulating that became worse, not better: the longer the
+   * list, the less any single row could be pointed at as "the document". So the
+   * table lists batches and names the assets inside one, which is also the shape of
+   * the paper.
+   */
+  const batches = useMemo(() => groupIntoBatches(handovers), [handovers]);
+
+  /**
+   * The batch whose detail list is open.
+   *
+   * Derived from `batches` on every render rather than copied into state, because a
+   * copy would go stale: return an asset while the list is open and the copy would
+   * still show it as out. The state holds only **which** batch, and the group is
+   * looked up by key.
+   */
+  const detailBatch = useMemo(
+    () =>
+      detailBatchKey === null
+        ? null
+        : (batches.find((batch) => batch.key === detailBatchKey) ?? null),
+    [batches, detailBatchKey],
+  );
+
+  /**
+   * Whether the signed-in caller may return a device in the **open** batch.
+   *
+   * Resolved here rather than passed into the modal, because the modal is rendered
+   * once for the page while the batch it shows changes. The test is the **roster id**
+   * against `ownUserIds` — never `batch.userId === user?.id`, which went false for
+   * every row once `user_id` moved onto `handover_users` in `02000`.
+   */
+  const detailCanReturn =
+    detailBatch !== null &&
+    (isAdmin || ownUserIds.has(detailBatch.seed.userId));
+
+  /**
+   * Opens the asset list for one batch.
+   *
+   * **A modal rather than an expandable row.** Expanding in place was the other
+   * option and it is worse for the case that motivated this: a batch of ten devices
+   * pushes the row to ten lines, so every batch *below* it moves off the screen and
+   * the admin loses the list they were reading to check one asset. A modal is also
+   * the shape every other drill-down on this page already takes.
+   */
+  const handleOpenDetail = (batch: HandoverBatch) => {
+    setDetailBatchKey(batch.key);
+    detailModal.openModal();
+  };
+
   const handleOpenDelete = (row: Handover) => {
     setDeleteError(null);
     setPendingDelete(row);
@@ -514,30 +586,11 @@ export default function HandoverListPage() {
    * Filtering happens in the browser over the rows already fetched, the same
    * approach the asset and user lists take. The unit is the one thing that is
    * filtered in SQL, and that is because it is the page, not a filter on it.
-   */
-  /**
-   * One entry per **batch**, not per row.
-   *
-   * `getHandovers` returns one row per asset, because a handover *is* one asset —
-   * that is what makes returning the laptop but keeping the mouse a real operation
-   * rather than a workaround. But **one batch of assets to one recipient is one
-   * printed document**: `getHandoverDocument` finds the batch by
-   * `(user_id, assigned_by, assigned_at)`, the three values that are identical
-   * across every row written by one multi-row insert.
-   *
-   * Rendering rows ungrouped therefore showed N rows for N assets and **no way to
-   * tell which one to print**, even though every one of them prints the same
-   * document. With batches accumulating that became worse, not better: the longer the
-   * list, the less any single row could be pointed at as "the document". So the
-   * table lists batches and names the assets inside one, which is also the shape of
-   * the paper.
    *
    * **Grouping happens after the status filter, not before it**, and that order is
    * load-bearing: a batch can be half returned, and filtering rows first then
-   * grouping would render such a batch as if all of it were still out.
+   * grouping would render such a batch as if all of it were out.
    */
-  const batches = useMemo(() => groupIntoBatches(handovers), [handovers]);
-
   const visible = useMemo(() => {
     const needle = search.trim().toLowerCase();
 
@@ -748,22 +801,47 @@ export default function HandoverListPage() {
                     className="border-b border-gray-100 align-top dark:border-gray-800"
                   >
                     <td className="px-4 py-3">
-                      {/* Every asset in the batch, one per line. The count is
-                          explicit because "how many things am I about to print"
-                          is the question this row exists to answer. */}
-                      {batch.items.map((row) => (
-                        <p
-                          key={row.id}
-                          className="text-sm font-medium text-gray-800 dark:text-white/90"
+                      {/* At most **two** assets are named in the cell, and the rest are
+                          behind the Detail menu. Listing all of them was worse the more
+                          there were: a batch of ten devices printed ten lines in one
+                          table cell, the row grew taller than the screen, and the one
+                          thing the row is for — "one row, one document" — became
+                          invisible in the pile. Two names plus a count is enough to
+                          recognise the batch without turning the row into the list.
+
+                          The button is rendered **whenever anything is hidden**, so a
+                          batch of one or two is never given a control that opens a list
+                          it does not need. */}
+                      {/* Truncated, because a device name is free text and one long
+                          name would otherwise stretch the whole table sideways. The
+                          wrapper carries the width and the paragraph carries
+                          `truncate`, since a `<td>` will not constrain its own
+                          children in an auto-layout table. */}
+                      <div className="max-w-[22rem]">
+                        {batch.items.slice(0, 2).map((row) => (
+                          <p
+                            key={row.id}
+                            className="truncate text-sm font-medium text-gray-800 dark:text-white/90"
+                            title={assetLabel(row, t("fields.unknown"))}
+                          >
+                            {assetLabel(row, t("fields.unknown"))}
+                            {row.returnedAt !== null && (
+                              <span className="ms-2 text-xs font-normal text-gray-400 dark:text-gray-500">
+                                {t("status.returned")}
+                              </span>
+                            )}
+                          </p>
+                        ))}
+                      </div>
+                      {batch.items.length > 2 && (
+                        <button
+                          type="button"
+                          onClick={() => handleOpenDetail(batch)}
+                          className="mt-1 text-xs font-medium text-brand-600 hover:underline dark:text-brand-400"
                         >
-                          {assetLabel(row, t("fields.unknown"))}
-                          {row.returnedAt !== null && (
-                            <span className="ms-2 text-xs font-normal text-gray-400 dark:text-gray-500">
-                              {t("status.returned")}
-                            </span>
-                          )}
-                        </p>
-                      ))}
+                          {t("table.viewAll", { count: batch.items.length })}
+                        </button>
+                      )}
                       {batch.docNumbers.length > 0 && (
                         <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
                           {t("table.doc")}: {batch.docNumbers.join(", ")}
@@ -833,16 +911,13 @@ export default function HandoverListPage() {
                     <td className="px-4 py-3 text-end">
                       <HandoverBatchActions
                         batch={batch}
-                        canReturnAny={
-                          isAdmin || ownUserIds.has(batch.seed.userId)
-                        }
                         canDelete={isAdmin}
                         isSaving={isSaving}
                         openMenuId={openMenuId}
                         setOpenMenuId={setOpenMenuId}
-                        onReturn={(row) => void handleReturn(row)}
                         onDelete={(row) => handleOpenDelete(row)}
                         onPrint={() => setPrintHandoverId(batch.seed.id)}
+                        onDetail={() => handleOpenDetail(batch)}
                       />
                     </td>
                   </tr>
@@ -1120,6 +1195,135 @@ export default function HandoverListPage() {
         </div>
       </Modal>
 
+      {/* The asset list for one batch. Reads from `detailBatch`, which is derived from
+          `batches` rather than copied, so a device returned while this is open stops
+          being listed as out without a reload. */}
+      <Modal
+        isOpen={detailModal.isOpen}
+        onClose={detailModal.closeModal}
+        className="max-w-2xl"
+      >
+        <div className="p-6">
+          <h3 className="text-lg font-semibold text-gray-800 dark:text-white/90">
+            {detailBatch === null
+              ? t("detailTitle")
+              : t("detailTitleWith", {
+                  count: detailBatch.items.length,
+                  name: personLabel(detailBatch.holder, t("fields.unknown")),
+                })}
+          </h3>
+
+          {detailBatch !== null && (
+            <>
+              {/* The batch's own facts, because the question this modal answers is
+                  "what exactly went out in *this* handover" — and the recipient and
+                  date are what make a list of ten assets unambiguous. */}
+              <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <dt className="text-xs text-gray-500 dark:text-gray-400">
+                    {t("table.holder")}
+                  </dt>
+                  <dd className="text-gray-800 dark:text-white/90">
+                    {personLabel(detailBatch.holder, t("fields.unknown"))}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-gray-500 dark:text-gray-400">
+                    {t("table.handedOverOn")}
+                  </dt>
+                  <dd className="text-gray-800 dark:text-white/90">
+                    {formatTimestamp(detailBatch.assignedAt)}
+                  </dd>
+                </div>
+              </dl>
+
+              {/* The scroll box is here **because** the list can be long. Ten assets
+                  is the case that motivated this modal, so a modal that cannot scroll
+                  would only have moved the clipping. */}
+              <div className="mt-4 max-h-96 overflow-y-auto rounded-lg border border-gray-200 dark:border-gray-700">
+                {detailBatch.items.map((row, index) => {
+                  const isReturned = row.returnedAt !== null;
+                  return (
+                    <div
+                      key={row.id}
+                      className="flex items-start justify-between gap-3 border-b border-gray-100 px-3 py-2.5 last:border-b-0 dark:border-gray-800"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium text-gray-800 dark:text-white/90">
+                          <span className="text-gray-400 dark:text-gray-500">
+                            {index + 1}.
+                          </span>{" "}
+                          {row.asset?.assetCode ?? t("fields.unknown")}
+                        </p>
+                        <p className="truncate text-xs text-gray-500 dark:text-gray-400">
+                          {row.asset?.name ?? ""}
+                        </p>
+                        {/* Serial and condition are the two facts an admin checks
+                            against a physical device in the hand. The asset's
+                            registered location is **not** here: it is a different fact
+                            from what was handed over, and this is a list of what went
+                            out. */}
+                        <p className="text-xs text-gray-500 dark:text-gray-400">
+                          {row.asset?.serialNumber != null &&
+                            row.asset.serialNumber !== "" && (
+                              <>
+                                {t("table.serial")}: {row.asset.serialNumber}{" "}
+                                ·{" "}
+                              </>
+                            )}
+                          {row.conditionAtHandover !== null
+                            ? t(`condition.${row.conditionAtHandover}`)
+                            : t("fields.conditionPlaceholder")}
+                        </p>
+                      </div>
+                      {/* Return sits **beside the device**, not in the row's dropdown.
+
+                          It was one dropdown item per open device, and at ten devices
+                          that was ten entries repeating the names this list already
+                          shows — the menu grew past the bottom of the viewport and said
+                          nothing the asset list did not. A control that acts on a
+                          device belongs next to that device.
+
+                          Still one `handoverId` per press, so returning the laptop while
+                          leaving the mouse stays expressible: only where the control
+                          lives changed, not its granularity. */}
+                      <div className="flex shrink-0 flex-col items-end gap-1.5">
+                        <Badge
+                          size="sm"
+                          color={isReturned ? "success" : "warning"}
+                        >
+                          {isReturned ? t("status.returned") : t("status.open")}
+                        </Badge>
+                        {!isReturned && detailCanReturn && (
+                          <Button
+                            variant="outline"
+                            disabled={isSaving}
+                            onClick={() => void handleReturn(row)}
+                            aria-label={t("returnDevice", {
+                              name: assetLabel(row, t("fields.unknown")),
+                            })}
+                          >
+                            {t("return")}
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <p className="mt-3 text-xs text-gray-500 dark:text-gray-400">
+                {t("detailHint")}
+              </p>
+            </>
+          )}
+
+          <div className="mt-6 flex justify-end">
+            <Button onClick={detailModal.closeModal}>{t("close")}</Button>
+          </div>
+        </div>
+      </Modal>
+
       <Modal
         isOpen={deleteModal.isOpen}
         onClose={deleteModal.closeModal}
@@ -1241,27 +1445,30 @@ function formatTimestamp(value: string | null): string {
 /**
  * One **batch**'s actions, behind a single menu.
  *
- * The row is a batch, so the menu is too — and that is the whole point of the split:
- * **Print acts on the batch once**, because there is one document per batch, while
- * **Return and Delete stay per asset**, because those genuinely are per asset.
- * Returning the laptop but keeping the mouse is a real outcome, and collapsing it to
- * one batch-wide action would have made the second outcome unrecordable.
+ * The menu is **Print, Detail, and Delete — nothing else.** Return used to be here as
+ * one item per open asset, and that is what pushed it out: a batch of ten devices
+ * produced ten menu entries, each repeating a device name, so the dropdown grew down
+ * past the bottom of the viewport and became a list to scroll rather than a menu.
+ * The names were also the same names the Detail modal shows, so the menu was saying
+ * nothing the asset list did not.
  *
- * So the menu lists Return and Delete **once per eligible asset**, each naming it. A
- * batch of eight open assets shows eight Return items rather than one item that does
- * not exist as a concept — and the list makes the count obvious before anything is
- * clicked, which is the same reassurance the grouped row gives on screen.
+ * **Return now lives in the Detail modal, one button beside each device.** That is
+ * where the device already is: a control acting on an asset is next to the asset, and
+ * the modal is the one place the whole batch is listed at once. It also means the
+ * dropdown stays a dropdown — three items, all of which act on the batch as a whole.
+ *
+ * **Per-asset stays per-asset.** Return is still one `handoverId` per press, so the
+ * partial return that motivates batching is still expressible: return the laptop,
+ * leave the mouse. Only the *location* of the control moved, not its granularity.
  *
  * **A menu rather than inline buttons**, matching `UserListPage`'s row menu: one
  * `HorizontaLDots` trigger for a column that would otherwise carry one button per
  * asset in the batch.
  *
  * **Which items appear is a UI convenience, never the enforcement point.**
- * `assignments_update_own_or_admin` and `assignments_delete_admin` refuse whatever
- * the gate lets through. What the gate buys is not showing an item that cannot
- * work — and for Return specifically the membership test is the **roster id**
- * against `ownUserIds`, never `row.userId === user?.id`, which went false for every
- * row once `user_id` moved onto `handover_users` in `02000`.
+ * `assignments_delete_admin` refuses whatever the gate lets through, and Return's own
+ * gate lives in the Detail modal for the same reason. What the gates buy is not
+ * showing a control that cannot work.
  *
  * Only one menu is open at a time, and the page owns which one: `openMenuId` lives
  * here as a prop rather than a `useState` per row, because a boolean per row would
@@ -1270,82 +1477,41 @@ function formatTimestamp(value: string | null): string {
  */
 function HandoverBatchActions({
   batch,
-  canReturnAny,
   canDelete,
   isSaving,
   openMenuId,
   setOpenMenuId,
-  onReturn,
   onDelete,
   onPrint,
+  onDetail,
 }: {
   batch: HandoverBatch;
-  /** Whether this caller may close any of this batch's handovers, per the policy above. */
-  canReturnAny: boolean;
   canDelete: boolean;
   isSaving: boolean;
   openMenuId: string | null;
   setOpenMenuId: (id: string | null) => void;
-  onReturn: (row: Handover) => void;
   onDelete: (row: Handover) => void;
   onPrint: () => void;
+  onDetail: () => void;
 }) {
   const { t } = useTranslation("common", { keyPrefix: "handover" });
   const isMenuOpen = openMenuId === batch.seed.id;
 
-  /** Split by state, because the two actions are only ever offered on opposite ones. */
-  const openItems = batch.items.filter((row) => row.returnedAt === null);
-  const returnedItems = batch.items.filter((row) => row.returnedAt !== null);
+  /** Delete is only ever offered on devices already back. */
+  const showDelete =
+    canDelete && batch.items.some((row) => row.returnedAt !== null);
 
-  const showReturn = canReturnAny && openItems.length > 0;
-  const showDelete = canDelete && returnedItems.length > 0;
-
-  /**
-   * Print is **always** offered, which is what makes this menu able to appear at all.
-   * A document is wanted whether the batch is still out or already back, and it can
-   * never be refused — there is no rule that stops somebody printing a record they
-   * are allowed to read. So the early return below is keyed on Return and Delete
-   * alone, and a batch that is entirely open and read-only still gets its Print.
-   */
   /**
    * Wraps a handler so the menu closes first.
    *
-   * Closing before the work rather than after matters for the two actions that
-   * open a modal: the modal renders over the page, and a menu still open behind
-   * it is the layer that ends up focused when it closes.
+   * Closing before the work rather than after matters for Delete, which opens a
+   * modal: the modal renders over the page, and a menu still open behind it is the
+   * layer that ends up focused when it closes.
    */
   const run = (action: () => void) => () => {
     setOpenMenuId(null);
     action();
   };
-
-  if (!showReturn && !showDelete) {
-    return (
-      <div className="relative">
-        <button
-          type="button"
-          onClick={() => setOpenMenuId(isMenuOpen ? null : batch.seed.id)}
-          aria-label={t("actionsLabel", {
-            name: t("actionsBatchName", {
-              count: batch.items.length,
-            }),
-          })}
-          aria-haspopup="menu"
-          aria-expanded={isMenuOpen}
-          className="dropdown-toggle rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-50 dark:text-gray-400 dark:hover:bg-white/5 dark:hover:text-gray-200"
-          disabled={isSaving}
-        >
-          <HorizontaLDots className="size-5" />
-        </button>
-
-        {isMenuOpen && (
-          <Dropdown isOpen onClose={() => setOpenMenuId(null)}>
-            <DropdownItem onClick={run(onPrint)}>{t("print")}</DropdownItem>
-          </Dropdown>
-        )}
-      </div>
-    );
-  }
 
   return (
     <div className="relative">
@@ -1367,37 +1533,36 @@ function HandoverBatchActions({
         <Dropdown isOpen onClose={() => setOpenMenuId(null)}>
           <DropdownItem onClick={run(onPrint)}>{t("print")}</DropdownItem>
 
-          {/* One item per asset still out, each naming it. A single "Return" on a
-              batch would have no row to write to — `returnHandover` takes one
-              `handoverId` — and inventing a "return all" would make the partial
-              return that motivates batching unrecordable. */}
-          {openItems.map((row) => (
-            <DropdownItem
-              key={`return-${row.id}`}
-              onClick={run(() => onReturn(row))}
-              className={isSaving ? "pointer-events-none opacity-50" : ""}
-            >
-              {t("returnAsset", {
-                name: assetLabel(row, t("fields.unknown")),
-              })}
-            </DropdownItem>
-          ))}
+          {/* Detail second, right after Print: both are read-only and both work on
+              the whole batch, and the asset list is what an admin opens when they are
+              not sure what went out. It is offered here as well as from the cell, so
+              the list is reachable whether the eye is on the assets or on the menu. */}
+          <DropdownItem onClick={run(onDetail)}>
+            {t("detailAssets", { count: batch.items.length })}
+          </DropdownItem>
 
           {/* Delete only on assets already back. The title explains the reasoning
               rather than leaving the item silently absent — the real reason an open
               handover cannot be deleted is that deleting it would put the asset back
               in stock while the person still has it. */}
-          {returnedItems.map((row) => (
-            <DropdownItem
-              key={`delete-${row.id}`}
-              onClick={run(() => onDelete(row))}
-              className="text-error-600 hover:bg-error-50 dark:text-error-500 dark:hover:bg-error-500/10"
-            >
-              {t("deleteAsset", {
-                name: assetLabel(row, t("fields.unknown")),
-              })}
-            </DropdownItem>
-          ))}
+          {/* Delete, one item per device already back. It stays here rather than
+              moving into Detail with Return, because it is an **admin-only, rare,
+              destructive** action: putting it beside every device in the asset list
+              would put a delete button on eight rows to be clicked once. */}
+          {showDelete &&
+            batch.items
+              .filter((row) => row.returnedAt !== null)
+              .map((row) => (
+                <DropdownItem
+                  key={`delete-${row.id}`}
+                  onClick={run(() => onDelete(row))}
+                  className="text-error-600 hover:bg-error-50 dark:text-error-500 dark:hover:bg-error-500/10"
+                >
+                  {t("deleteAsset", {
+                    name: assetLabel(row, t("fields.unknown")),
+                  })}
+                </DropdownItem>
+              ))}
         </Dropdown>
       )}
     </div>

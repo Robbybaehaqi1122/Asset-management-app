@@ -690,7 +690,11 @@
     "deleteLabel": "Delete handover",
     "actionsLabel": "Actions for {name}",
     "actionsBatchName": "this batch of {count}",
-    "returnAsset": "Return {name}",
+    "detailAssets": "Detail — {count} devices",
+    "detailTitle": "Devices in this handover",
+    "detailTitleWith": "Devices in this handover ({count}) — {name}",
+    "detailHint": "The assets listed here are the ones handed over together, which is also exactly what the printable document contains.",
+    "returnDevice": "Return this device: {name}",
     "deleteAsset": "Delete record for {name}",
     "delete": "Delete handover",
     "deleteOpenHint": "This handover is still open. Return the asset before deleting the record.",
@@ -718,7 +722,9 @@
       "actions": "Actions",
       "doc": "Doc no",
       "recordedBy": "Recorded by",
-      "showing": "Showing {shown} of {total} handovers. Each row is one printable document — a row listing several assets is one handover issued together."
+      "showing": "Showing {shown} of {total} handovers. Each row is one printable document — a row listing several assets is one handover issued together.",
+      "viewAll": "View all {count} devices",
+      "serial": "Serial"
     },
     "filters": {
       "search": "Search",

@@ -2231,12 +2231,19 @@ Four decisions, each of which would have been wrong in the ordinary case.
    `batches`, and "open" means **anything still out**, which is the only reading that
    keeps a half-returned batch findable. The badge says `"{open} of {total} still out"`
    rather than rounding a partial batch to either extreme.
-4. **Print is per batch; Return and Delete stay per asset.** A single batch-wide
-   "Return" has no row to write to — `returnHandover` takes one `handoverId` — and
-   inventing "return all" would make the partial return that motivates batching
-   unrecordable. So the menu lists one Return item per open asset and one Delete per
-   returned asset, each naming its asset. The count is visible before anything is
-   clicked, which is the reassurance the grouped row gives.
+4. **Print and Detail act on the batch; Delete stays in the menu; Return moved into
+   the Detail modal.** A single batch-wide "Return" has no row to write to —
+   `returnHandover` takes one `handoverId` — and inventing "return all" would make the
+   partial return that motivates batching unrecordable, so Return is still **one press
+   per device**. What changed is *where* the button lives: it was one dropdown item per
+   open asset, and at ten devices that was ten entries repeating names the asset list
+   already showed, so the menu grew past the bottom of the viewport and became a list
+   to scroll rather than a menu. A control that acts on a device belongs beside that
+   device, so it is now a button on each row of the Detail modal.
+
+   **Delete was left in the menu on purpose.** It is an admin-only, rare, destructive
+   action: putting it beside every device would put a delete button on eight rows to
+   be clicked once, and a menu is where a destructive one-off belongs.
 
 **The row count is in documents, and the Asset heading is plural.** Both were wrong in
 the ordinary case: "Asset" on a cell listing three assets, and a count an admin would
@@ -2244,12 +2251,34 @@ read as "how many PDFs am I about to print" while it meant "how many assets". Th
 above the table says so explicitly rather than leaving the arithmetic to the reader.
 
 **A batch is not a row and has no table.** It is a set of rows that share a recipient,
-an issuer and a timestamp; inventing a `batches` table would be a second source of
-truth for a grouping the database already determines. `batch.seed` is therefore a
+an issuer and a timestamp; inventing a `batches` table would be a second source of truth
+for a grouping the database already determines. `batch.seed` is therefore a
 **representative** row whose id is safe to open the document with — precisely because
 `getHandoverDocument` ignores which row it was handed and reads the whole group. The
 search filter reaches the assets too, so a batch is still findable by one of its asset
 codes.
+
+**The Assets cell names at most two devices, and the rest are behind Detail.** This is
+the second half of the same problem, and it was found in the browser: the first version
+of the grouped row printed **every** asset in the cell, which is correct and unreadable
+at ten devices — the row grew taller than the viewport, every batch below it moved off
+screen, and "one row, one document" was lost in the pile. Two names plus a count is
+enough to recognise a batch. The button renders only when something is actually hidden,
+so a batch of one or two is never given a control that opens a list it does not need.
+
+**Detail is a modal, not an expanding row.** Expanding in place is the other option and
+it has the same failure as the long list: ten devices push the row to ten lines, so the
+admin loses the surrounding list to check one asset. `max-h-96 overflow-y-auto` inside
+the modal is there **because** the list is long — a modal that could not scroll would
+only have moved the clipping. The modal reads the batch off `batches` by key on every
+render rather than copying it into state, so returning an asset while it is open stops
+listing it as out without a reload.
+
+**`serial_number` is read into `Handover` for the Detail list.** The Detail list is
+where an admin checks a device against the physical unit in their hand, and a code
+without its serial is not enough for that. It is added to `HANDOVER_COLUMNS` rather
+than fetched per row, because a list of ten assets triggering ten queries to display
+ten things already known would be the wrong shape.
 
 ### The printed document, and what a batch becomes on paper
 
@@ -3514,10 +3543,17 @@ not go looking for them unprompted.
   not a document count, and no row could be pointed at as "the one to print" — every
   row printed the identical batch. Group on `(user_id, assigned_by, assigned_at)`,
   the same key `getHandoverDocument` uses. See The list row is a batch.
-- Don't put a batch-wide "Return all" in the handover row menu. `returnHandover`
-  takes one `handoverId`, and a single batch-wide action would have no row to write
-  to — while inventing one would make the partial return (laptop back, mouse not)
-  unrecordable, which is the outcome that motivates batching in the first place.
+- Don't print every asset in the batch's Assets cell, or make the row expand in place
+  to show them. At ten devices either one makes the row taller than the screen and
+  pushes every batch below it off, which loses the one-row-one-document point. Two
+  names plus a `View all N devices` button that opens a **scrollable modal** is what
+  the browser found to work. See The list row is a batch.
+- Don't put a batch-wide "Return all" in the handover row menu, and don't put a
+  per-device Return item back in it either. `returnHandover` takes one `handoverId`,
+  so a single batch-wide action would have no row to write to — while the per-device
+  version was ten dropdown entries repeating the names the Detail modal already shows,
+  and the menu grew past the viewport. Return is a button on each row of the Detail
+  modal; Delete stays in the menu because a destructive one-off belongs there.
 - Don't re-add an `assignments.handover_doc_no`. The column was written, then
   removed by decision, and `assets.handover_doc_no` shown read-only is the agreed
   source. Adding it back is two columns for one fact, and the second handover

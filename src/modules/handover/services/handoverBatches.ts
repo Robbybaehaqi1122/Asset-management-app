@@ -32,6 +32,18 @@ import type { Handover } from "./handoverService";
  * given and reads the whole group.
  */
 export type HandoverBatch = {
+  /**
+   * The identity of the group: `(user_id, assigned_by, assigned_at)`.
+   *
+   * Exposed rather than recomputed by the caller, because the page needs it to hold
+   * "which batch's detail list is open" and to key the row menu — and a second place
+   * that builds this string is a second place it can be built differently.
+   *
+   * `assigned_by` is nullable, so the null case carries an explicit `" none"`
+   * marker. `String(null)` would render `"null"`, which is one typo away from being
+   * indistinguishable from a value.
+   */
+  key: string;
   /** Any row of the batch. The id here opens the document for **all** of them. */
   seed: Handover;
   /** Every row in the batch, in `assignments.id` order — the order they were ticked. */
@@ -56,6 +68,19 @@ export type HandoverBatch = {
 };
 
 /**
+ * `(user_id, assigned_by, assigned_at)` as one string.
+ *
+ * A `Map` needs a primitive, and joining three columns is the smallest thing that
+ * cannot collide: a `|` separator keeps a uuid from ever being read across the
+ * boundary, and `assigned_at` is ISO with no `|` in it.
+ */
+function batchKeyOf(row: Handover): string {
+  // `assigned_by` is nullable (`on delete set null`). The marker is explicit rather
+  // than relying on `String(null)`, so the key cannot read as a uuid.
+  return `${row.userId}|${row.assignedBy ?? " none"}|${row.assignedAt}`;
+}
+
+/**
  * Groups rows into batches, keeping the order `getHandovers` returned them in.
  *
  * A `Map` keyed on the three columns, and iteration order is insertion order — so the
@@ -71,13 +96,12 @@ export function groupIntoBatches(rows: Handover[]): HandoverBatch[] {
   const groups = new Map<string, HandoverBatch>();
 
   for (const row of rows) {
-    // `assigned_by` is nullable (`on delete set null`). The marker is explicit rather
-    // than relying on `String(null)`, so the key cannot read as a uuid.
-    const key = `${row.userId}|${row.assignedBy ?? " none"}|${row.assignedAt}`;
+    const key = batchKeyOf(row);
 
     const existing = groups.get(key);
     if (existing === undefined) {
       groups.set(key, {
+        key,
         seed: row,
         items: [row],
         openCount: row.returnedAt === null ? 1 : 0,
