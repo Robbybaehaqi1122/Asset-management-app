@@ -689,6 +689,9 @@
     "deleteBody": "The record is removed. The asset itself is not affected.",
     "deleteLabel": "Delete handover",
     "actionsLabel": "Actions for {name}",
+    "actionsBatchName": "this batch of {count}",
+    "returnAsset": "Return {name}",
+    "deleteAsset": "Delete record for {name}",
     "delete": "Delete handover",
     "deleteOpenHint": "This handover is still open. Return the asset before deleting the record.",
     "issued": "Handover issued.",
@@ -696,7 +699,8 @@
     "deleted": "Handover deleted.",
     "status": {
       "open": "Out",
-      "returned": "Returned"
+      "returned": "Returned",
+      "partlyReturned": "{open} of {total} still out"
     },
     "condition": {
       "new": "New",
@@ -706,14 +710,15 @@
       "broken": "Broken"
     },
     "table": {
-      "asset": "Asset",
+      "asset": "Assets",
       "holder": "Held by",
       "handedOverOn": "Issued",
       "due": "Due",
       "status": "Status",
       "actions": "Actions",
       "doc": "Doc no",
-      "recordedBy": "Recorded by"
+      "recordedBy": "Recorded by",
+      "showing": "Showing {shown} of {total} handovers. Each row is one printable document — a row listing several assets is one handover issued together."
     },
     "filters": {
       "search": "Search",
@@ -776,7 +781,8 @@
     "documentTitle": "Company Device Handover & Disclaimer",
     "documentTitleId": "Serah Terima & Pernyataan Perangkat Perusahaan",
     "companyLabel": "Company",
-    "partyLineEn": "Mr/Ms. ______________________________, (\"Employee\").",
+    "partyLineEnPrefix": "Mr/Ms.",
+    "partyLineEnSuffix": ", (\"Employee\").",
     "partyLineId": "Bapak/Ibu",
     "partyTitleId": "(\"Karyawan\").",
     "employeeLabel": "Employee",
@@ -798,6 +804,7 @@
     "defaultUnit": "Unit",
     "qtyLabel": "Quantity for {code}",
     "unitLabel": "Unit for {code}",
+    "noteLabel": "Notes for {code}",
     "fieldName": "Name",
     "fieldDept": "Dept",
     "fieldDate": "Date",

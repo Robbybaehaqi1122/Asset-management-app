@@ -105,6 +105,23 @@ export default function HandoverPrintModal({
   const [qty, setQty] = useState<Record<string, string>>({});
   const [unit, setUnit] = useState<Record<string, string>>({});
 
+  /**
+   * Per-device notes, keyed by asset id — the template's Notes cell.
+   *
+   * Seeded from `assignments.notes`, the note the admin typed when issuing the
+   * handover. That column is on **every row of the batch**, so seeding from the seed
+   * row's value puts the same sentence in every cell by default — which is honest
+   * (it is what was recorded) and editable per device, because an admin printing
+   * today may well want "Kondisi baik" on the laptop and "Perlu penggantian mouse"
+   * on the mouse. Editing one cell does not touch the others.
+   *
+   * **Print-form state, deliberately not saved**, for the same reason as `qty` and
+   * `unit`: the note belongs to the loan row, and this is one printing of one
+   * document. Writing back would mean a column the form invented, which is the
+   * second-source-of-truth problem this repo refuses elsewhere.
+   */
+  const [rowNotes, setRowNotes] = useState<Record<string, string>>({});
+
   /** Departments for the two signature blocks, both editable. */
   const [departments, setDepartments] = useState<DepartmentRef[]>([]);
   const [issuerDept, setIssuerDept] = useState("");
@@ -173,6 +190,13 @@ export default function HandoverPrintModal({
             loaded.assets.map((a) => [a.id, t("defaultUnit")]),
           ),
         );
+        // Every row of a batch carries the same recorded note, so that is what each
+        // cell opens showing. The admin can then change any single cell.
+        const defaultNotes: Record<string, string> = {};
+        for (const asset of loaded.assets) {
+          defaultNotes[asset.id] = loaded.notes ?? "";
+        }
+        setRowNotes(defaultNotes);
         setIsLoading(false);
       },
       (error: unknown) => {
@@ -375,14 +399,29 @@ export default function HandoverPrintModal({
                   <span className="font-semibold">{COMPANY_NAME}</span> ("
                   {t("companyLabel")}")
                 </li>
-                {/* Three lines, because that is what the template prints: the
-                    English line with its blank rule, then "Bapak/Ibu", then the
-                    name with its label. Collapsing them into one sentence is
-                    readable but no longer the document being signed. */}
+                {/* The recipient's name goes **into the blank**, on both language lines.
+
+                    The template prints `Mr/Ms. ______________________________, ("Employee").`
+                    with the name on a separate line above it, but a printed document
+                    went out with that blank sitting empty and the name below it — an
+                    unsigned-looking form on paper somebody was about to sign. The name
+                    is not a blank to be filled by hand here; it is a fact the roster
+                    already holds, so it is set inline in both lines and there is no
+                    rule left to leave empty.
+
+                    `partyLineEnPrefix` / `partyLineEnSuffix` exist because a single key
+                    cannot carry a value in the middle of it: the name has to land
+                    *between* "Mr/Ms." and the role, so the sentence is split at the
+                    point where the blank was rather than matched and rewritten at
+                    render time. */}
                 <li>
-                  <span className="block">{t("partyLineEn")}</span>
-                  <span className="block italic">{t("partyLineId")}</span>
                   <span className="block">
+                    {t("partyLineEnPrefix")}{" "}
+                    <span className="font-semibold">{doc.holderName}</span>
+                    {t("partyLineEnSuffix")}
+                  </span>
+                  <span className="block">
+                    <span className="italic">{t("partyLineId")}</span>{" "}
                     <span className="font-semibold">{doc.holderName}</span>{" "}
                     {t("partyTitleId")}
                   </span>
@@ -404,6 +443,7 @@ export default function HandoverPrintModal({
 
               <DeviceTable
                 assets={doc.assets}
+                rowNotes={rowNotes}
                 qty={qty}
                 unit={unit}
                 onQtyChange={(id, value) =>
@@ -411,6 +451,9 @@ export default function HandoverPrintModal({
                 }
                 onUnitChange={(id, value) =>
                   setUnit((p) => ({ ...p, [id]: value }))
+                }
+                onNoteChange={(id, value) =>
+                  setRowNotes((p) => ({ ...p, [id]: value }))
                 }
                 t={t}
               />
@@ -530,99 +573,131 @@ function Bilingual({
  */
 function DeviceTable({
   assets,
+  rowNotes,
   qty,
   unit,
   onQtyChange,
   onUnitChange,
+  onNoteChange,
   t,
 }: {
   assets: HandoverDocument["assets"];
+  rowNotes: Record<string, string>;
   qty: Record<string, string>;
   unit: Record<string, string>;
   onQtyChange: (id: string, value: string) => void;
   onUnitChange: (id: string, value: string) => void;
+  onNoteChange: (id: string, value: string) => void;
   t: (key: string, options?: Record<string, unknown>) => string;
 }) {
   return (
-    <table className="mt-2 w-full border-collapse text-[8.5pt]">
-      <thead>
-        <tr>
-          <Th className="w-[4%]">{t("colNo")}</Th>
-          <Th className="w-[34%]">
-            {t("colDevice")}
-            <br />
-            <span className="font-normal italic">{t("colDeviceId")}</span>
-          </Th>
-          <Th className="w-[22%]">
-            {t("colAssetTag")}
-            <br />
-            <span className="font-normal italic">{t("colAssetTagId")}</span>
-          </Th>
-          <Th className="w-[7%]">{t("colQty")}</Th>
-          <Th className="w-[10%]">{t("colUnit")}</Th>
-          <Th className="w-[23%]">
-            {t("colNotes")}
-            <br />
-            <span className="font-normal italic">{t("colNotesId")}</span>
-          </Th>
-        </tr>
-      </thead>
-      <tbody>
-        {assets.map((asset, index) => (
-          <tr key={asset.id}>
-            <Td>{index + 1}</Td>
-            <Td>
-              <span className="block">{asset.name}</span>
-              {asset.categoryName && (
-                <span className="block text-gray-600">
-                  {asset.categoryName}
-                </span>
-              )}
-            </Td>
-            <Td>
-              <span className="block">{asset.assetCode}</span>
-              {asset.serialNumber && (
-                <span className="block text-gray-600">
-                  {asset.serialNumber}
-                </span>
-              )}
-            </Td>
-            <Td>
-              {/* The printed value and the input are siblings rather than one inside
-                  the other, so `print:hidden` on the input leaves the text alone. */}
-              <span className="print:hidden">
-                <input
-                  type="number"
-                  min={1}
-                  value={qty[asset.id] ?? "1"}
-                  onChange={(e) => onQtyChange(asset.id, e.target.value)}
-                  aria-label={t("qtyLabel", { code: asset.assetCode })}
-                  className="w-10 [appearance:textfield] border border-gray-300 px-1 text-center [&::-webkit-inner-spin-button]:appearance-none"
-                />
-              </span>
-              <span className="hidden print:inline">
-                {qty[asset.id] ?? "1"}
-              </span>
-            </Td>
-            <Td>
-              <span className="print:hidden">
-                <input
-                  type="text"
-                  value={unit[asset.id] ?? ""}
-                  onChange={(e) => onUnitChange(asset.id, e.target.value)}
-                  aria-label={t("unitLabel", { code: asset.assetCode })}
-                  className="w-16 border border-gray-300 px-1 text-center"
-                />
-              </span>
-              <span className="hidden print:inline">
-                {unit[asset.id] ?? ""}
-              </span>
-            </Td>
-            <Td>{asset.locationName ?? "—"}</Td>
+    <>
+      <table className="mt-2 w-full border-collapse text-[8.5pt]">
+        <thead>
+          <tr>
+            <Th className="w-[4%]">{t("colNo")}</Th>
+            <Th className="w-[34%]">
+              {t("colDevice")}
+              <br />
+              <span className="font-normal italic">{t("colDeviceId")}</span>
+            </Th>
+            <Th className="w-[22%]">
+              {t("colAssetTag")}
+              <br />
+              <span className="font-normal italic">{t("colAssetTagId")}</span>
+            </Th>
+            <Th className="w-[7%]">{t("colQty")}</Th>
+            <Th className="w-[10%]">{t("colUnit")}</Th>
+            <Th className="w-[23%]">
+              {t("colNotes")}
+              <br />
+              <span className="font-normal italic">{t("colNotesId")}</span>
+            </Th>
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {assets.map((asset, index) => (
+            <tr key={asset.id}>
+              <Td>{index + 1}</Td>
+              <Td>
+                <span className="block">{asset.name}</span>
+                {asset.categoryName && (
+                  <span className="block text-gray-600">
+                    {asset.categoryName}
+                  </span>
+                )}
+              </Td>
+              <Td>
+                <span className="block">{asset.assetCode}</span>
+                {asset.serialNumber && (
+                  <span className="block text-gray-600">
+                    {asset.serialNumber}
+                  </span>
+                )}
+              </Td>
+              <Td>
+                {/* The printed value and the input are siblings rather than one inside
+                  the other, so `print:hidden` on the input leaves the text alone. */}
+                <span className="print:hidden">
+                  <input
+                    type="number"
+                    min={1}
+                    value={qty[asset.id] ?? "1"}
+                    onChange={(e) => onQtyChange(asset.id, e.target.value)}
+                    aria-label={t("qtyLabel", { code: asset.assetCode })}
+                    className="w-10 [appearance:textfield] border border-gray-300 px-1 text-center [&::-webkit-inner-spin-button]:appearance-none"
+                  />
+                </span>
+                <span className="hidden print:inline">
+                  {qty[asset.id] ?? "1"}
+                </span>
+              </Td>
+              <Td>
+                <span className="print:hidden">
+                  <input
+                    type="text"
+                    value={unit[asset.id] ?? ""}
+                    onChange={(e) => onUnitChange(asset.id, e.target.value)}
+                    aria-label={t("unitLabel", { code: asset.assetCode })}
+                    className="w-16 border border-gray-300 px-1 text-center"
+                  />
+                </span>
+                <span className="hidden print:inline">
+                  {unit[asset.id] ?? ""}
+                </span>
+              </Td>
+              {/* The per-device note, which is **editable per row** here — unlike Qty
+                and Unit it is not a single batch-wide value, and it lands inside the
+                cell it belongs to rather than under the table.
+
+                It was empty in an earlier version, and the handover's own
+                `assignments.notes` was printed under the table instead. That is the
+                wrong column twice over: the template's Notes cell sits next to one
+                device, so a batch-wide sentence repeated once per device says the
+                same thing N times and pushes the table across a page boundary. An
+                empty cell also reads as a form nobody filled in.
+
+                The printed value and the input are siblings rather than one inside
+                the other, because a form control does not print. */}
+              <Td>
+                <span className="print:hidden">
+                  <textarea
+                    rows={2}
+                    value={rowNotes[asset.id] ?? ""}
+                    onChange={(e) => onNoteChange(asset.id, e.target.value)}
+                    aria-label={t("noteLabel", { code: asset.assetCode })}
+                    className="w-full resize-none border border-gray-300 px-1 text-[8.5pt]"
+                  />
+                </span>
+                <span className="hidden print:inline">
+                  {rowNotes[asset.id] ?? ""}
+                </span>
+              </Td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </>
   );
 }
 
@@ -646,7 +721,9 @@ function Td({
   children,
   className = "",
 }: {
-  children: React.ReactNode;
+  /** Optional because an empty cell is legitimate — the Notes column, when the
+      handover has no note, prints as an empty box rather than an em dash. */
+  children?: React.ReactNode;
   className?: string;
 }) {
   return (

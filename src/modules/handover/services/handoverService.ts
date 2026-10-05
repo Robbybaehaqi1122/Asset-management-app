@@ -524,8 +524,6 @@ export type HandoverDocumentAsset = {
   name: string;
   /** The category, which is the template's "Type / Brand / Model". */
   categoryName: string | null;
-  /** Where the asset is registered — the document's "Notes" column. */
-  locationName: string | null;
   condition: AssetCondition;
   handoverDocNo: string | null;
 };
@@ -552,20 +550,36 @@ export type HandoverDocument = {
   issuerDepartment: string | null;
   issuedAt: string;
   dueDate: string | null;
+  /**
+   * The note the admin typed when issuing the handover — the template's "Notes".
+   *
+   * **Batch-level, not per device.** `assignments.notes` lives on each loan row, and
+   * a batch is written as one statement from one form, so every row in the batch
+   * carries the same string. It is the handover's note, not each asset's, which is
+   * why the column prints it once rather than once per row.
+   */
   notes: string | null;
 };
 
 /**
- * One column list for the document's asset read, with the two embeds it needs.
+ * One column list for the document's asset read, with the one embed it needs.
  *
- * `category` and `location` are aliases so they arrive as single objects rather than
- * arrays, matching `getHandoverUserOptions`. Neither is `!inner`: an asset whose
- * category has been deleted should print as an unclassified device rather than
- * vanish from the middle of the document — a blank cell is bad, but a device that
- * is genuinely part of what is being signed for silently missing is worse.
+ * `category` is an alias so it arrives as a single object rather than an array,
+ * matching `getHandoverUserOptions`. It is not `!inner`: an asset whose category has
+ * been deleted should print as an unclassified device rather than vanish from the
+ * middle of the document — a blank cell is bad, but a device that is genuinely part
+ * of what is being signed for silently missing is worse.
+ *
+ * **There is no `location` embed.** The template's Notes column used to be filled
+ * with the asset's registered location, which was a second thing wearing that
+ * column's name: `assignments.notes` — the note the admin typed when issuing the
+ * handover — is the fact that column is for, and it lives on the handover rather
+ * than on the asset. Reading location here was a way of having something to print
+ * while the real notes went unused, so the embed is gone rather than left in the
+ * query for a column nobody renders.
  */
 const DOCUMENT_ASSET_COLUMNS =
-  "id, asset_code, serial_number, name, condition, handover_doc_no, category:categories(name), location:locations(area_name, room_name)";
+  "id, asset_code, serial_number, name, condition, handover_doc_no, category:categories(name)";
 
 /**
  * The document for one handover row, covering its whole batch.
@@ -636,7 +650,6 @@ export async function getHandoverDocument(
     .map((r) => byId.get(r.asset_id))
     .filter((a): a is Record<string, unknown> => a !== undefined)
     .map((a) => {
-      const location = a.location as Record<string, unknown> | null | undefined;
       const category = a.category as Record<string, unknown> | null | undefined;
       return {
         id: String(a.id),
@@ -644,7 +657,6 @@ export async function getHandoverDocument(
         serialNumber: str(a.serial_number),
         name: String(a.name ?? ""),
         categoryName: category ? str(category.name) : null,
-        locationName: location ? locationLabel(location) : null,
         condition: String(a.condition ?? "") as AssetCondition,
         handoverDocNo: str(a.handover_doc_no),
       };
@@ -671,20 +683,6 @@ export async function getHandoverDocument(
     dueDate: str(row.due_date),
     notes: str(row.notes),
   };
-}
-
-/**
- * "Area / Room", the same string the asset list shows.
- *
- * A copy rather than an import from `assetService`, because `locationDisplayName`
- * there is module-private — and because both lists print the same fact in the same
- * shape: a bare area when there is no room, and never "N/A".
- */
-function locationLabel(location: Record<string, unknown>): string | null {
-  const area = str(location.area_name);
-  const room = str(location.room_name);
-  if (room) return area ? `${area} / ${room}` : room;
-  return area;
 }
 
 /** Raised when a handover id no longer resolves to a row. */

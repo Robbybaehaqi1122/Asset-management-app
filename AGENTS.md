@@ -2199,6 +2199,58 @@ Verified after the fix through PostgREST with a staff session: `assigned` →
 `available`, and an admin issue still flips it back, and a staff INSERT is still
 refused with `42501`.
 
+### The list row is a batch, and that is the same fact as the document
+
+`src/modules/handover/services/handoverBatches.ts` groups the flat rows the service
+returns into one entry per **issued batch**, and the table renders one row per batch.
+This is not a display preference — it is the same grouping the document already used,
+promoted to where the user can see it.
+
+The table used to render one row per **asset**, because a handover *is* one asset and
+that is what makes returning the laptop while keeping the mouse a real operation. But
+**one batch of assets to one recipient is one printed document**, so issuing 2 assets
+showed 2 rows and **neither row was "the one to print"** — clicking Print on either
+produced the identical document, and nothing on screen said so. The longer the list
+got, the worse it became, because a row count is not a document count.
+
+Four decisions, each of which would have been wrong in the ordinary case.
+
+1. **The key is `(user_id, assigned_by, assigned_at)`** — the same three columns
+   `getHandoverDocument` groups on, not a new one. `assigned_at` is identical across a
+   batch because a batch is one statement and `now()` is the *transaction* timestamp.
+   That is also the reason `issueHandover` must stay a single multi-row insert:
+   changing it to N inserts would make every row its own batch, so one issue of eight
+   assets would print as eight one-device documents, with nothing erroring.
+2. **`assigned_by` is nullable and the key says so.** `on delete set null` means a
+   deleted admin leaves null on every row of their batch. The key uses an explicit
+   `?? " none"` marker rather than `String(null)`, so it cannot be confused with a
+   uuid-shaped value.
+3. **Grouping happens after the status filter, not before.** A batch can be half
+   returned — laptop back, mouse not — and filtering rows first then grouping would
+   render such a batch as if all of it were out. So the filter runs against
+   `batches`, and "open" means **anything still out**, which is the only reading that
+   keeps a half-returned batch findable. The badge says `"{open} of {total} still out"`
+   rather than rounding a partial batch to either extreme.
+4. **Print is per batch; Return and Delete stay per asset.** A single batch-wide
+   "Return" has no row to write to — `returnHandover` takes one `handoverId` — and
+   inventing "return all" would make the partial return that motivates batching
+   unrecordable. So the menu lists one Return item per open asset and one Delete per
+   returned asset, each naming its asset. The count is visible before anything is
+   clicked, which is the reassurance the grouped row gives.
+
+**The row count is in documents, and the Asset heading is plural.** Both were wrong in
+the ordinary case: "Asset" on a cell listing three assets, and a count an admin would
+read as "how many PDFs am I about to print" while it meant "how many assets". The line
+above the table says so explicitly rather than leaving the arithmetic to the reader.
+
+**A batch is not a row and has no table.** It is a set of rows that share a recipient,
+an issuer and a timestamp; inventing a `batches` table would be a second source of
+truth for a grouping the database already determines. `batch.seed` is therefore a
+**representative** row whose id is safe to open the document with — precisely because
+`getHandoverDocument` ignores which row it was handed and reads the whole group. The
+search filter reaches the assets too, so a batch is still findable by one of its asset
+codes.
+
 ### The printed document, and what a batch becomes on paper
 
 `src/modules/handover/document/` and `.../components/HandoverPrintModal.tsx` render
@@ -2285,12 +2337,50 @@ naming a department the issuer is not in, with nothing on screen to suggest it.
 `getHandoverDocument` therefore embeds `issuedBy:…(department:departments(name))` and
 returns `issuerDepartment`.
 
+**The printed Notes column is the handover's note, in the Notes cell, editable per row.**
+It used to hold `assets`' registered location, which is a different fact wearing the
+column's name, so the `location:locations(…)` embed came out of `DOCUMENT_ASSET_COLUMNS`
+and `locationLabel` is gone from the service. The note itself is `assignments.notes` —
+the text the admin typed on the **Issue** form.
+
+Two earlier shapes were both wrong and are worth recording so they are not rebuilt:
+
+- **Empty cells, with the note printed once under the table.** The template's Notes
+  column sits beside one device, so a batch-wide sentence printed under the table is
+  not in the column that names it, and empty cells read as a form nobody filled in.
+- **The note is editable per row, like `qty` and `unit`.** `assignments.notes` is on
+  **every row of the batch** — a batch is one statement written from one form — so the
+  seed row's value opens in each cell. That is honest (it is what was recorded) and
+  editable, because an admin printing today may want "Kondisi baik" on the laptop and
+  "Perlu penggantian mouse" on the mouse. Editing one cell does not touch the others.
+
+**It is print-form state and deliberately not saved**, same as `qty` and `unit`: the
+note belongs to the loan row, and this is one printing of one document. Writing back
+would mean a column the form invented. A cell with no note prints as an empty box, not
+an em dash — the template's column has no fill, and "—" would be text nobody typed.
+`Td`'s `children` is optional for that reason.
+
 **Qty and Unit are print-form state and are deliberately not saved.** A handover row
 *is* one asset, so the quantity is always 1 and there is no column for it. But the
 paper template has a Qty column and an admin handing over "3 mice" has a real use for
 it, so it lives in the modal and nowhere else. Inventing a column would be a second
 source of truth for a number that only exists on paper. Each cell prints the typed
 value and shows the input only on screen, because **a form control does not print**.
+
+**The recipient's name is set inline, in the blank the template prints empty.** The
+template's parties block is `Mr/Ms. ______________________________, ("Employee").` with
+the name on a *separate* line above it — read out of the `.docx` at paragraphs 8–10. It
+printed that way, and a document went out with the rule sitting empty and the name
+below it, which reads as an unsigned form on paper somebody was about to sign. The
+name is not a blank for a hand: it is a fact the roster already holds, so it is set
+inline in **both** language lines and no rule is left to leave empty.
+
+`partyLineEnPrefix` / `partyLineEnSuffix` exist for that reason and the split is at
+the exact point where the blank was. A single key cannot carry a value in the middle
+of it, and rewriting one key at render time with a regex or a `.replace()` is a second
+place where the sentence can be wrong. `verify_handover_document.py` is unaffected
+because this line is i18n, not `documentContent.ts` — the template's own dotted rule is
+a literal the check does not cover, which is correct: it is not text the app prints.
 
 **The Name line is not an input.** The recipient's name comes from the roster and the
 issuer's from the account; making either editable would mean a document signed for
@@ -3419,6 +3509,15 @@ not go looking for them unprompted.
   Handover` and one route, with the unit as a `Select` inside the page — the two
   rows bought a URL, not a distinction, and they needed i18n keys that were never
   added. See One menu, and the unit became a filter inside it.
+- Don't render one handover-list row per asset again. One batch of assets to one
+  recipient is **one printed document**, so a per-asset row is a row count that is
+  not a document count, and no row could be pointed at as "the one to print" — every
+  row printed the identical batch. Group on `(user_id, assigned_by, assigned_at)`,
+  the same key `getHandoverDocument` uses. See The list row is a batch.
+- Don't put a batch-wide "Return all" in the handover row menu. `returnHandover`
+  takes one `handoverId`, and a single batch-wide action would have no row to write
+  to — while inventing one would make the partial return (laptop back, mouse not)
+  unrecordable, which is the outcome that motivates batching in the first place.
 - Don't re-add an `assignments.handover_doc_no`. The column was written, then
   removed by decision, and `assets.handover_doc_no` shown read-only is the agreed
   source. Adding it back is two columns for one fact, and the second handover
@@ -3498,6 +3597,19 @@ not go looking for them unprompted.
   context is already in CSS-pixel space; `lastRef` stores CSS pixels for this reason.
 - Don't make the signature block's Name field an input. The name is a fact about the
   handover; the department and date are facts about the printing.
+- Don't put the recipient's name on its own line under the parties block, and don't
+  restore the dotted blank. The template prints `Mr/Ms. ______, ("Employee").` with the
+  name above it, and that went out on paper somebody was about to sign — an empty rule
+  reads as an unsigned form. The roster already holds the name, so it is set inline in
+  both language lines via `partyLineEnPrefix`/`partyLineEnSuffix`.
+- Don't fill the handover document's Notes column with the asset's location, or keep the
+  `location:locations(…)` embed in `DOCUMENT_ASSET_COLUMNS` for a column nobody renders.
+  The note belongs to `assignments.notes` and to that column; the asset's registered
+  location is a different fact and now has no column on this form.
+- Don't print the handover note once under the table, and don't leave the per-device
+  Notes cells empty. The template's Notes column sits beside one device, so a batch-wide
+  sentence under the table is not in the column that names it and empty cells read as a
+  form nobody filled in.
 - Don't order an embedded resource with `alias:column` or `alias.column`. It is
   `alias(column)` — parentheses. The first two are hard `PGRST100`s, and the real
   trap is leaving the old bare `.order("column")` in place, which returns 200 and

@@ -44,6 +44,8 @@ import type {
   HandoverTarget,
   HandoverUserOption,
 } from "../services/handoverService";
+import { groupIntoBatches } from "../services/handoverBatches";
+import type { HandoverBatch } from "../services/handoverBatches";
 
 type IssueForm = {
   /**
@@ -513,22 +515,55 @@ export default function HandoverListPage() {
    * approach the asset and user lists take. The unit is the one thing that is
    * filtered in SQL, and that is because it is the page, not a filter on it.
    */
+  /**
+   * One entry per **batch**, not per row.
+   *
+   * `getHandovers` returns one row per asset, because a handover *is* one asset —
+   * that is what makes returning the laptop but keeping the mouse a real operation
+   * rather than a workaround. But **one batch of assets to one recipient is one
+   * printed document**: `getHandoverDocument` finds the batch by
+   * `(user_id, assigned_by, assigned_at)`, the three values that are identical
+   * across every row written by one multi-row insert.
+   *
+   * Rendering rows ungrouped therefore showed N rows for N assets and **no way to
+   * tell which one to print**, even though every one of them prints the same
+   * document. With batches accumulating that became worse, not better: the longer the
+   * list, the less any single row could be pointed at as "the document". So the
+   * table lists batches and names the assets inside one, which is also the shape of
+   * the paper.
+   *
+   * **Grouping happens after the status filter, not before it**, and that order is
+   * load-bearing: a batch can be half returned, and filtering rows first then
+   * grouping would render such a batch as if all of it were still out.
+   */
+  const batches = useMemo(() => groupIntoBatches(handovers), [handovers]);
+
   const visible = useMemo(() => {
     const needle = search.trim().toLowerCase();
-    return handovers.filter((row) => {
-      if (statusFilter === "open" && row.returnedAt !== null) return false;
-      if (statusFilter === "returned" && row.returnedAt === null) return false;
+
+    return batches.filter((batch) => {
+      // "open" means **anything still out**, which is the only reading that keeps a
+      // half-returned batch findable. The alternative — a batch is open only if all
+      // of it is — hides it from the filter an admin would use to find the mouse they
+      // still owe.
+      if (statusFilter === "open" && batch.openCount === 0) return false;
+      if (statusFilter === "returned" && batch.openCount > 0) return false;
       if (needle === "") return true;
-      return [
-        assetLabel(row, t("fields.unknown")),
-        personLabel(row.holder, t("fields.unknown")),
-        row.asset?.handoverDocNo ?? "",
+
+      // Searched over the assets too, so finding a batch by one of its asset codes
+      // works even though the row shows a joined list rather than one asset.
+      const haystack = [
+        personLabel(batch.holder, t("fields.unknown")),
+        issuerLabel(batch.issuedBy, t("fields.unknown")),
+        batch.dueDate ?? "",
+        ...batch.docNumbers,
+        ...batch.items.map((row) => assetLabel(row, t("fields.unknown"))),
       ]
         .join(" ")
-        .toLowerCase()
-        .includes(needle);
+        .toLowerCase();
+      return haystack.includes(needle);
     });
-  }, [handovers, search, statusFilter, t]);
+  }, [batches, search, statusFilter, t]);
 
   const statusOptions = [
     { value: "", label: t("filters.all") },
@@ -673,6 +708,16 @@ export default function HandoverListPage() {
           </p>
         ) : (
           <div className="overflow-x-auto">
+            {/* The count is in **batches**, and the Asset heading is plural, because
+                a row is now one document. An admin counting rows to work out how many
+                documents they are about to print would get the wrong answer, which
+                is the exact confusion this grouping exists to remove. */}
+            <p className="px-4 pt-4 text-sm text-gray-500 dark:text-gray-400">
+              {t("table.showing", {
+                shown: visible.length,
+                total: batches.length,
+              })}
+            </p>
             <table className="w-full">
               <thead>
                 <tr className="border-b border-gray-200 dark:border-gray-800">
@@ -697,86 +742,111 @@ export default function HandoverListPage() {
                 </tr>
               </thead>
               <tbody>
-                {visible.map((row) => {
-                  const isOpen = row.returnedAt === null;
-                  return (
-                    <tr
-                      key={row.id}
-                      className="border-b border-gray-100 dark:border-gray-800"
-                    >
-                      <td className="px-4 py-3">
-                        <p className="text-sm font-medium text-gray-800 dark:text-white/90">
+                {visible.map((batch) => (
+                  <tr
+                    key={batch.seed.id}
+                    className="border-b border-gray-100 align-top dark:border-gray-800"
+                  >
+                    <td className="px-4 py-3">
+                      {/* Every asset in the batch, one per line. The count is
+                          explicit because "how many things am I about to print"
+                          is the question this row exists to answer. */}
+                      {batch.items.map((row) => (
+                        <p
+                          key={row.id}
+                          className="text-sm font-medium text-gray-800 dark:text-white/90"
+                        >
                           {assetLabel(row, t("fields.unknown"))}
+                          {row.returnedAt !== null && (
+                            <span className="ms-2 text-xs font-normal text-gray-400 dark:text-gray-500">
+                              {t("status.returned")}
+                            </span>
+                          )}
                         </p>
-                        {row.asset?.handoverDocNo && (
-                          <p className="text-xs text-gray-500 dark:text-gray-400">
-                            {t("table.doc")}: {row.asset.handoverDocNo}
-                          </p>
-                        )}
-                      </td>
-                      <td className="px-4 py-3">
-                        <p className="text-sm text-gray-500 dark:text-gray-400">
-                          {personLabel(row.holder, t("fields.unknown"))}
+                      ))}
+                      {batch.docNumbers.length > 0 && (
+                        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                          {t("table.doc")}: {batch.docNumbers.join(", ")}
                         </p>
-                        {/* The third fact about the holder. The position is
-                            already in the line above; the department is what
-                            remains, and the roster is not unique on name so all
-                            three are needed to tell two people apart. */}
-                        {row.holder?.departmentName && (
-                          <p className="text-xs text-gray-500 dark:text-gray-400">
-                            {row.holder.departmentName}
-                          </p>
-                        )}
-                      </td>
-                      <td className="px-4 py-3">
-                        <p className="text-sm text-gray-500 dark:text-gray-400">
-                          {formatTimestamp(row.assignedAt)}
-                        </p>
-                        {/* Who pressed the button, which is a *different* person
-                            from the holder whenever an admin issues a handover to
-                            somebody else. `assigned_by` is an account and stays
-                            one; only the recipient moved to the roster. */}
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      <p className="text-sm text-gray-500 dark:text-gray-400">
+                        {personLabel(batch.holder, t("fields.unknown"))}
+                      </p>
+                      {/* The third fact about the holder. The position is
+                          already in the line above; the department is what
+                          remains, and the roster is not unique on name so all
+                          three are needed to tell two people apart. */}
+                      {batch.holder?.departmentName && (
                         <p className="text-xs text-gray-500 dark:text-gray-400">
-                          {t("table.recordedBy")}:{" "}
-                          {issuerLabel(row.issuedBy, t("fields.unknown"))}
+                          {batch.holder.departmentName}
                         </p>
-                      </td>
-                      <td className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
-                        {formatDateOnly(row.dueDate)}
-                      </td>
-                      <td className="px-4 py-3">
-                        {isOpen ? (
-                          <Badge size="sm" color="warning">
-                            {t("status.open")}
-                          </Badge>
-                        ) : (
-                          <Badge size="sm" color="success">
-                            {t("status.returned")}
-                          </Badge>
-                        )}
-                        {row.conditionAtHandover && (
-                          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                            {t(`condition.${row.conditionAtHandover}`)}
-                          </p>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-end">
-                        <HandoverRowActions
-                          row={row}
-                          isOpen={isOpen}
-                          canReturn={isAdmin || ownUserIds.has(row.userId)}
-                          canDelete={isAdmin}
-                          isSaving={isSaving}
-                          openMenuId={openMenuId}
-                          setOpenMenuId={setOpenMenuId}
-                          onReturn={() => void handleReturn(row)}
-                          onDelete={() => handleOpenDelete(row)}
-                          onPrint={() => setPrintHandoverId(row.id)}
-                        />
-                      </td>
-                    </tr>
-                  );
-                })}
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      <p className="text-sm text-gray-500 dark:text-gray-400">
+                        {formatTimestamp(batch.assignedAt)}
+                      </p>
+                      {/* Who pressed the button, which is a *different* person
+                          from the holder whenever an admin issues a handover to
+                          somebody else. `assigned_by` is an account and stays
+                          one; only the recipient moved to the roster. */}
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                        {t("table.recordedBy")}:{" "}
+                        {issuerLabel(batch.issuedBy, t("fields.unknown"))}
+                      </p>
+                    </td>
+                    <td className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
+                      {formatDateOnly(batch.dueDate)}
+                    </td>
+                    <td className="px-4 py-3">
+                      {/* A batch can be **partly** returned — the laptop came back and
+                          the mouse did not — and the single badge says so rather than
+                          rounding it to either extreme. It reads "open" while anything
+                          is still out, because that is what an admin filtering by open
+                          is asking for. */}
+                      {batch.openCount > 0 ? (
+                        <Badge size="sm" color="warning">
+                          {batch.openCount === batch.items.length
+                            ? t("status.open")
+                            : t("status.partlyReturned", {
+                                open: batch.openCount,
+                                total: batch.items.length,
+                              })}
+                        </Badge>
+                      ) : (
+                        <Badge size="sm" color="success">
+                          {t("status.returned")}
+                        </Badge>
+                      )}
+                      {/* The condition, only when the batch agrees on it. Every row of
+                          a batch was written from one form, so a single condition is the
+                          normal case; a per-asset editor inside the issue form would be
+                          the alternative, and it is not built. */}
+                      {batch.items[0]?.conditionAtHandover && (
+                        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                          {t(`condition.${batch.items[0].conditionAtHandover}`)}
+                        </p>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-end">
+                      <HandoverBatchActions
+                        batch={batch}
+                        canReturnAny={
+                          isAdmin || ownUserIds.has(batch.seed.userId)
+                        }
+                        canDelete={isAdmin}
+                        isSaving={isSaving}
+                        openMenuId={openMenuId}
+                        setOpenMenuId={setOpenMenuId}
+                        onReturn={(row) => void handleReturn(row)}
+                        onDelete={(row) => handleOpenDelete(row)}
+                        onPrint={() => setPrintHandoverId(batch.seed.id)}
+                      />
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
@@ -1169,13 +1239,22 @@ function formatTimestamp(value: string | null): string {
 }
 
 /**
- * One row's actions, behind a single menu.
+ * One **batch**'s actions, behind a single menu.
  *
- * **A menu rather than two inline buttons**, matching `UserListPage`'s row menu,
- * and the reason there is a real gain rather than a style preference: the Action
- * column was the widest cell in the table while carrying two small controls, so
- * it was taking horizontal space to say nothing. One `HorizontaLDots` trigger
- * gives it back.
+ * The row is a batch, so the menu is too — and that is the whole point of the split:
+ * **Print acts on the batch once**, because there is one document per batch, while
+ * **Return and Delete stay per asset**, because those genuinely are per asset.
+ * Returning the laptop but keeping the mouse is a real outcome, and collapsing it to
+ * one batch-wide action would have made the second outcome unrecordable.
+ *
+ * So the menu lists Return and Delete **once per eligible asset**, each naming it. A
+ * batch of eight open assets shows eight Return items rather than one item that does
+ * not exist as a concept — and the list makes the count obvious before anything is
+ * clicked, which is the same reassurance the grouped row gives on screen.
+ *
+ * **A menu rather than inline buttons**, matching `UserListPage`'s row menu: one
+ * `HorizontaLDots` trigger for a column that would otherwise carry one button per
+ * asset in the batch.
  *
  * **Which items appear is a UI convenience, never the enforcement point.**
  * `assignments_update_own_or_admin` and `assignments_delete_admin` refuse whatever
@@ -1186,12 +1265,12 @@ function formatTimestamp(value: string | null): string {
  *
  * Only one menu is open at a time, and the page owns which one: `openMenuId` lives
  * here as a prop rather than a `useState` per row, because a boolean per row would
- * mean a component per row just to hold it.
+ * mean a component per row just to hold it. It is keyed on the **batch's seed id**,
+ * which is stable for the batch exactly as long as the row it came from exists.
  */
-function HandoverRowActions({
-  row,
-  isOpen,
-  canReturn,
+function HandoverBatchActions({
+  batch,
+  canReturnAny,
   canDelete,
   isSaving,
   openMenuId,
@@ -1200,43 +1279,34 @@ function HandoverRowActions({
   onDelete,
   onPrint,
 }: {
-  row: Handover;
-  isOpen: boolean;
-  /** Whether this caller may close this handover, per the policy above. */
-  canReturn: boolean;
+  batch: HandoverBatch;
+  /** Whether this caller may close any of this batch's handovers, per the policy above. */
+  canReturnAny: boolean;
   canDelete: boolean;
   isSaving: boolean;
   openMenuId: string | null;
   setOpenMenuId: (id: string | null) => void;
-  onReturn: () => void;
-  onDelete: () => void;
+  onReturn: (row: Handover) => void;
+  onDelete: (row: Handover) => void;
   onPrint: () => void;
 }) {
   const { t } = useTranslation("common", { keyPrefix: "handover" });
-  const isMenuOpen = openMenuId === row.id;
+  const isMenuOpen = openMenuId === batch.seed.id;
+
+  /** Split by state, because the two actions are only ever offered on opposite ones. */
+  const openItems = batch.items.filter((row) => row.returnedAt === null);
+  const returnedItems = batch.items.filter((row) => row.returnedAt !== null);
+
+  const showReturn = canReturnAny && openItems.length > 0;
+  const showDelete = canDelete && returnedItems.length > 0;
 
   /**
-   * What the menu would actually contain, computed **before** the early return.
-   *
-   * Testing the permissions instead of the rendered items is the trap here, and it
-   * produces an empty menu in the most ordinary case on the screen: a staff member
-   * looking at a handover that has already come back. They may return it
-   * (`canReturn` is true) but there is nothing to close, so the Return item is not
-   * rendered — and they cannot delete, so the menu ends up with no items at all
-   * behind a kebab that opens.
-   *
-   * So the guard asks the question the menu actually answers: is there an item?
+   * Print is **always** offered, which is what makes this menu able to appear at all.
+   * A document is wanted whether the batch is still out or already back, and it can
+   * never be refused — there is no rule that stops somebody printing a record they
+   * are allowed to read. So the early return below is keyed on Return and Delete
+   * alone, and a batch that is entirely open and read-only still gets its Print.
    */
-  const showReturn = isOpen && canReturn;
-  const showDelete = canDelete;
-
-  /**
-   * Nothing to act on, so no trigger at all rather than a disabled one. A staff
-   * member looking at somebody else's handover has neither. A kebab that opens
-   * onto an empty list is a control that looks actionable and is not.
-   */
-  if (!showReturn && !showDelete) return null;
-
   /**
    * Wraps a handler so the menu closes first.
    *
@@ -1249,13 +1319,41 @@ function HandoverRowActions({
     action();
   };
 
+  if (!showReturn && !showDelete) {
+    return (
+      <div className="relative">
+        <button
+          type="button"
+          onClick={() => setOpenMenuId(isMenuOpen ? null : batch.seed.id)}
+          aria-label={t("actionsLabel", {
+            name: t("actionsBatchName", {
+              count: batch.items.length,
+            }),
+          })}
+          aria-haspopup="menu"
+          aria-expanded={isMenuOpen}
+          className="dropdown-toggle rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-50 dark:text-gray-400 dark:hover:bg-white/5 dark:hover:text-gray-200"
+          disabled={isSaving}
+        >
+          <HorizontaLDots className="size-5" />
+        </button>
+
+        {isMenuOpen && (
+          <Dropdown isOpen onClose={() => setOpenMenuId(null)}>
+            <DropdownItem onClick={run(onPrint)}>{t("print")}</DropdownItem>
+          </Dropdown>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="relative">
       <button
         type="button"
-        onClick={() => setOpenMenuId(isMenuOpen ? null : row.id)}
+        onClick={() => setOpenMenuId(isMenuOpen ? null : batch.seed.id)}
         aria-label={t("actionsLabel", {
-          name: assetLabel(row, t("fields.unknown")),
+          name: t("actionsBatchName", { count: batch.items.length }),
         })}
         aria-haspopup="menu"
         aria-expanded={isMenuOpen}
@@ -1267,43 +1365,39 @@ function HandoverRowActions({
 
       {isMenuOpen && (
         <Dropdown isOpen onClose={() => setOpenMenuId(null)}>
-          {/* Print first, and always offered: a document is wanted whether the
-              handover is still out or already back, and this item can never be
-              refused — there is no rule that stops somebody printing a record they
-              are allowed to read. */}
           <DropdownItem onClick={run(onPrint)}>{t("print")}</DropdownItem>
 
-          {/* Return only while the handover is open. A closed one has nothing to
-              close, and offering it would produce a `23514` from
-              `assignments_guard_asset_available` for a nonsensical edit. */}
-          {showReturn && (
+          {/* One item per asset still out, each naming it. A single "Return" on a
+              batch would have no row to write to — `returnHandover` takes one
+              `handoverId` — and inventing a "return all" would make the partial
+              return that motivates batching unrecordable. */}
+          {openItems.map((row) => (
             <DropdownItem
-              onClick={run(onReturn)}
+              key={`return-${row.id}`}
+              onClick={run(() => onReturn(row))}
               className={isSaving ? "pointer-events-none opacity-50" : ""}
             >
-              {t("return")}
+              {t("returnAsset", {
+                name: assetLabel(row, t("fields.unknown")),
+              })}
             </DropdownItem>
-          )}
+          ))}
 
-          {showDelete && (
-            /* The title sits on a wrapper, not on the item: a disabled control
-               does not receive pointer events, so a tooltip on it would never
-               show — and the wording is the point, because the real reason an open
-               handover cannot be deleted is that deleting it would put the asset
-               back in stock while the person still has it. */
-            <span title={isOpen ? t("deleteOpenHint") : undefined}>
-              <DropdownItem
-                onClick={run(onDelete)}
-                className={
-                  isOpen
-                    ? "pointer-events-none opacity-50"
-                    : "text-error-600 hover:bg-error-50 dark:text-error-500 dark:hover:bg-error-500/10"
-                }
-              >
-                {t("delete")}
-              </DropdownItem>
-            </span>
-          )}
+          {/* Delete only on assets already back. The title explains the reasoning
+              rather than leaving the item silently absent — the real reason an open
+              handover cannot be deleted is that deleting it would put the asset back
+              in stock while the person still has it. */}
+          {returnedItems.map((row) => (
+            <DropdownItem
+              key={`delete-${row.id}`}
+              onClick={run(() => onDelete(row))}
+              className="text-error-600 hover:bg-error-50 dark:text-error-500 dark:hover:bg-error-500/10"
+            >
+              {t("deleteAsset", {
+                name: assetLabel(row, t("fields.unknown")),
+              })}
+            </DropdownItem>
+          ))}
         </Dropdown>
       )}
     </div>
