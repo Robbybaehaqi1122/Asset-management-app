@@ -667,7 +667,13 @@ function RowActions({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
-  useClickOutside(wrapperRef, onClose);
+  /**
+   * `isOpen` is the third argument and it is what makes this work: the listener is
+   * registered on `document`, so every row's copy runs on every click. A closed row
+   * that still listened would close the **shared** menu on behalf of the row that
+   * owns it — see `useClickOutside` for the full chain.
+   */
+  useClickOutside(wrapperRef, onClose, isOpen);
 
   /**
    * Place the panel against the trigger's viewport rect.

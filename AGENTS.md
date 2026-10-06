@@ -275,14 +275,17 @@ vercel.json                    SPA rewrite only — no framework, no buildComman
 | `20260927002000_handover_users.sql` | the `handover_users` roster, `assignments.user_id` repointed off `profiles`, and two RLS policies rewritten; see The recipient is not an account |
 | `20260927002100_sync_trigger_security_definer.sql` | `sync_asset_status_from_assignment` becomes `security definer`; see The return that left the asset stranded |
 | `20260927002200_positions.sql` | the `positions` list, `handover_users.position` replaced by `position_id`; see Position is a list, not a text box |
+| `20260927002300_asset_code_case_insensitive.sql` | replaces `assets_asset_code_key` with a unique index on `upper(btrim(asset_code))`; see The asset code is unique ignoring case |
 
-**All twenty-two are applied to the remote**, confirmed by reading
-`supabase_migrations.schema_migrations` after the `02200` push, which lists 22
+**All twenty-three are applied to the remote**, confirmed by reading
+`supabase_migrations.schema_migrations` after the `02300` push, which lists **23**
 rows. The remote carries **11 tables** and **40 indexes** in `public`, measured
 after the push; `02000` added three indexes, `02100` none, `02200` added
-`positions_name_idx` and `handover_users_position_idx`. `db diff --linked`
-reported `No schema changes found`, which is the independent proof that the
-checked-in migrations and the live database agree. Before the `01100` push it
+`positions_name_idx` and `handover_users_position_idx`, and `02300` added **none** —
+it replaced one constraint with one index, so the count is unchanged. The ledger
+read also shows `assets_asset_code_key` gone and `assets_asset_code_ci_key` present.
+`db diff --linked` reported `No schema changes found`, which is the independent proof
+that the checked-in migrations and the live database agree. Before the `01100` push it
 reported fourteen `drop column` statements; that was the diff saying the remote
 was behind the checked-in files, the normal state between authoring a migration
 and pushing it, not drift and not something to repair by hand. **The next
@@ -2061,6 +2064,63 @@ name, and refusing the second is worse than a picker showing two identical label
 — which the form resolves by also carrying the position and the department. The
 list, the picker and the form all show all three for that reason.
 
+### The asset code is unique ignoring case
+
+`asset_code text not null unique` in `001` made the code unique **by exact string**,
+and a Postgres `text` comparison is case- and whitespace-sensitive. So `AST-0001`,
+`ast-0001` and `AST-0001` with a trailing space were three rows and all three inserts
+succeeded — verified on a local stack, not inferred:
+
+```
+insert into t values ('AST-0001');    -- INSERT 0 1
+insert into t values ('ast-0001');    -- INSERT 0 1
+insert into t values ('  AST-0001  '); -- INSERT 0 1
+```
+
+The whitespace half of that gap was already closed on the client: `normalise()` in
+`assetService.ts` calls `.trim()` on the column. The **case** half was not, and it is
+the one that matters — an asset register whose whole point is a unique identifier
+cannot hold `AST-0001` twice in two spellings.
+
+`20260927002300` replaces the constraint with a unique index over the normalised
+expression, `upper(btrim(asset_code))`, and it is the **index** that refuses the second
+insert. Three details in it are each a mistake the obvious version would have made.
+
+1. **`btrim`, not just `upper`.** The app trims, but the check must hold for a row that
+   arrives by any route — SQL, an import — so the database cannot depend on the client
+   having normalised first.
+2. **`drop constraint`, not `drop index`.** `assets_asset_code_key` is a table
+   constraint (`contype = 'u'`, `UNIQUE (asset_code)`), because `001` declares it
+   inline as `text not null unique`. Postgres refuses to drop a constraint's index
+   directly with `2BP01`. The same trap `20260927001300` records for
+   `categories_name_key`.
+3. **The old constraint is dropped rather than kept beside the index.** An exact-match
+   uniqueness check the new index already subsumes is a second rule for one fact, and a
+   reader finding both has to work out which one is doing the work. The index count in
+   `public` is therefore **unchanged at 40**.
+
+**The guard states which codes collide instead of letting the index raise.** The index
+would fail on its own if two existing rows differed only by case, and it would fail with
+`23505` naming the *index*, not the asset codes — and the remote has no re-apply path,
+so a hand-written repair would be the only way out. The `do` block raises with the
+offending pair named, verified by staging a collision and running the block against it:
+
+```
+ERROR: Cannot add the case-insensitive asset_code index: these codes differ
+only by case or surrounding spaces: AST-GUARD (ast-guard | AST-GUARD)
+```
+
+Verified on the local stack, in transactions ending in `rollback`: identical code
+refused, case variant refused, whitespace variant refused, an update that would collide
+refused, a genuinely different code accepted. Both databases were empty of collisions
+at the time — on the remote that is four assets, all already uppercase and untrimmed —
+so the guard is a guard and not a hope.
+
+The app side needed **no change**: `isDuplicateError()` already reads `23505` and
+`AssetListPage` already shows `assets.errors.duplicateCode` — *"That asset code is
+already used by another asset."* — in the form's error slot. What the migration fixes
+is the promise, not the message.
+
 ### Position is a list, not a text box
 
 `handover_users.position` was `text not null` from `02000`, and the reasoning was
@@ -3471,6 +3531,16 @@ not go looking for them unprompted.
 - Don't allow a third category level, and don't put a `code` on a sub-category.
   The form resolves the main category by one hop through `parent_id`, so a third
   level silently selects the wrong fieldset.
+- Don't assume an `assets.asset_code` uniqueness check that compares exact strings is
+  enough. `text unique` is case- and whitespace-sensitive, so `AST-0001` and `ast-0001`
+  were two rows. The boundary is `assets_asset_code_ci_key`, a unique index over
+  `upper(btrim(asset_code))` from `02300`; the app's `.trim()` is not a substitute for
+  it. See The asset code is unique ignoring case.
+- Don't drop `assets_asset_code_key` with `drop index`, and don't re-add it beside the
+  case-insensitive index. It is a table constraint (`contype = 'u'`, declared inline as
+  `text not null unique`), so the drop is refused with `2BP01` and needs
+  `alter table … drop constraint`. Keeping it beside the new index would be two rules
+  for one fact.
 - Don't self-embed `categories` to reach a category's own parent.
   `parent:categories!categories_parent_id_fkey` — the documented hint for that
   exact FK — fails with `PGRST200` on both the local stack and the remote,
