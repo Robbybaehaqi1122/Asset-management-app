@@ -188,7 +188,7 @@ src/
 │   └── calendar/              the calendar feature: Calendar CalendarEventModal
 │                              CalendarEventItem CalendarViewSelect icons types
 │   └── modules/               self-contained features: users/, departments/, assets/,
-│                              asset-settings/, handover/
+│                              asset-settings/, handover/, companies/
 │       ├── users/             the user-management feature: pages/ services/
 │       │                      see User management
 │       ├── departments/       the department feature: list + create, feeds the pickers
@@ -197,8 +197,10 @@ src/
 │       │                      see Asset settings manages the reference data
 │       ├── assets/            the asset inventory: pages/ services/
 │       │                      see The asset inventory
-│       └── handover/          the handover feature: pages/ services/
-│                              see Asset handover is the loans table, finally
+│       ├── handover/          the handover feature: pages/ services/
+│       │                      see Asset handover is the loans table, finally
+│       └── companies/         the company-name list: pages/ services/
+│                              see Company is a list, and nothing points at it
 ├── layout/                    AppLayout AppSidebar AppHeader Backdrop
 ├── context/                   AuthContext ThemeContext SidebarContext LanguageContext
 ├── hooks/                     useModal useClickOutside useIsAdmin
@@ -245,6 +247,9 @@ supabase/
 └── ISSUE_TEMPLATE/            known-issue.yml
 
 vercel.json                    SPA rewrite only — no framework, no buildCommand
+260911-MULTI-SOEHARDONO.docx    the Word template, and the source `documentContent.ts`
+                              is verified against — see The reference document is a PDF
+261006-NOTEBOOK-OP-PRANOTO.pdf the newer print reference; layout only, terms identical
 ```
 
 ## Database
@@ -279,11 +284,14 @@ vercel.json                    SPA rewrite only — no framework, no buildComman
 | `20260927002300_asset_code_case_insensitive.sql` | replaces `assets_asset_code_key` with a unique index on `upper(btrim(asset_code))`; see The asset code is unique ignoring case |
 | `20260927002400_handover_accessories.sql` | `assignments_accessories` and its four policies; see A handover records what went with the device |
 | `20260927002500_drop_issue_handover_batch.sql` | drops `issue_handover_batch`, which existed only to batch-issue with accessories |
+| `20260927002600_companies.sql` | the `companies` list, its unique index and its four policies; see Company is a list, and nothing points at it |
+| `20260927002700_handover_user_company_nik.sql` | `handover_users.company_id` and `.nik_eid`, plus the `companies_guard_delete` the previous migration owed; see The recipient is not an account |
 
-**All twenty-five are applied to the remote**, confirmed by reading
-`supabase_migrations.schema_migrations` after the `02500` push, which lists **25**
-rows. The remote carries **12 tables** and **42 indexes** in `public`, measured
-after that push; `02400` added the twelfth table and two indexes (the FK and the
+**All twenty-seven are applied to the remote**, confirmed by reading
+`supabase_migrations.schema_migrations` after the `02700` push, which lists **27**
+rows. The remote carries **13 tables** and **45 indexes** in `public`, measured
+after that push; `02700` added no table and one index; `02600` added the thirteenth table and two indexes (the case-folded
+name index and the primary key) with it; `02400` added the twelfth table and two indexes (the FK and the
 primary key) with it, and `02500` added none because it only drops a function. Before
 that, `02000` added three indexes, `02100` none, `02200` added
 `positions_name_idx` and `handover_users_position_idx`, and `02300` added **none** —
@@ -304,8 +312,8 @@ applying 004, with no "Applying migration" line. That message is not a reliable
 signal in either direction — confirm a push landed by reading
 `supabase_migrations.schema_migrations`, not by trusting the CLI's wording.
 
-`pg_indexes` reports **42** for `public`, measured on the remote after the `02500`
-push, and after a clean `db reset --local` that replayed all twenty-five
+`pg_indexes` reports **45** for `public`, measured on the remote after the `02700`
+push, and after a clean `db reset --local` that replayed all twenty-seven
 files. Before `02000` it was 32; that migration added `handover_users_name_idx`,
 `handover_users_department_idx` and `handover_users_profile_idx`, the last of
 which exists purely for the join in the two rewritten `assignments` policies.
@@ -2438,7 +2446,7 @@ Accessories ride the row's lifecycle: `on delete cascade` takes them with a dele
 handover, and a return leaves them attached (verified) — the bag comes back with the
 laptop, which is the premise.
 
-#### On paper they are full rows, and the No column is the one blank cell
+#### On paper they are full rows, and the tag repeats
 
 `DeviceTable` prints each accessory as a **row of its own**, immediately after the
 device it went out with, filling the same six columns.
@@ -2453,9 +2461,9 @@ empty cell reads as a form nobody filled in.
 
 | Column | Prints | Why |
 |---|---|---|
-| No | **blank** | The template's device index. A charger is not the second device in the kit. This part did not change. |
+| No | the **next number** | `index + 2 + accessoryIndex`, continuing the device's sequence — accessories are rows 2 and 3 in `261006-NOTEBOOK-OP-PRANOTO.pdf`. **This reversed a second time**: it used to be blank, on the reasoning that the column is a device index. The reference document is the specification, it numbers them, and a paper where the count of what was handed over cannot be read off the numbering is worse on paper than one where the numbering does not perfectly match the column's name. |
 | Device | the accessory name | What it is. |
-| Asset Tag | the **device's own code**, repeated | Deliberate repetition, and the opposite of the sub-row version: the tag column answers "which registered asset does this line belong to", and a bag belongs to the laptop it travelled with. A bag cannot have its own code — `assets_asset_code_ci_key` is unique over `upper(btrim(asset_code))` — so the device's code is the only true answer, and the name beside it is what distinguishes the two lines. |
+| Serial / Asset Tag | the **device's own code**, repeated | Deliberate repetition, and the opposite of the sub-row version: the tag column answers "which registered asset does this line belong to", and a bag belongs to the laptop it travelled with. A bag cannot have its own code — `assets_asset_code_ci_key` is unique over `upper(btrim(asset_code))` — so the device's code is the only true answer, and the name beside it is what distinguishes the two lines. No serial, because an accessory has none of its own. |
 | Qty, Unit | editable per row | Print-form state, on the same argument as everywhere else in this file. "2 tas" is a real thing an admin types when handing over two bags. |
 | Notes | the accessory's own, **blank by default** | Unlike the device row, which seeds `loaded.notes`. Copying the handover's note down would repeat one sentence once per item and push the table across a page boundary — the batch-wide-note mistake this file already documents once. |
 
@@ -2488,6 +2496,114 @@ handover list goes blank with `42703`. **That is exactly what happened**: the fi
 `02400` build reported a `400` on `/handover` in the browser for this reason, because
 the code referenced a table the remote did not have yet, and `.env.local` points at
 the remote. Same failure shape as the `locations.name` case.
+
+### The reference document is a PDF, and the legal text in it did not change
+
+`261006-NOTEBOOK-OP-PRANOTO.pdf` is the newer reference for the print layout. It is a
+**PDF**, and that is worth stating because the pipeline is built around a `.docx`:
+`documentContent.ts` is extracted from one, and `scripts/verify_handover_document.py`
+opens one and compares every long literal against it. A PDF cannot be that source.
+
+**The Terms did not change.** Both files' clause sets were extracted and compared
+directly: **18 clauses, zero differences** in either language. So `documentContent.ts`
+is untouched, `verify_handover_document.py` still passes, and the legal text remains
+byte-verified against `260911-MULTI-SOEHARDONO.docx`.
+
+What changed is **layout only**, and each difference was read off the PDF rather than
+inferred:
+
+| | was | now |
+|---|---|---|
+| tag column heading | `Asset Tag / Serial Number` | `Serial Number / Asset Tag` |
+| its value order | code, then serial | **serial, then code** — `J9BLPB4 / 2601101047` |
+| accessory rows | unnumbered, under the device | **numbered 2, 3, …**, continuing the sequence |
+| parties block | name only | `NIK/EID` and `Company` under the recipient |
+| signature block | Name, Department, Date | Name, **NIK/EID**, **Dept. / Position**, **Company**, Date |
+
+**The heading and the value were flipped together**, and that is the point: a value
+whose order contradicts its own column heading reads as a transposition on a document
+somebody signs.
+
+**The accessory numbering reverses an earlier decision here.** The argument for the
+blank No cell was that the column is a device index, so a charger is not the second
+device — and that is still true of what the column *means*. But the reference document
+numbers them, and a paper where the count of what was physically handed over cannot be
+read off the numbering is worse than one where the numbering does not perfectly match
+the column's name.
+
+**An asset with no serial prints the code alone**, with no leading separator, on both
+device and accessory rows. ` / 2601101022` on its own reads as a missing value rather
+than an absent one.
+
+**Two things the PDF apparently changed and did not.** The logo is still there — it is
+an image (a 333×131 `DCTDecode` object), which is why the extracted text of the header
+shows only `IT Department`; and the two signature blocks are unchanged in layout, gaining
+only their two new lines.
+
+### NIK/EID and Company are the roster's, not the print form's
+
+`NIK/EID` and `Company` are facts about a **person**, so they are `handover_users`
+columns (`02700`) with a picker on the roster form in `/asset-settings`, not print-form
+state. That is the same reasoning that put `position_id` and `department_id` there.
+
+**Both are nullable, and neither is `not null`**, unlike `position_id`. A contractor
+has no employer on this list and no staff number, and refusing to record them would mean
+refusing to record who holds an asset. The document therefore **omits** those lines
+rather than printing an empty label — an empty label where a value belongs reads as a
+form nobody finished, on a document being signed.
+
+**The issuer's two have no source at all and are plain text inputs.** The issuer is a
+`profiles` row, and `profiles` has no staff number and no employer — the roster is for
+the people *receiving* assets. So those two fields start empty on both sides and the
+admin types them, which is also the real entry path for a number issued by a human
+resources system this application has no model of.
+
+**The recipient's two are seeded from the roster** and are **editable**, because a roster
+entry can be missing one and a document printed with the wrong value is worse than one
+the admin had a chance to correct.
+
+#### The geometry was measured, and eyeballing got it wrong twice
+
+A first attempt at the two fields stacked the label above the value with a `ps-10`
+indent and no rule under it. All three were wrong, and **two rounds of reading the
+rendered page produced two wrong answers** — once reading label and value as being on
+one line, once reading the indent as roughly double. The page looks unambiguous and is
+not, because the rules are thin and the indent is small.
+
+**The numbers come out of the PDF's content stream, not out of the page.** `pdftotext`
+on this machine is xpdf's build, which has no `-bbox`, so the positions were read by
+inflating page 1's stream and pairing each `Tm`/`TD` with the `TJ`/`Tj` run that
+follows. `Tm` is an identity translation in this file, so a glyph sits at
+`Tm`-translation + `TD`-offset. **A4 at 96dpi is 595.28 x 841.89 CSS px, which makes one
+PDF point equal to one CSS px** — so the coordinates can be used as layout values
+directly rather than scaled.
+
+| element | y | x |
+|---|---|---|
+| parties `2. Mr/Ms` | 587.71 | 58.56 |
+| `Bapak/Ibu` | 573.91 | 58.56 |
+| `NIK/EID` label | 551.11 | 75.86 |
+| value `SHI-OPS-086` | 536.11 | 78.38 |
+| **rule (32 `_`)** | 532.63 | 77.66 |
+| `Company` label | 507.91 | 75.86 |
+| value | 492.07 | 77.78 |
+| **rule (32 `_`)** | 489.43 | 77.66 |
+
+Three things follow, and none were visible on the page:
+
+1. **The value has a rule under it.** The template prints 32 underscore glyphs, which
+   is what a filled-in form field looks like on paper. Reproduced with a `border-b` on
+   a `w-[53mm]` span — the glyph count, not literal underscores, because a rule whose
+   width depends on how many `_` were typed changes width when somebody edits the text.
+2. **`ps-8`, not `ps-10`.** The `<ol>` carries `pl-4`, so its text is 16px right of the
+   article's content edge; the fields need only ~17px more to reach x=75.86. That is
+   33px total, and `ps-8` is within 1.3px — a third of a millimetre.
+3. **Label and value are separate lines, 15pt apart** (`mt-2.5`), and the value sits
+   ~3pt above its rule.
+
+**`company_id` is a dropdown of the managed list**, so `PT Satuan` and
+`PT. Satuan Harapan Indonesia` cannot become two roster entries that then print two
+different company lines.
 
 ### The document's own palette, read out of the .docx
 
@@ -3272,6 +3388,128 @@ Do not re-add a first-user grant to make onboarding easier. If self-service
 onboarding is genuinely needed, gate it on an allowlisted address — a hardcoded
 email in a migration is a smaller mistake than an unclaimed admin grant.
 
+## Company is a list, and nothing points at it
+
+`20260927002600` adds `public.companies`: `id`, `name`, `description`, and the
+`created_at` / `updated_at` pair every table here carries. The screen is a list an
+admin adds to, renames and deletes from.
+
+**Nothing on the asset side references this table, and that is the finding rather
+than an omission.** No asset, department or profile carries a `company_id`, and the
+page says so in its own subtitle: adding a company does not change any asset. One
+reference arrived in `02700` — `handover_users.company_id`, the employer a *person* has
+— and that is the only one.
+
+Putting `company_id` on `assets` would be **a second classification of a row that
+already carries `department`**, which is the problem this repo has refused seven times
+over: `device_name` beside `name`, `notes` beside `description`, `usage_status` beside
+`status`, `equipment_family` beside `category_id`. Two classifications on one row are
+two things that can disagree, and nothing here would say which is right.
+
+The first reference should be a **decision**, and the two candidates are different
+schemas:
+
+- **A company owns assets** — a real `company_id` FK, and the question becomes whether
+  an asset can have no company, which is a `not null` decision.
+- **A company is named on a handover document** — the print form already prints a
+  fixed `COMPANY_NAME` literal from the `.docx`, and pointing that at an
+  admin-editable table row would make a signed legal artefact depend on data a user
+  can change. That would be a deliberate loosening of what the document means.
+
+Either way this table's shape is unchanged: one uuid, one name.
+
+**The name index is case-insensitive, and that deliberately differs from
+`departments.name` and `positions.name`.** Both of those are `text not null unique`,
+which is case- **and** whitespace-sensitive, and both carry a comment saying so is
+deliberate — "a data-entry mistake the application can show rather than something the
+database hides".
+
+`02300` reversed that reading for `assets.asset_code` once it was found that
+`AST-0001`, `ast-0001` and `  AST-0001  ` were three rows, and the reasoning there is
+the one that applies here: **a company name is a human-typed identifier, and a register
+whose whole point is stable identifiers cannot hold one company twice in two
+spellings.** "PT. Patimban Global Gateway Terminal" and "pt. patimban global gateway
+terminal" are one company.
+
+`companies_name_ci_key` is a **unique index over `upper(btrim(name))`**, not an inline
+`unique` constraint, which is why the column is `not null` without `unique`. Same shape
+as `assets_asset_code_ci_key`. The application still trims and reports a duplicate in
+words an admin can act on; the index is what refuses it, because the check has to hold
+for a row that arrives by any route.
+
+**`create unique index`, and the word is load-bearing.** The first version of this file
+wrote `create index companies_name_ci_key` — a perfectly good index that enforces
+nothing at all. The local suite caught it: three spellings of one company were all
+accepted, and `pg_indexes` showed an index by the right name on the right expression,
+so nothing about *reading* the schema would have said it was decorative. An index
+whose name ends `_key` and whose definition has no `unique` is the most expensive kind
+of mistake in this file, because it reads as protection.
+
+### The delete guard, and the debt `02600` left behind
+
+Every other list here refuses a delete while something points at it —
+`DepartmentInUseError`, `PositionInUseError`, `CategoryInUseError`,
+`LocationInUseError` — and each exists because a foreign key is `on delete set null` or
+`restrict` and the database will happily do something the admin did not mean.
+
+`02600` shipped `deleteCompany` with **no** in-use check, because nothing referenced
+`companies` yet, and its own header said so — including the instruction that **the
+first migration to add a `company_id` must add the guard in the same file**.
+
+`02700` is that migration. It adds `companies_guard_delete`, a `security definer`
+`before delete` counting `handover_users`, and `CompanyInUseError` beside the existing
+`DepartmentInUseError` / `PositionInUseError`. The Companies screen now shows the count
+per row and **disables** the delete button on a company still employing somebody.
+
+Both refusal layers are asserted on the local stack, because they are different
+boundaries and only one of them is load-bearing:
+
+| | result |
+|---|---|
+| `companies_guard_delete` | `23514` — “Company PT Satuan Harapan Indonesia is the employer of 1 handover user(s)…” |
+| the same delete with the trigger **disabled** | `23503` on `handover_users_company_id_fkey` |
+| an unused company | deleted |
+
+The second row is the one worth having: the FK is what actually refuses, and the
+trigger is what turns a bare constraint name into a sentence naming the company. Testing
+only the trigger would pass against a database whose FK had been dropped.
+
+### A staff roster write is silent, not loud
+
+One assertion in the `02700` suite expected a staff `update` on the roster to raise and
+reported “UNEXPECTED”. It does not raise, and that is correct: `handover_users_update_admin`
+is a row filter, so the statement matches no row and PostgREST returns success with zero
+rows written. **This is the third time this exact mistake has been made in this repo's
+own test scripts** — after `companies` and after the handover service — and the fix is
+always the same: count rows rather than expect a throw. An `INSERT` is the one operation
+that raises, because a `with check` violation on insert *is* an error.
+
+### What the local suite proved, and one thing it could not
+
+Six assertions on the local stack, as `authenticated` with a fabricated JWT inside one
+`rollback` transaction: an admin inserts and reads back; a lower-case, an upper-case and
+a whitespace-padded duplicate are each refused with `23505` naming
+`companies_name_ci_key`; a genuinely different name is accepted; a blank name is refused
+with `23514`; a staff caller reads the list and is refused `42501` on insert; and
+`companies_set_updated_at` is attached and enabled.
+
+Two of those needed the fixture written a particular way, and both are worth recording.
+
+- **The staff UPDATE and DELETE are asserted by counting rows, not by expecting an
+  exception.** A row-level `using` filter is a filter, not a rejection: a staff
+  statement matches no row and PostgREST reports `UPDATE 0` / `DELETE 0` with no error.
+  The first version of the test expected a throw and reported "UNEXPECTED" on both,
+  which read as a broken policy and was actually correct behaviour. An INSERT is the
+  one that raises, because a `with check` violation on INSERT is an error — which is
+  also why every write in this codebase uses `.select()` and throws on zero rows.
+- **`updated_at` cannot be shown to change inside one transaction.** `set_updated_at`
+  assigns `now()`, which is the *transaction* timestamp, identical for every statement
+  until commit — so a rename and the read that checks it in the same transaction
+  compare equal and the assertion is always false. It is the same property the batch
+  grouping depends on, read from the other side: there it makes a correctness
+  guarantee, here it makes a correct assertion impossible. The trigger's *attachment*
+  is asserted instead.
+
 ## The temporary password is a prompt, not a boundary
 
 `profiles.must_change_password` is the third piece of the create flow, and the
@@ -3500,6 +3738,8 @@ These were deliberate. Do not "clean them up" without asking.
 | Accessories are added from the handover's **detail modal**, not from the Issue form | An admin who forgets the bag while issuing has no way to record it afterwards, because the form closed and the batch was written. The issue-time shape cannot express the common case at all. It is also the honest reading of `assignments_accessories`: the accessories are a fact about the *handover*, and a handover that exists can be corrected. `02500` dropped the RPC the issue-time model needed. See Where the accessory editor lives |
 | An accessory may be added to a handover that is already **returned**, and already printed | If the bag did not come back, saying so is the useful thing to be able to do. The alternative — a forgotten bag that can never be recorded — is a register that silently disagrees with the shelf. There is no "not yet printed" guard because a handover does not record whether it has been printed, and one column for it would be a second source of truth about an event this app cannot observe. The write stays admin-only |
 | Accessories print as **full rows** with the device's asset tag repeated | A document somebody signs should list every item that went out as a line of its own, because that is what the signature attests to. The first version printed indented sub-rows with blank cells, which read as a form nobody filled in. Repeating the tag is the opposite of the old reasoning but is the *correct* answer: a bag cannot have its own code, so the device's is the only true one available. Only the row number stays blank — that column is the template's device index. See On paper they are full rows |
+| `companies` is a list, and only the roster references it | A second classification of an **asset** that already carries `department` is the problem this repo refuses seven times over. A company's *employer of a person* is a different fact and `02700` points the roster at it. Wiring it to assets is still a decision, not a default. See Company is a list |
+| `companies.name` is unique case-insensitively, unlike `departments.name` | `02300` found `AST-0001` and `ast-0001` were two rows, and a company name is a human-typed identifier in the same way. "PT. Patimban Global Gateway Terminal" and its lower-case spelling are one company. See Company is a list |
 | The recipient is `handover_users`, and the issuer stays `profiles` | One column conflated *who received the asset* with *who can log in*, and those came apart the first time a hard hat went to a contractor. Splitting them means the recipient outlives the account, so deleting somebody no longer erases their handover history — and `assigned_by` still answers "which admin did this", which a roster row cannot |
 | `position` is a reference table, and `handover_users.position_id` replaced the text column | Free text means the list of positions is only the ones somebody remembered to type — `Technician` and `technician` are two entries with nothing able to tell them apart. The old column is dropped rather than kept beside the new one, which is the same two-columns-for-one-fact rule the schema refuses elsewhere. See Position is a list, not a text box |
 | The roster's position dropdown offers no "type a new one here" path | A typo typed into a box becomes a position of its own, permanently — the exact failure the table exists to remove. Adding a title is a deliberate trip to the Position screen, and that screen can rename, so a mistake stays cheap to fix |
@@ -3657,6 +3897,23 @@ not go looking for them unprompted.
   directory-scoped and the failure is confusing. See Database.
 - Don't create a policy for `anon`. It holds no grants on purpose; the absence of
   grants is the protection.
+- Don't add a `company_id` to anything without adding the in-use delete guard in the
+  same migration. `02700` discharged that debt for `handover_users`; the **next** FK
+  added to `companies` owes the same, and the Companies screen will otherwise delete a
+  company half the register belongs to.
+- Don't write `create index` where a `create unique index` is meant. `02600` shipped
+  that way first and the index enforced nothing while still appearing in
+  `pg_indexes` under the right name on the right expression — an index named `_key`
+  with no `unique` reads as protection in the schema and is not. See Company is a
+  list.
+- Don't print an empty `NIK/EID` or `Company` label on the handover document. Both
+  roster columns are nullable — a contractor has neither, and the roster has to be able
+  to record them — so the line is omitted rather than printed over a blank. An empty
+  label where a value belongs reads as a form nobody finished, on a document being
+  signed.
+- Don't expect a staff `update` on a table to raise. `handover_users_update_admin` is a
+  row filter, so the statement matches nothing and PostgREST reports success. This has
+  been written wrong in this repo's own test three times.
 - Don't add a table to `public` without `revoke all on … from anon` next to its
   `grant`. Supabase's default privileges already give `anon` all seven
   privileges, and with no `anon` policy every query comes back empty, so the
@@ -3946,6 +4203,16 @@ not go looking for them unprompted.
   index, and the premise is one kit under one code — a charger is not the second
   device. Its asset tag **is** printed, deliberately, and that half did not change.
   See A handover records what went with the device.
+- Don't renumber an accessory's row or unnumber it again. The reference document
+  `261006-NOTEBOOK-OP-PRANOTO.pdf` prints accessories as rows 2 and 3, so the numbering
+  was adopted deliberately after being rejected once for the opposite reason — the
+  count of what was physically handed over has to be readable off the numbering, and a
+  paper where it is not is worse than one whose numbering does not perfectly match the
+  column's name.
+- Don't print the serial number and the asset code in the opposite order to their own
+  column heading. The column reads "Serial Number / Asset Tag", so the value is
+  `J9BLPB4 / 2601101047`; a value that contradicts its heading reads as a transposition
+  on a document somebody signs.
 - Don't key an accessory's Qty, Unit or Notes by the device's id. Both rows would
   read and write `qty[asset.id]`, so typing a quantity for the bag overwrites the
   laptop's. Key them by `accessory.id`.

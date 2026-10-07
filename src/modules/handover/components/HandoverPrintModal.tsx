@@ -170,6 +170,29 @@ export default function HandoverPrintModal({
   const [issuerDept, setIssuerDept] = useState("");
   const [employeeDept, setEmployeeDept] = useState("");
 
+  /**
+   * The two signature blocks' staff numbers and companies.
+   *
+   * **The recipient's two are seeded from the roster** — `handover_users.nik_eid` and
+   * `.company_id`, read into `HandoverDocument` — because those are facts about a
+   * person and belong to them rather than to this printing.
+   *
+   * **The issuer's two start empty and there is no source for them anywhere in this
+   * application.** The issuer is a `profiles` row, and `profiles` has no staff number
+   * and no employer: the roster is for the people *receiving* assets, and the account
+   * recording the handover is not on it. So these are **plain text inputs**, which is
+   * also what makes them correct for both blocks — a staff number comes from a human
+   * resources system this application has no model of, and an admin typing one from a
+   * letter is the real entry path.
+   *
+   * Print-form state, like the department and the date beside them: which is a fact
+   * about this printing, not about the handover.
+   */
+  const [issuerNikEid, setIssuerNikEid] = useState("");
+  const [issuerCompany, setIssuerCompany] = useState("");
+  const [employeeNikEid, setEmployeeNikEid] = useState("");
+  const [employeeCompany, setEmployeeCompany] = useState("");
+
   /** Signed today by default; the form's own date field, not the handover's. */
   const [signDate, setSignDate] = useState(() => todayInputValue());
 
@@ -223,6 +246,13 @@ export default function HandoverPrintModal({
         setEmployeeDept((current) =>
           pickAvailable(loaded.holderDepartment, deptRows, current),
         );
+
+        // The recipient's staff number and employer, from the roster. Seeded rather
+        // than derived at render time so they are editable here: a roster entry can
+        // be missing one, and a document printed with the wrong one is worse than one
+        // an admin had a chance to correct.
+        setEmployeeNikEid(loaded.holderNikEid ?? "");
+        setEmployeeCompany(loaded.holderCompany ?? "");
 
         // Every row defaults to 1 — the one quantity that is always true.
         //
@@ -501,6 +531,67 @@ export default function HandoverPrintModal({
                 </li>
               </ol>
 
+              {/* The recipient's staff number and employer, as two labelled fields.
+
+                  The geometry here is **measured out of
+                  `261006-NOTEBOOK-OP-PRANOTO.pdf`** rather than eyeballed, because
+                  eyeballing got it wrong twice. A4 at 96dpi is 595.28 x 841.89 CSS px
+                  and a PDF point is therefore one CSS px, so the page's own coordinates
+                  can be read as layout values directly. From page 1's content stream:
+
+                  | element        |    y |    x |
+                  |----------------|------|------|
+                  | parties `2. Mr/Ms` | 587.71 |  58.56 |
+                  | `Bapak/Ibu`        | 573.91 |  58.56 |
+                  | `NIK/EID`          | 551.11 |  75.86 |
+                  | value `SHI-OPS-086`| 536.11 |  78.38 |
+                  | rule (32 `_`)      | 532.63 |  77.66 |
+                  | `Company`          | 507.91 |  75.86 |
+                  | value             | 492.07 |  77.78 |
+                  | rule (32 `_`)      | 489.43 |  77.66 |
+
+                  Three things follow from that table, none of which were obvious from
+                  the rendered page:
+
+                  1. **The label sits above the value, not beside it.** A first reading
+                     of the page said label and value were on one line; the content
+                     stream puts them 15pt apart, which is a separate line.
+                  2. **The value has a ruled line under it** — the template prints 32
+                     underscore glyphs, which is how a filled-in form field looks on
+                     paper. A `border-b` reproduces that visually and is far more
+                     robust than counting characters.
+                  3. **The block is indented only ~17pt from the parties list**, not the
+                     ~33pt a first attempt used. It reads as *less* inset than the
+                     `2. Mr/Ms` line because the `<ol>` marker hangs outside it.
+
+                  **`ps-8`, not `ps-10`.** The `<ol>` carries `pl-4`, so its text sits
+                  16px right of the article's content edge; the fields then need another
+                  ~17px to land at the PDF's x. That is 33px total, and `ps-8` is the
+                  Tailwind step nearest it — 1.3px, about a third of a millimetre.
+
+                  **Both fields render only when there is a value.** `nik_eid` and
+                  `company_id` are nullable on the roster — a contractor has neither,
+                  and the roster has to be able to record them — so printing the label
+                  over an empty cell would put `NIK/EID` and `Company` on the paper
+                  with nothing under them. That reads as a form nobody completed, on a
+                  document being signed. */}
+              {(doc.holderNikEid || doc.holderCompany) && (
+                <div className="mt-3 space-y-3 ps-8 text-[9pt]">
+                  {doc.holderNikEid && (
+                    <PartyField
+                      label={t("nikLabel")}
+                      value={doc.holderNikEid}
+                    />
+                  )}
+                  {doc.holderCompany && (
+                    <PartyField
+                      label={t("companyLabelRecipient")}
+                      value={doc.holderCompany}
+                    />
+                  )}
+                </div>
+              )}
+
               <Bilingual
                 className="mt-4"
                 en={ACKNOWLEDGEMENT.en}
@@ -567,6 +658,10 @@ export default function HandoverPrintModal({
                   department={issuerDept}
                   departmentOptions={departmentOptions}
                   onDepartmentChange={setIssuerDept}
+                  nikEid={issuerNikEid}
+                  onNikEidChange={setIssuerNikEid}
+                  company={issuerCompany}
+                  onCompanyChange={setIssuerCompany}
                   date={signDate}
                   onDateChange={setSignDate}
                   signature={issuerSignature}
@@ -580,6 +675,10 @@ export default function HandoverPrintModal({
                   department={employeeDept}
                   departmentOptions={departmentOptions}
                   onDepartmentChange={setEmployeeDept}
+                  nikEid={employeeNikEid}
+                  onNikEidChange={setEmployeeNikEid}
+                  company={employeeCompany}
+                  onCompanyChange={setEmployeeCompany}
                   date={signDate}
                   onDateChange={setSignDate}
                   signature={employeeSignature}
@@ -693,6 +792,37 @@ function TermsTable() {
   );
 }
 
+/**
+ * One labelled value with a ruled line beneath it, as the parties block prints
+ * `NIK/EID` and `Company`.
+ *
+ * **The rule is the point.** The template draws 32 underscore glyphs under each value,
+ * which is what a filled-in form field looks like on paper: the value is written above
+ * a line rather than beside it. The first version of this block printed the value with
+ * no rule at all, which on a signed document reads as an unexplained floating value
+ * instead of a completed field.
+ *
+ * `w-[53mm]` is the measured width of those 32 glyphs at the template's 9.48pt body
+ * size (`32 x 0.5em`). A `border-b` rather than the literal underscores, for the same
+ * reason the parties block's dotted rule is not reproduced character-for-character:
+ * a rule that depends on how many `_` were typed is a rule that silently changes width
+ * when someone edits the text.
+ *
+ * The gap between label and value is `mt-2.5`, chosen to land near the PDF's 15pt.
+ */
+function PartyField({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className="font-semibold">{label}</p>
+      <p className="mt-2.5">
+        <span className="inline-block w-[53mm] border-b border-gray-500 pb-px">
+          {value}
+        </span>
+      </p>
+    </div>
+  );
+}
+
 /** One bilingual pair, printed one above the other as the template does. */
 function Bilingual({
   en,
@@ -801,12 +931,22 @@ function DeviceTable({
                   )}
                 </Td>
                 <Td>
-                  <span className="block">{asset.assetCode}</span>
-                  {asset.serialNumber && (
-                    <span className="block text-gray-600">
-                      {asset.serialNumber}
-                    </span>
-                  )}
+                  {/* **Serial first, then the asset code** — `J9BLPB4 / 2601101047`.
+
+                    The column is headed "Serial Number / Asset Tag", so the value
+                    follows the heading's own order. It was the other way round in the
+                    earlier template, whose heading read "Asset Tag / Serial Number",
+                    and both were flipped together — a value whose order contradicts
+                    its own column heading reads as a transposition on a document
+                    somebody signs.
+
+                    An asset with no serial prints the code alone rather than a
+                    leading separator, for the same reason the accessory rows do. */}
+                  <span className="block">
+                    {asset.serialNumber
+                      ? `${asset.serialNumber} / ${asset.assetCode}`
+                      : asset.assetCode}
+                  </span>
                 </Td>
                 <Td>
                   {/* The printed value and the input are siblings rather than one inside
@@ -905,15 +1045,34 @@ function DeviceTable({
                   **The row number is still omitted**, and that part did not change: it
                   is the template's device index, and a charger is not the second
                   device in the kit. */}
-              {asset.accessories.map((accessory) => (
+              {asset.accessories.map((accessory, accessoryIndex) => (
                 <tr key={accessory.id}>
-                  {/* No number — see above. */}
-                  <Td />
+                  {/* **Numbered**, continuing the device's sequence: accessories in
+                      the reference document are rows 2 and 3, not unnumbered lines
+                      under row 1.
+
+                      This reverses the earlier decision to leave this cell blank. The
+                      argument for the blank was that the No column is a device index,
+                      so a charger is not the second device — and that is still true of
+                      what the column *means*. But the reference document is the
+                      specification here, it numbers them, and a document where the
+                      count of what was physically handed over cannot be read off the
+                      numbering is worse on paper than one where the numbering does not
+                      perfectly match the column's name. */}
+                  <Td>
+                    <span style={{ color: DOC.navy }}>
+                      {index + 2 + accessoryIndex}
+                    </span>
+                  </Td>
                   <Td>
                     <span className="block">{accessory.name}</span>
                   </Td>
                   <Td>
-                    {/* The device's own code, repeated deliberately. */}
+                    {/* The device's own code, repeated, in the same "serial / code"
+                        shape the device row above uses. An accessory has no serial of
+                        its own, so the code alone is printed rather than a dangling
+                        separator — ` / 2601101022` on its own reads as a missing value
+                        rather than an absent one. */}
                     <span className="block">{asset.assetCode}</span>
                   </Td>
                   <Td>
@@ -1037,6 +1196,10 @@ function SignatureBlock({
   department,
   departmentOptions,
   onDepartmentChange,
+  nikEid,
+  onNikEidChange,
+  company,
+  onCompanyChange,
   date,
   onDateChange,
   signature,
@@ -1049,6 +1212,12 @@ function SignatureBlock({
   department: string;
   departmentOptions: { value: string; label: string }[];
   onDepartmentChange: (value: string) => void;
+  /** The signer's staff number, or "" when there is none to print. */
+  nikEid: string;
+  onNikEidChange: (value: string) => void;
+  /** The signer's employer, or "" when there is none to print. */
+  company: string;
+  onCompanyChange: (value: string) => void;
   date: string;
   onDateChange: (value: string) => void;
   signature: string | null;
@@ -1094,7 +1263,17 @@ function SignatureBlock({
           <span className="font-semibold">{name}</span>
         </LabelledRow>
 
-        <LabelledRow label={t("fieldDept")}>
+        <LabelledRow label={t("fieldNik")}>
+          <Input
+            id={`print-nik-${roleEn}`}
+            name="nik_eid"
+            value={nikEid}
+            onChange={(e) => onNikEidChange(e.target.value)}
+            placeholder={t("fieldNikPlaceholder")}
+          />
+        </LabelledRow>
+
+        <LabelledRow label={t("fieldDeptPosition")}>
           <Select
             // Keyed on the value because `Select` reads `defaultValue` once; without
             // it, changing department elsewhere would leave this showing the old one.
@@ -1103,6 +1282,16 @@ function SignatureBlock({
             options={departmentOptions}
             defaultValue={department}
             onChange={onDepartmentChange}
+          />
+        </LabelledRow>
+
+        <LabelledRow label={t("fieldCompany")}>
+          <Input
+            id={`print-company-${roleEn}`}
+            name="company"
+            value={company}
+            onChange={(e) => onCompanyChange(e.target.value)}
+            placeholder={t("fieldCompanyPlaceholder")}
           />
         </LabelledRow>
 
@@ -1116,16 +1305,35 @@ function SignatureBlock({
         </LabelledRow>
       </div>
 
-      {/* Printed values, so the paper carries all three lines whatever the screen shows. */}
+      {/* Printed values, so the paper carries every line whatever the screen shows. */}
       <div className="mt-1 hidden space-y-0.5 print:block">
         <p>
           <span style={{ color: DOC.field }}>{t("fieldName")} : </span>
           {name}
         </p>
+        {/* The NIK/EID and Company lines print **only when there is a value.**
+
+            The issuer has no roster row, so there is nothing to seed either of them
+            from, and the whole point of the field is that an admin may leave it
+            empty for a signer without a staff number. Printing `NIK/EID : ` with
+            nothing after it puts an unfilled label on a document being signed, which
+            reads as an incomplete form rather than an absent fact. */}
+        {nikEid.trim() !== "" && (
+          <p>
+            <span style={{ color: DOC.field }}>{t("fieldNik")} : </span>
+            {nikEid}
+          </p>
+        )}
         <p>
-          <span style={{ color: DOC.field }}>{t("fieldDept")} : </span>
+          <span style={{ color: DOC.field }}>{t("fieldDeptPosition")}: </span>
           {department}
         </p>
+        {company.trim() !== "" && (
+          <p>
+            <span style={{ color: DOC.field }}>{t("fieldCompany")} : </span>
+            {company}
+          </p>
+        )}
         <p>
           <span style={{ color: DOC.field }}>{t("fieldDate")} : </span>
           {formatLongDate(date)}

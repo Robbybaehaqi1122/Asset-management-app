@@ -160,6 +160,18 @@ export type HandoverUserRow = {
   positionId: string;
   /** The person's department, or null once that department is deleted. */
   departmentName: string | null;
+  /** The company that employs them, or null for a contractor or visitor. */
+  companyName: string | null;
+  /** The referenced `companies` row, for the form to write back. */
+  companyId: string | null;
+  /**
+   * The person's staff number, printed as `NIK/EID` on the handover document.
+   *
+   * Null for anybody without one, which is the normal case for a contractor. That
+   * is why the document prints the `NIK/EID` line only when there is a value —
+   * an empty label where a staff number belongs reads as a form nobody filled in.
+   */
+  nikEid: string | null;
   /** The linked account, or null for someone who does not sign in. */
   profileId: string | null;
   /** The linked account's display name, so the table can show who it is. */
@@ -182,6 +194,17 @@ export type HandoverUserInput = {
    */
   positionId: string;
   departmentId?: string | null;
+  /**
+   * A `companies` id, or null.
+   *
+   * Nullable for the same reason `profileId` is: most roster entries are people
+   * who never sign in, and a contractor has no employer on this list either.
+   * Sending null is a real operation — it clears the field — which is why this is
+   * sent every time rather than only when set.
+   */
+  companyId?: string | null;
+  /** The person's staff number, free text. Null when they have none. */
+  nikEid?: string | null;
   profileId?: string | null;
   notes?: string | null;
 };
@@ -215,7 +238,7 @@ const CURRENT_LOCATION_COLUMNS =
  * `tsc` then fails on every `.select()` in the file.
  */
 const HANDOVER_USER_COLUMNS =
-  "id, name, position_id, department_id, profile_id, notes, created_at, position:positions(name), department:departments(name), profile:profiles(full_name), assignments!assignments_user_id_fkey(count)";
+  "id, name, position_id, department_id, company_id, nik_eid, profile_id, notes, created_at, position:positions(name), department:departments(name), company:companies(name), profile:profiles(full_name), assignments!assignments_user_id_fkey(count)";
 
 /**
  * The units pinned into the category filter, whatever the `departments` table
@@ -685,6 +708,9 @@ export async function getHandoverUsers(): Promise<HandoverUserRow[]> {
     position: embeddedName(row.position) ?? "\u2014",
     positionId: str(row.position_id) ?? "",
     departmentName: embeddedName(row.department),
+    companyName: embeddedName(row.company),
+    companyId: str(row.company_id),
+    nikEid: str(row.nik_eid),
     profileId: str(row.profile_id),
     profileName: embeddedFullName(row.profile),
     notes: str(row.notes),
@@ -714,6 +740,8 @@ export async function createHandoverUser(
       name: input.name.trim(),
       position_id: input.positionId,
       department_id: input.departmentId || null,
+      company_id: input.companyId || null,
+      nik_eid: trimmed(input.nikEid),
       profile_id: input.profileId || null,
       notes: trimmed(input.notes),
     })
@@ -729,7 +757,8 @@ export async function createHandoverUser(
 /**
  * Update one roster entry.
  *
- * All five editable columns are sent every time, including `profile_id`, so
+ * Every editable column is sent every time, including `profile_id` and
+ * `company_id`, so
  * unlinking an account is a real operation rather than something the form can
  * only add. `updated_at` is deliberately absent: `handover_users_set_updated_at`
  * owns it.
@@ -744,6 +773,8 @@ export async function updateHandoverUser(
       name: input.name.trim(),
       position_id: input.positionId,
       department_id: input.departmentId || null,
+      company_id: input.companyId || null,
+      nik_eid: trimmed(input.nikEid),
       profile_id: input.profileId || null,
       notes: trimmed(input.notes),
     })

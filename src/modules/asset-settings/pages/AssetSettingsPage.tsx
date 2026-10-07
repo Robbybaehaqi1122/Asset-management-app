@@ -31,6 +31,8 @@ import {
 
 import { getDepartmentOptions } from "@/modules/departments/services/departmentService";
 import { getPositionOptions } from "@/modules/positions/services/positionService";
+import { getCompanyOptions } from "@/modules/companies/services/companyService";
+import type { CompanyRef } from "@/modules/companies/services/companyService";
 import type { PositionRef } from "@/modules/positions/services/positionService";
 import { getAllUsers } from "@/modules/users/services/userService";
 
@@ -157,6 +159,17 @@ type HandoverUserForm = {
    */
   positionId: string;
   department: string;
+  /**
+   * A `companies` id, or `""` for somebody with no employer on the list.
+   *
+   * Stored as the id rather than the name, like `positionId` above and unlike
+   * `department` beside it: the row is read with an aliased embed so the *name* is
+   * available to show, and a form carrying the name would need a second lookup to
+   * resolve it back on save.
+   */
+  companyId: string;
+  /** The person's staff number, printed as `NIK/EID` on the handover document. */
+  nikEid: string;
   profileId: string;
   notes: string;
 };
@@ -179,6 +192,8 @@ const EMPTY_HANDOVER_USER: HandoverUserForm = {
   name: "",
   positionId: "",
   department: "",
+  companyId: "",
+  nikEid: "",
   profileId: "",
   notes: "",
 };
@@ -211,6 +226,16 @@ export default function AssetSettingsPage() {
    * a second thing to get wrong.
    */
   const [positions, setPositions] = useState<PositionRef[]>([]);
+  /**
+   * The company list, for the roster form's Company dropdown.
+   *
+   * Read here rather than by the roster page itself because the roster is one tab of
+   * this screen and `getCompanyOptions` is the same shape as the two reads beside it —
+   * `companies` is `using (true)` for every signed-in user, so this screen's own
+   * admin gate is what makes it admin-only in practice, and the write policies are the
+   * real boundary.
+   */
+  const [companies, setCompanies] = useState<CompanyRef[]>([]);
   const [categories, setCategories] = useState<CategoryRow[]>([]);
   const [locations, setLocations] = useState<LocationRow[]>([]);
   const [currentLocations, setCurrentLocations] = useState<
@@ -293,6 +318,7 @@ export default function AssetSettingsPage() {
       getAllUsers(),
       getDepartmentOptions(),
       getPositionOptions(),
+      getCompanyOptions(),
     ]).then(
       ([
         categoryRows,
@@ -303,6 +329,7 @@ export default function AssetSettingsPage() {
         profileRows,
         departmentRows,
         positionRows,
+        companyRows,
       ]) => {
         if (cancelled) return;
         setCategories(categoryRows);
@@ -312,6 +339,7 @@ export default function AssetSettingsPage() {
         setHandoverUsers(handoverUserRows);
         setDepartments(departmentRows);
         setPositions(positionRows);
+        setCompanies(companyRows);
         setLinkableProfiles(
           profileRows.map((row) => ({
             id: row.id,
@@ -330,6 +358,7 @@ export default function AssetSettingsPage() {
         setHandoverUsers([]);
         setDepartments([]);
         setPositions([]);
+        setCompanies([]);
         setLoadFailed(true);
         setIsLoading(false);
       },
@@ -414,6 +443,12 @@ export default function AssetSettingsPage() {
   const positionChoices = useMemo(
     () => positions.map((row) => ({ value: row.id, label: row.name })),
     [positions],
+  );
+
+  /** The company dropdown's options, in that shape too. */
+  const companyChoices = useMemo(
+    () => companies.map((row) => ({ value: row.id, label: row.name })),
+    [companies],
   );
 
   /**
@@ -613,6 +648,8 @@ export default function AssetSettingsPage() {
       name: row.name,
       positionId: row.positionId,
       department: row.departmentName ?? "",
+      companyId: row.companyId ?? "",
+      nikEid: row.nikEid ?? "",
       profileId: row.profileId ?? "",
       notes: row.notes ?? "",
     });
@@ -658,7 +695,8 @@ export default function AssetSettingsPage() {
         positionId: handoverUserForm.positionId,
         departmentId:
           departmentIdByName.get(handoverUserForm.department) ?? null,
-        profileId: handoverUserForm.profileId || null,
+        companyId: handoverUserForm.companyId || null,
+        nikEid: handoverUserForm.nikEid,
         notes: handoverUserForm.notes,
       };
 
@@ -1615,6 +1653,87 @@ export default function AssetSettingsPage() {
               />
               <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
                 {t("fields.handoverUserDepartmentHint")}
+              </p>
+            </div>
+
+            {/* Company: a dropdown of the admin-managed list, for the same reason
+                the position picker above is one rather than a text box. A company is
+                a name that gets printed on a document somebody signs, so "PT Satuan"
+                and "PT. Satuan Harapan Indonesia" must be one value here or they
+                become two lines on the roster and one of them prints.
+
+                Nullable on purpose, and the empty option is spelled out rather than
+                being a bare blank: a contractor has no employer on this list, and
+                `handover_users.company_id` is nullable so the roster can record them
+                at all. The document omits the Company line for such a person rather
+                than printing an empty one.
+
+                Keyed on the current value like the two pickers beside it: `Select`
+                reads `defaultValue` once, so an unkeyed one would keep showing
+                whatever it mounted with after an edit opened the modal on a
+                different row. */}
+            <div>
+              <Label htmlFor="setting-handover-user-company">
+                {t("table.handoverUserCompany")}{" "}
+                <span className="text-sm font-normal text-gray-400 dark:text-gray-500">
+                  ({t("optional")})
+                </span>
+              </Label>
+              <Select
+                key={`handover-user-company-${
+                  editingHandoverUserId ?? "new"
+                }-${handoverUserForm.companyId}`}
+                id="setting-handover-user-company"
+                options={[
+                  { value: "", label: t("noCompany") },
+                  ...companyChoices,
+                ]}
+                defaultValue={handoverUserForm.companyId}
+                onChange={(value) =>
+                  setHandoverUserForm((prev) => ({
+                    ...prev,
+                    companyId: value,
+                  }))
+                }
+              />
+              {companyChoices.length === 0 ? (
+                <p className="mt-1.5 text-xs text-warning-600 dark:text-warning-500">
+                  {t("fields.noCompaniesYet")}
+                </p>
+              ) : (
+                <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                  {t("fields.handoverUserCompanyHint")}
+                </p>
+              )}
+            </div>
+
+            {/* NIK/EID: a plain text box, and deliberately not a dropdown. There is
+                no list of staff numbers anywhere in this project — they are issued
+                by a human resources system this application has no model of — so a
+                picker would have nothing to offer. `handover_users.nik_eid` is free
+                text for the same reason, and is not unique: a collision is far more
+                likely to be a transcription slip than a rule being broken. */}
+            <div>
+              <Label htmlFor="setting-handover-user-nik">
+                {t("table.handoverUserNik")}{" "}
+                <span className="text-sm font-normal text-gray-400 dark:text-gray-500">
+                  ({t("optional")})
+                </span>
+              </Label>
+              <Input
+                id="setting-handover-user-nik"
+                name="nik_eid"
+                value={handoverUserForm.nikEid}
+                onChange={(event) =>
+                  setHandoverUserForm((prev) => ({
+                    ...prev,
+                    nikEid: event.target.value,
+                  }))
+                }
+                placeholder={t("fields.handoverUserNikPlaceholder")}
+              />
+              <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                {t("fields.handoverUserNikHint")}
               </p>
             </div>
 

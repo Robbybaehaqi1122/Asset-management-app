@@ -13,7 +13,8 @@
       "assetHsse": "Asset HSSE",
       "handover": "Asset Handover",
       "assetSettings": "Asset Settings",
-      "position": "Position"
+      "position": "Position",
+      "company": "Company"
     }
   },
   "header": {
@@ -271,6 +272,7 @@
     "handoverUserUpdated": "{name} was updated.",
     "handoverUserDeleted": "{name} was removed from the handover list.",
     "noDepartment": "No department",
+    "noCompany": "No company",
     "handoverCount": "{count} handover(s)",
     "deleteHandoverUserInUse": "This person appears on handover records. Return or reassign those before removing them.",
     "table": {
@@ -285,6 +287,8 @@
       "handoverUserName": "Name",
       "handoverUserPosition": "Position",
       "handoverUserDepartment": "Department",
+      "handoverUserCompany": "Company",
+      "handoverUserNik": "NIK/EID",
       "handoverUserAccount": "Linked account",
       "handoverUserHandovers": "Handovers"
     },
@@ -310,6 +314,10 @@
       "notesPlaceholder": "Anything worth recording about this location",
       "handoverUserNamePlaceholder": "e.g. Budi Santoso",
       "handoverUserDepartmentHint": "Leave empty if this person has no department. This is a person’s department, so it offers every department rather than only the two asset units.",
+      "handoverUserCompanyHint": "The company that employs this person. It is printed on the handover document as their “Company”, in the parties block and in both signature blocks.",
+      "noCompaniesYet": "No companies yet. Add one under User Management › Company first.",
+      "handoverUserNikHint": "Their staff number, printed on the handover document as “NIK/EID”. Leave empty for a contractor or visitor who has none, and the document omits the line rather than printing it empty.",
+      "handoverUserNikPlaceholder": "e.g. SHI-OPS-086",
       "noAccount": "No account",
       "handoverUserAccountHint": "Optional. Link an account only if this person also signs in — it is what lets them see and return their own handovers. Leave empty for a contractor or a visitor.",
       "handoverUserNotesPlaceholder": "Anything worth recording about this person",
@@ -821,8 +829,8 @@
     "colNo": "No",
     "colDevice": "Device Details (Type / Brand / Model)",
     "colDeviceId": "Rincian Perangkat (Jenis / Merek / Model)",
-    "colAssetTag": "Asset Tag / Serial Number",
-    "colAssetTagId": "No. Aset / No. Seri",
+    "colAssetTag": "Serial Number / Asset Tag",
+    "colAssetTagId": "No. Seri / No. Aset",
     "colQty": "Qty",
     "colUnit": "Unit",
     "colNotes": "Notes",
@@ -833,12 +841,62 @@
     "noteLabel": "Notes for {code}",
     "fieldName": "Name",
     "fieldDept": "Dept",
+    "fieldNik": "NIK/EID",
+    "fieldNikPlaceholder": "e.g. SHI-OPS-048",
+    "fieldCompany": "Company",
+    "fieldCompanyPlaceholder": "Company name",
     "fieldDate": "Date",
     "signatureLabel": "Signature of {role}",
     "signaturePlaceholder": "Click here and sign",
     "signatureClear": "Clear signature",
     "errors": {
       "print": "The document could not be printed. Please try again."
+    },
+    "nikLabel": "NIK/EID",
+    "companyLabelRecipient": "Company",
+    "fieldDeptPosition": "Dept. / Position"
+  },
+  "companies": {
+    "pageTitle": "Company",
+    "pageDescription": "The company names maintained in this installation",
+    "subtitle": "A list of company names. Nothing in the register is scoped by it yet, so adding a company here does not change any asset — it is a name this installation knows about.",
+    "checkingAccess": "Checking your access…",
+    "noAccess": "This page is only available to administrators.",
+    "loading": "Loading companies…",
+    "empty": "No companies yet. Add the company name this installation is for.",
+    "dismiss": "Dismiss",
+    "addCompany": "Add company",
+    "createTitle": "Add company",
+    "editTitle": "Edit company",
+    "save": "Save",
+    "created": "{name} was added to the company list.",
+    "updated": "{name} was updated.",
+    "deleteTitle": "Delete this company?",
+    "deleteBody": "{name} will be removed from the company list.",
+    "deleteLabel": "Delete {name}",
+    "editLabel": "Edit {name}",
+    "deleteConfirm": "Delete",
+    "deleting": "Deleting…",
+    "deleted": "{name} was deleted.",
+    "noMembers": "No roster entry",
+    "members": "{count} on the roster",
+    "deleteInUse": "Move the roster entries to another company first",
+    "cancel": "Cancel",
+    "saving": "Saving…",
+    "optional": "optional",
+    "fields": {
+      "name": "Company name",
+      "namePlaceholder": "e.g. PT. Patimban Global Gateway Terminal",
+      "description": "Description",
+      "descriptionPlaceholder": "What this entry covers"
+    },
+    "errors": {
+      "load": "The company list could not be loaded.",
+      "nameRequired": "A company name is required.",
+      "duplicate": "A company with that name already exists. Capitalisation and surrounding spaces are ignored, so check the spelling.",
+      "save": "The company could not be saved. Please try again.",
+      "delete": "The company could not be deleted. Please try again.",
+      "inUse": "This company is still the employer of {count} person/people on the handover roster. Move them to another company first."
     }
   }
 }

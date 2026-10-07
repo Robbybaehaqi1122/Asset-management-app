@@ -124,6 +124,15 @@ const navItems: NavItem[] = [
       // tab, so it belongs with the other list that feeds a picker rather than
       // under Asset Settings.
       { name: "Position", key: "position", path: "/positions" },
+      // Companies: an admin-maintained list of company names, in the same shape as
+      // the two above. It carries **no** `adminOnly` because the group already has
+      // it, so a new sub-item inherits it without repeating it — that is what the
+      // group-level flag is for.
+      //
+      // Nothing references the table yet, so this entry leads to a list the admin
+      // fills rather than to anything that scopes the register. That is the current
+      // state of the feature, not a placeholder: see `20260927002600`.
+      { name: "Company", key: "company", path: "/companies" },
     ],
   },
 ];

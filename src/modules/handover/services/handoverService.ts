@@ -111,6 +111,23 @@ export type HandoverHolder = {
   name: string;
   position: string | null;
   departmentName: string | null;
+  /**
+   * The company that employs them, printed as the document's `Company` line.
+   *
+   * Null for a contractor or visitor — `handover_users.company_id` is nullable
+   * precisely so the roster can record somebody with no employer on this list, and
+   * the print modal **omits** the line rather than printing an empty one. An empty
+   * label where a company belongs reads as a document nobody finished.
+   */
+  companyName: string | null;
+  /**
+   * Their staff number, printed as `NIK/EID`.
+   *
+   * Free text rather than a reference, and not unique: these come from a human
+   * resources system this application has no model of. Null means they have none,
+   * and the line is omitted the same way.
+   */
+  nikEid: string | null;
 };
 
 /**
@@ -305,11 +322,12 @@ function mapHolder(value: unknown): HandoverHolder | null {
   const row = value as Record<string, unknown>;
   const department = row.department as
     Record<string, unknown> | null | undefined;
+  const company = row.company as Record<string, unknown> | null | undefined;
   return {
     name: String(row.name ?? ""),
     // `position:positions(name)` arrives as an **object**, so `str()` on it would
     // hand back "[object Object]" — which is exactly what the list showed. The
-    // department embed below is read through the same shape check.
+    // department and company embeds are read through the same shape check.
     position:
       row.position && typeof row.position === "object"
         ? str((row.position as Record<string, unknown>).name)
@@ -318,6 +336,9 @@ function mapHolder(value: unknown): HandoverHolder | null {
       department && typeof department === "object"
         ? str(department.name)
         : null,
+    companyName:
+      company && typeof company === "object" ? str(company.name) : null,
+    nikEid: str(row.nik_eid),
   };
 }
 
@@ -621,6 +642,17 @@ export type HandoverDocument = {
   holderName: string;
   holderPosition: string | null;
   holderDepartment: string | null;
+  /**
+   * The recipient's employer and staff number, printed as the `Company` and `NIK/EID`
+   * lines in the parties block.
+   *
+   * Both nullable because `handover_users.company_id` and `.nik_eid` are: a
+   * contractor has neither, and the roster has to be able to record them. The print
+   * modal **omits** the line rather than printing an empty label, which is the rule
+   * the per-device Notes cell already follows.
+   */
+  holderCompany: string | null;
+  holderNikEid: string | null;
   /** Issuer: the account that recorded it. */
   issuerName: string;
   issuerEmail: string | null;
@@ -681,7 +713,7 @@ export async function getHandoverDocument(
   const { data: seed, error: seedError } = await supabase
     .from("assignments")
     .select(
-      "id, user_id, assigned_by, assigned_at, due_date, notes, accessories:assignments_accessories(id, name), holder:handover_users!assignments_user_id_fkey(name, position:positions(name), department:departments(name)), issuedBy:profiles!assignments_assigned_by_fkey(full_name, email, department:departments(name))",
+      "id, user_id, assigned_by, assigned_at, due_date, notes, accessories:assignments_accessories(id, name), holder:handover_users!assignments_user_id_fkey(name, nik_eid, position:positions(name), department:departments(name), company:companies(name)), issuedBy:profiles!assignments_assigned_by_fkey(full_name, email, department:departments(name))",
     )
     .eq("id", handoverId)
     .maybeSingle();
@@ -794,6 +826,8 @@ export async function getHandoverDocument(
     Record<string, unknown> | null | undefined;
   const holderDepartment = holder.department as
     Record<string, unknown> | null | undefined;
+  const holderCompany = holder.company as
+    Record<string, unknown> | null | undefined;
   const issuer = (row.issuedBy ?? {}) as Record<string, unknown>;
   const issuerDepartment = issuer.department as
     Record<string, unknown> | null | undefined;
@@ -803,6 +837,8 @@ export async function getHandoverDocument(
     holderName: String(holder.name ?? ""),
     holderPosition: holderPosition ? str(holderPosition.name) : null,
     holderDepartment: holderDepartment ? str(holderDepartment.name) : null,
+    holderCompany: holderCompany ? str(holderCompany.name) : null,
+    holderNikEid: str(holder.nik_eid),
     issuerName: str(issuer.full_name) ?? str(issuer.email) ?? "",
     issuerEmail: str(issuer.email),
     issuerDepartment: issuerDepartment ? str(issuerDepartment.name) : null,

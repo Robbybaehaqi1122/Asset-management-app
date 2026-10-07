@@ -5,6 +5,7 @@ import { ScrollToTop } from "./components/common/ScrollToTop";
 import AppLayout from "./layout/AppLayout";
 import AssetSettingsPage from "./modules/asset-settings/pages/AssetSettingsPage";
 import AssetListPage from "./modules/assets/pages/AssetListPage";
+import CompanyListPage from "./modules/companies/pages/CompanyListPage";
 import HandoverListPage from "./modules/handover/pages/HandoverListPage";
 import DepartmentListPage from "./modules/departments/pages/DepartmentListPage";
 import PositionListPage from "./modules/positions/pages/PositionListPage";
@@ -42,6 +43,18 @@ export default function App() {
                   way `/users` and `/departments` are: the page refuses to render,
                   and RLS is the real boundary. */}
               <Route path="/positions" element={<PositionListPage />} />
+              {/* Companies: an admin-maintained list of company names. It sits
+                  here rather than under Asset Settings because it is a list of
+                  names about organisations, the same kind of thing as Department
+                  and Position, and because **nothing references it yet** — no
+                  asset, department or roster row carries a `company_id`. It is a
+                  list an admin fills, not a scope on anything, and
+                  `20260927002600` records why that is the stopping point rather
+                  than the first half of a larger design.
+
+                  Same admin gate as the two beside it: the page refuses to render
+                  for a non-admin, and the three write policies are the boundary. */}
+              <Route path="/companies" element={<CompanyListPage />} />
               {/* `assets_select_authenticated` adalah `using (true)` dan stok
                   bukan milik satu departemen, jadi kedua halaman ini juga untuk
                   staff. Yang admin-only di dalamnya adalah kredensial: RLS
