@@ -3,8 +3,8 @@ import { useTranslation } from "react-i18next";
 
 import PageBreadcrumb from "@/components/common/PageBreadCrumb";
 import PageMeta from "@/components/common/PageMeta";
+import AssetPicker from "@/components/form/AssetPicker";
 import Label from "@/components/form/Label";
-import Checkbox from "@/components/form/input/Checkbox";
 import Input from "@/components/form/input/InputField";
 import Select from "@/components/form/Select";
 import HandoverPrintModal from "@/modules/handover/components/HandoverPrintModal";
@@ -25,7 +25,9 @@ import type {
 import { ASSET_DEPARTMENTS } from "@/modules/assets/services/assetService";
 
 import {
+  addHandoverAccessory,
   deleteHandover,
+  deleteHandoverAccessory,
   getHandovers,
   findUnavailableAssets,
   getHandoverTargets,
@@ -35,12 +37,14 @@ import {
   isUnavailableAssetError,
   issueHandover,
   returnHandover,
+  AccessoryNameRequiredError,
   HandoverOpenError,
   NoAssetsSelectedError,
   NoRowsWrittenError,
 } from "../services/handoverService";
 import type {
   Handover,
+  HandoverAccessory,
   HandoverTarget,
   HandoverUserOption,
 } from "../services/handoverService";
@@ -303,6 +307,31 @@ export default function HandoverListPage() {
   );
 
   /**
+   * The available assets, as the picker's rows.
+   *
+   * **The condition is translated here rather than in the picker.** A reusable
+   * primitive does not know about `assets.condition`, so it would have to take an
+   * already-localised string — passing the raw key and letting the component call
+   * `t()` would tie a generic control to this page's vocabulary, and passing a
+   * React node would make the grid cells unalignable.
+   *
+   * The serial number is the `secondary` line: the fact an admin checks against the
+   * physical device in their hand when the code is ambiguous, and not worth a column
+   * of its own in a list that is already three across.
+   */
+  const pickerOptions = useMemo(
+    () =>
+      targets.map((row) => ({
+        value: row.id,
+        code: row.assetCode,
+        name: row.name,
+        conditionLabel: t(`condition.${row.condition}`),
+        secondary: row.serialNumber || undefined,
+      })),
+    [targets, t],
+  );
+
+  /**
    * Every document number in the batch, as one line.
    *
    * Read-only either way, and with several assets there is no single number to
@@ -367,26 +396,6 @@ export default function HandoverListPage() {
    * deliberately record across the batch — that is a choice, and this is what
    * keeps it from looking like an accident.
    */
-  const handleToggleAsset = (assetId: string) => {
-    setIssueForm((prev) => {
-      const assetIds = prev.assetIds.includes(assetId)
-        ? prev.assetIds.filter((id) => id !== assetId)
-        : [...prev.assetIds, assetId];
-
-      const conditions = new Set(
-        assetIds
-          .map((id) => targets.find((row) => row.id === id)?.condition)
-          .filter((value): value is AssetCondition => value !== undefined),
-      );
-
-      return {
-        ...prev,
-        assetIds,
-        conditionAtHandover: conditions.size === 1 ? [...conditions][0] : "",
-      };
-    });
-  };
-
   const handleSelectAllAssets = () => {
     setIssueForm((prev) => {
       const assetIds = targets.map((row) => row.id);
@@ -540,6 +549,66 @@ export default function HandoverListPage() {
   const detailCanReturn =
     detailBatch !== null &&
     (isAdmin || ownUserIds.has(detailBatch.seed.userId));
+
+  /**
+   * Record an accessory travelling with one device of the open batch.
+   *
+   * **Two writes the caller needs and neither is obvious from the error.** The row
+   * itself, then the list it came from: the handover list is what holds
+   * `row.accessories`, so the new line is not on screen until the page reloads.
+   * Doing only the first would report success and show nothing — the same class of
+   * bug this module keeps documenting, in the direction of "the service reported
+   * success for something that did not happen".
+   *
+   * The failure is swallowed to a re-read rather than thrown at the page: a reload
+   * that fails is the page's own `loadFailed` state, which already says "handovers
+   * could not be loaded", and a second message on top of it would be two complaints
+   * about one cause. What must not happen is leaving the admin thinking the accessory
+   * was saved, so the reload is unconditional.
+   */
+  const handleAddAccessory = async (assignmentId: string, name: string) => {
+    setIsSaving(true);
+    setSaveError(null);
+    try {
+      await addHandoverAccessory(assignmentId, name);
+      reload();
+    } catch (error) {
+      if (error instanceof AccessoryNameRequiredError) {
+        setSaveError(t("detail.accessoryNameRequired"));
+      } else if (error instanceof NoRowsWrittenError) {
+        setSaveError(t("detail.accessoryNotSaved"));
+      } else {
+        setSaveError(t("detail.accessoryFailed"));
+      }
+      // Reloaded even on failure. A partial outcome is possible in principle — the
+      // insert landed and the reload did not — and the alternative is the modal
+      // showing a list that might be stale with no indication either way.
+      reload();
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  /**
+   * Remove one accessory, for the same reason and with the same reload.
+   */
+  const handleRemoveAccessory = async (accessoryId: string) => {
+    setIsSaving(true);
+    setSaveError(null);
+    try {
+      await deleteHandoverAccessory(accessoryId);
+      reload();
+    } catch (error) {
+      setSaveError(
+        error instanceof NoRowsWrittenError
+          ? t("detail.accessoryNotRemoved")
+          : t("detail.accessoryRemoveFailed"),
+      );
+      reload();
+    } finally {
+      setIsSaving(false);
+    }
+  };
 
   /**
    * Opens the asset list for one batch.
@@ -941,7 +1010,14 @@ export default function HandoverListPage() {
       <Modal
         isOpen={issueModal.isOpen}
         onClose={issueModal.closeModal}
-        className="max-w-md"
+        // **`max-w-2xl`, not `max-w-md`.** The asset picker is three columns of code,
+        // name and condition plus a serial line under the name, and at 448px the
+        // name column truncates to a few words — which defeats the reason the
+        // picker exists, which is to read an asset's name without opening anything.
+        // The wider panel is also what the dropdown needs to sit *full width* rather
+        // than as a small box below the field, which was the other half of the
+        // request.
+        className="max-w-2xl"
       >
         <div className="p-6">
           <h3 className="text-lg font-semibold text-gray-800 dark:text-white/90">
@@ -949,84 +1025,27 @@ export default function HandoverListPage() {
           </h3>
 
           <div className="mt-5 space-y-4">
-            <div>
-              <div className="flex items-center justify-between gap-3">
-                <Label htmlFor="handover-assets-label">
+            <AssetPicker
+              label={
+                <Label>
                   {t("fields.assets")} <span className="text-error-500">*</span>
                 </Label>
-                {/* Both buttons are absent rather than disabled when there is
-                    nothing to act on, so the row never shows two controls that do
-                    nothing. "Select all" only appears once something is ticked,
-                    because with nothing ticked it and "clear" are the same action. */}
-                {targets.length > 1 &&
-                  (issueForm.assetIds.length === targets.length ? (
-                    <button
-                      type="button"
-                      onClick={handleClearAssets}
-                      className="shrink-0 text-xs font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
-                    >
-                      {t("fields.assetsClearAll")}
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={handleSelectAllAssets}
-                      className="shrink-0 text-xs font-medium text-brand-600 hover:text-brand-700 dark:text-brand-400 dark:hover:text-brand-300"
-                    >
-                      {t("fields.assetsSelectAll")}
-                    </button>
-                  ))}
-              </div>
-
-              {/* A checkbox list rather than a `MultiSelect`, and that is a
-                  decision rather than an oversight. The asset list is every
-                  available asset in the unit — potentially hundreds — and
-                  `MultiSelect` has no search, so finding one code means opening a
-                  dropdown and scrolling. It also renders its own `<label>` from a
-                  string prop, which cannot be tied to this form's `Label` the way
-                  every other field here is.
-
-                  A list shows the asset code, the name and the condition together,
-                  and the selection is visible without opening anything. */}
-              <div
-                role="group"
-                aria-labelledby="handover-assets-label"
-                className="mt-1 max-h-56 overflow-y-auto rounded-lg border border-gray-200 dark:border-gray-700"
-              >
-                {targets.length === 0 ? (
-                  <p className="p-3 text-sm text-gray-500 dark:text-gray-400">
-                    {t("fields.assetPlaceholder")}
-                  </p>
-                ) : (
-                  targets.map((row) => (
-                    <label
-                      key={row.id}
-                      className="flex cursor-pointer items-center gap-3 border-b border-gray-100 px-3 py-2 last:border-b-0 hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-white/3"
-                    >
-                      <Checkbox
-                        id={`handover-asset-${row.id}`}
-                        checked={issueForm.assetIds.includes(row.id)}
-                        onChange={() => handleToggleAsset(row.id)}
-                      />
-                      <span className="min-w-0 flex-1">
-                        <span className="block text-sm font-medium text-gray-800 dark:text-white/90">
-                          {row.assetCode}
-                        </span>
-                        <span className="block truncate text-xs text-gray-500 dark:text-gray-400">
-                          {row.name}
-                        </span>
-                      </span>
-                      <span className="shrink-0 text-xs text-gray-500 dark:text-gray-400">
-                        {t(`condition.${row.condition}`)}
-                      </span>
-                    </label>
-                  ))
-                )}
-              </div>
-              <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
-                {t("fields.assetsHint", { count: issueForm.assetIds.length })}
-              </p>
-            </div>
+              }
+              options={pickerOptions}
+              value={issueForm.assetIds}
+              onChange={(next) =>
+                setIssueForm((prev) => ({ ...prev, assetIds: next }))
+              }
+              onClear={handleClearAssets}
+              onSelectAll={handleSelectAllAssets}
+              // `formToken` is bumped per modal open, so the search text and the
+              // highlighted row start empty rather than carrying over from a form the
+              // admin closed halfway through.
+              resetKey={formToken}
+              hint={t("fields.assetsHint", {
+                count: issueForm.assetIds.length,
+              })}
+            />
 
             <div>
               <Label htmlFor="handover-person">
@@ -1258,6 +1277,40 @@ export default function HandoverListPage() {
                         <p className="truncate text-xs text-gray-500 dark:text-gray-400">
                           {row.asset?.name ?? ""}
                         </p>
+                        {/* The bag and the charger, under the device they went out
+                            with.
+
+                            This modal answers "what exactly went out in *this*
+                            handover", and a laptop without its charger is the
+                            ordinary case — so listing only the device would
+                            under-answer the question the modal exists for. The same
+                            list prints on the document, and reading it from the same
+                            `row.accessories` rather than a second source is what
+                            keeps the screen and the paper agreeing. */}
+                        {/* The bag and the charger, with an editor underneath.
+                            Admin-only, and gated on `isAdmin` rather than on a
+                            role check inline — the write policies are the boundary
+                            and this only keeps a control a staff member cannot use
+                            off their screen. */}
+                        {isAdmin && (
+                          <AccessoryEditor
+                            assetCode={row.asset?.assetCode ?? row.id}
+                            names={row.accessories}
+                            onAdd={(name) =>
+                              void handleAddAccessory(row.id, name)
+                            }
+                            onRemove={(accessoryId) =>
+                              void handleRemoveAccessory(accessoryId)
+                            }
+                            isSaving={isSaving}
+                          />
+                        )}
+                        {!isAdmin && row.accessories.length > 0 && (
+                          <p className="text-xs text-gray-500 dark:text-gray-400">
+                            {t("detail.accessories")}:{" "}
+                            {row.accessories.map((a) => a.name).join(", ")}
+                          </p>
+                        )}
                         {/* Serial and condition are the two facts an admin checks
                             against a physical device in the hand. The asset's
                             registered location is **not** here: it is a different fact
@@ -1366,6 +1419,124 @@ export default function HandoverListPage() {
  * The fallback is passed in rather than hardcoded here, so it goes through `t()`
  * like every other string on this page.
  */
+/**
+ * The bag / charger editor for one device inside a handover.
+ *
+ * **Added here rather than at handover time.** The first version put this in the
+ * Issue form against every ticked device, which turned a form that lists assets
+ * into a form that lists assets plus an input box each. The problem it cannot solve
+ * is the common one: an admin who forgets the bag while issuing has no way to record
+ * it afterwards. Adding it to the handover that already exists is both less work and
+ * the only version that handles the mistake.
+ *
+ * **A plain text input plus Enter, not a picker.** There is no reference list of
+ * accessories — they are not in the inventory, which is the whole premise — so a
+ * dropdown would be either a hardcoded set the admin fights or an empty one.
+ *
+ * Saved **per row**, immediately, rather than into form state the modal holds: a
+ * device list this modal exists to review is exactly where a lost half-typed list
+ * would be least welcome, and the write is admin-only so it cannot be used to change
+ * a record a staff member is relying on.
+ *
+ * Enter adds rather than submits, and there is no surrounding `<form>`, so it cannot
+ * close the modal by accident while adding a second charger.
+ */
+function AccessoryEditor({
+  assetCode,
+  names,
+  onAdd,
+  onRemove,
+  isSaving,
+}: {
+  assetCode: string;
+  names: HandoverAccessory[];
+  onAdd: (name: string) => void;
+  onRemove: (accessoryId: string) => void;
+  isSaving: boolean;
+}) {
+  const { t } = useTranslation("common", { keyPrefix: "handover" });
+  const [draft, setDraft] = useState("");
+
+  // Keyed on the asset so switching devices starts from an empty box rather than
+  // carrying the last one's half-typed name across.
+  const [lastAsset, setLastAsset] = useState(assetCode);
+  if (lastAsset !== assetCode) {
+    setLastAsset(assetCode);
+    setDraft("");
+  }
+
+  const submit = () => {
+    if (draft.trim() === "") return;
+    onAdd(draft);
+    setDraft("");
+  };
+
+  const inputId = `handover-accessory-${assetCode}`;
+
+  return (
+    <div className="mt-2 border-t border-dashed border-gray-200 ps-11 pt-2 dark:border-gray-700">
+      <Label htmlFor={inputId} className="text-xs">
+        {t("detail.accessoriesLabel")}
+      </Label>
+      <div className="mt-1 flex items-center gap-2">
+        <Input
+          id={inputId}
+          value={draft}
+          placeholder={t("detail.accessoryPlaceholder")}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              // `preventDefault` stops the keystroke being taken as a submit. There is
+              // no form here today, but this modal is where the signed document is
+              // produced and a stray Enter that closed it would lose the admin's
+              // place.
+              e.preventDefault();
+              submit();
+            }
+          }}
+          className="h-9 py-1 text-sm"
+        />
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={submit}
+          disabled={isSaving || draft.trim() === ""}
+          className="shrink-0 px-2 py-1.5"
+        >
+          <PlusIcon className="size-4" />
+          {t("detail.accessoryAdd")}
+        </Button>
+      </div>
+
+      {/* What has been recorded, each removable. Rendered only when there is
+          something: an empty "none" row under every device would be a wall of text
+          saying nothing. */}
+      {names.length > 0 && (
+        <ul className="mt-2 flex flex-wrap gap-1.5">
+          {names.map((accessory) => (
+            <li key={accessory.id}>
+              <span className="inline-flex items-center gap-1 rounded-full bg-gray-200 py-1 ps-2.5 pe-1 text-xs text-gray-700 dark:bg-gray-700 dark:text-gray-200">
+                {accessory.name}
+                <button
+                  type="button"
+                  onClick={() => onRemove(accessory.id)}
+                  disabled={isSaving}
+                  aria-label={t("detail.accessoryRemove", {
+                    name: accessory.name,
+                  })}
+                  className="rounded-full p-0.5 hover:bg-gray-300 disabled:opacity-50 dark:hover:bg-gray-600"
+                >
+                  <CloseIcon className="size-3" />
+                </button>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function assetLabel(row: Handover, unknown: string): string {
   if (!row.asset) return unknown;
   return `${row.asset.assetCode} — ${row.asset.name}`;

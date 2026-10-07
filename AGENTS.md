@@ -147,6 +147,7 @@ tooling will report them as orphans. Do not delete them for that reason.
 | `MultiSelect` | `@/components/form/MultiSelect` | default |
 | `PhoneInput` | `@/components/form/group-input/PhoneInput` | default |
 | `Radio` | `@/components/form/input/Radio` | default |
+| `AssetPicker` | `@/components/form/AssetPicker` | default |
 | `Select` | `@/components/form/Select` | default |
 | `Switch` | `@/components/form/switch/Switch` | default |
 | `TextArea` | `@/components/form/input/TextArea` | default |
@@ -276,13 +277,17 @@ vercel.json                    SPA rewrite only — no framework, no buildComman
 | `20260927002100_sync_trigger_security_definer.sql` | `sync_asset_status_from_assignment` becomes `security definer`; see The return that left the asset stranded |
 | `20260927002200_positions.sql` | the `positions` list, `handover_users.position` replaced by `position_id`; see Position is a list, not a text box |
 | `20260927002300_asset_code_case_insensitive.sql` | replaces `assets_asset_code_key` with a unique index on `upper(btrim(asset_code))`; see The asset code is unique ignoring case |
+| `20260927002400_handover_accessories.sql` | `assignments_accessories` and its four policies; see A handover records what went with the device |
+| `20260927002500_drop_issue_handover_batch.sql` | drops `issue_handover_batch`, which existed only to batch-issue with accessories |
 
-**All twenty-three are applied to the remote**, confirmed by reading
-`supabase_migrations.schema_migrations` after the `02300` push, which lists **23**
-rows. The remote carries **11 tables** and **40 indexes** in `public`, measured
-after the push; `02000` added three indexes, `02100` none, `02200` added
+**All twenty-five are applied to the remote**, confirmed by reading
+`supabase_migrations.schema_migrations` after the `02500` push, which lists **25**
+rows. The remote carries **12 tables** and **42 indexes** in `public`, measured
+after that push; `02400` added the twelfth table and two indexes (the FK and the
+primary key) with it, and `02500` added none because it only drops a function. Before
+that, `02000` added three indexes, `02100` none, `02200` added
 `positions_name_idx` and `handover_users_position_idx`, and `02300` added **none** —
-it replaced one constraint with one index, so the count is unchanged. The ledger
+it replaced one constraint with one index, so the count was unchanged. The ledger
 read also shows `assets_asset_code_key` gone and `assets_asset_code_ci_key` present.
 `db diff --linked` reported `No schema changes found`, which is the independent proof
 that the checked-in migrations and the live database agree. Before the `01100` push it
@@ -299,8 +304,8 @@ applying 004, with no "Applying migration" line. That message is not a reliable
 signal in either direction — confirm a push landed by reading
 `supabase_migrations.schema_migrations`, not by trusting the CLI's wording.
 
-`pg_indexes` reports **40** for `public`, measured on the remote after the
-`02200` push, and after a clean `db reset --local` that replayed all twenty-two
+`pg_indexes` reports **42** for `public`, measured on the remote after the `02500`
+push, and after a clean `db reset --local` that replayed all twenty-five
 files. Before `02000` it was 32; that migration added `handover_users_name_idx`,
 `handover_users_department_idx` and `handover_users_profile_idx`, the last of
 which exists purely for the join in the two rewritten `assignments` policies.
@@ -2340,6 +2345,150 @@ without its serial is not enough for that. It is added to `HANDOVER_COLUMNS` rat
 than fetched per row, because a list of ten assets triggering ten queries to display
 ten things already known would be the wrong shape.
 
+### A handover records what went with the device
+
+`20260927002400` adds `assignments_accessories`: the bag, the charger, the case that
+travel with a device on one handover. **They are added from the handover's detail
+modal, not from the issue form** — see Where the accessory editor lives, which is
+the decision that shaped the rest of it.
+
+**The problem it solves is that a kit is one asset, not three.** A bag shares its
+laptop's `asset_code`, and `assets_asset_code_ci_key` is unique over
+`upper(btrim(asset_code))` since `02300` — which is exactly what makes the code a
+usable identifier. So they cannot be three `assets` rows, and `assignments` is one
+row per **asset**, so a handover that records the laptop alone prints one line and
+the signed paper does not mention the bag.
+
+**Why a table and not `assignments.notes`.** `notes` is already a batch-wide free
+text field, so "laptop + charger + bag" could have been appended there. That was
+refused for the reason `01900` records for `condition_at_handover`: what went out
+**at this moment** is a fact about the handover, and it is what the signature block
+attests to. A text blob cannot be listed, counted or searched, and re-printing must
+produce the same list rather than whatever sentence was typed that day.
+
+**Why not on `assets` either.** A bag that always belongs to one laptop is a property
+of the *kit*, which would be `asset_accessories` holding the permanent pairing. This
+migration records the pairing **as it was on one date** instead, which is the weaker
+but honest claim: what the signed paper says went out is what is stored. Adding the
+kit table later is purely additive — it could suggest accessory names in the issue
+form without this table changing.
+
+**No quantity, deliberately.** "Tas", "Charger" — a name. The document already has a
+Qty column and `HandoverPrintModal` treats it as print-form state that is not saved
+(see `condition_at_handover` for the same reasoning one level up): a handover row *is*
+one asset, so its quantity is always 1. An accessory is the same fact one level down,
+and "2 tas" is two names.
+
+**The name is free text on purpose.** It names a physical thing that has not been
+inventoried, which is the whole premise. There is nothing to reference — `assets`
+holds devices, and until a bag has a code of its own there is no row to point at.
+`assignments_accessories_name_not_blank` refuses an empty one, which is why
+`addHandoverAccessory` raises `AccessoryNameRequiredError` first — the check would
+otherwise answer with `23514` naming a constraint, which is not something an admin
+holding an empty text box can act on.
+
+#### Where the accessory editor lives, and why it is not in the issue form
+
+**This is the decision the rest of `02400` was reshaped around, and it was the
+second one.** The first build put the editor in the **Issue** form, against every
+ticked device, and shipped a `security invoker` RPC so the batch and its accessories
+landed in one transaction.
+
+Then the request changed: an accessory is added from the **detail modal**, after the
+handover exists. That is better in a way the issue-time model could not be:
+
+- **The common case is a mistake.** An admin who forgets the bag while issuing has no
+  way to record it afterwards, because the form closed and the batch was written.
+  Adding it to the handover that already exists handles the mistake, and the
+  issue-time shape cannot.
+- **It is the honest reading of the table.** An accessory is a fact about the
+  *handover*, and a handover that exists can be corrected.
+
+So `02500` drops `issue_handover_batch`, and `issueHandover` is back to a plain
+multi-row `.insert()`. **All-or-nothing across the batch is unaffected** — that
+property comes from PostgREST inserting an array in one transaction, and never came
+from the function. Dropping it rather than leaving it is deliberate: a function with
+no caller is a second way to write a handover, and it would have to be kept in step
+with `assignments` columns by hand.
+
+**What this accepts, stated plainly.** A handover that has already been **printed and
+signed** can gain an accessory, which rewrites what the signed paper says. That is a
+real loosening and it is the deliberate trade against a forgotten bag being
+unrecordable forever. `assignments_accessories_insert_admin` keeps the boundary at
+admins, which is the same person who issues handovers.
+
+There is **no "not yet printed" guard**, and that is a limit rather than an omission:
+a handover does not record whether it has been printed. One column for it would be a
+second source of truth about an event this application cannot observe.
+
+#### The read policies follow the parent, and the write policies deliberately do not
+
+`assignments_accessories_select_own_or_admin` joins through `assignments` to
+`handover_users.profile_id`, so a staff member who may see the handover holding a
+laptop may see that a charger went with it. The `exists` is explicit rather than
+relying on the join being filtered, for the reason `02000` rewrote two policies.
+
+The three **write** policies are `is_admin()` only, and that is not a copy of the
+parent. `assignments_update_own_or_admin` lets a staff member update their own row —
+and that update is what stamps `returned_at`. Editing the accessory list at the same
+moment would let the person returning the kit decide what the signed paper says went
+out with it.
+
+Accessories ride the row's lifecycle: `on delete cascade` takes them with a deleted
+handover, and a return leaves them attached (verified) — the bag comes back with the
+laptop, which is the premise.
+
+#### On paper they are full rows, and the No column is the one blank cell
+
+`DeviceTable` prints each accessory as a **row of its own**, immediately after the
+device it went out with, filling the same six columns.
+
+This reversed an earlier decision, and the reversal is worth recording because the
+first reasoning was half right. The first version printed indented **sub-rows** with
+the number, tag and notes cells left blank, on the argument that a bag sharing a
+laptop's code should not read as a separately tagged item. That was right about the
+tag and wrong about the shape: a document somebody signs should list every item that
+went out as a line of its own, because that is what the signature attests to, and an
+empty cell reads as a form nobody filled in.
+
+| Column | Prints | Why |
+|---|---|---|
+| No | **blank** | The template's device index. A charger is not the second device in the kit. This part did not change. |
+| Device | the accessory name | What it is. |
+| Asset Tag | the **device's own code**, repeated | Deliberate repetition, and the opposite of the sub-row version: the tag column answers "which registered asset does this line belong to", and a bag belongs to the laptop it travelled with. A bag cannot have its own code — `assets_asset_code_ci_key` is unique over `upper(btrim(asset_code))` — so the device's code is the only true answer, and the name beside it is what distinguishes the two lines. |
+| Qty, Unit | editable per row | Print-form state, on the same argument as everywhere else in this file. "2 tas" is a real thing an admin types when handing over two bags. |
+| Notes | the accessory's own, **blank by default** | Unlike the device row, which seeds `loaded.notes`. Copying the handover's note down would repeat one sentence once per item and push the table across a page boundary — the batch-wide-note mistake this file already documents once. |
+
+**Qty, Unit and Notes are keyed by the accessory's own id**, not the device's. That
+is load-bearing and quiet: sharing the device's key would mean typing a quantity for
+the bag overwrites the laptop's, because both rows would read and write `qty[asset.id]`.
+The seed block that builds the three maps therefore walks accessories as well as
+devices.
+
+**The reader is one query for the whole batch** grouped by `assignment_id`, not one
+per row — and grouped by *assignment* rather than `asset_id` because that is what the
+foreign key is: a laptop handed over twice has different bags on the two handovers,
+and the document must print each one's own. That is why `HandoverDocumentAsset`
+carries `assignmentId` beside the asset's own `id`: two different ids for two
+different things, and looking accessories up with the wrong one is how a list that
+was never empty prints as empty.
+
+`Handover.accessories` is read as an **embed** in `HANDOVER_COLUMNS` and mapped
+through `Array.isArray`, for the same reason `position:positions(name)` needs a shape
+check — an aliased embed arrives as an object, and `String(row.accessories)` would
+put `[object Object]` in the list. It is never `null`: `[]` and "the embed is wrong"
+must not mean the same thing.
+
+#### One line the failure mode lives in
+
+`HANDOVER_COLUMNS` names `accessories:assignments_accessories(id, name)` — still a
+**single line**. A newline inside that literal is still `PGRST100`, and this is now
+the string naming a column a migration added, so `02400` unpushed means the whole
+handover list goes blank with `42703`. **That is exactly what happened**: the first
+`02400` build reported a `400` on `/handover` in the browser for this reason, because
+the code referenced a table the remote did not have yet, and `.env.local` points at
+the remote. Same failure shape as the `locations.name` case.
+
 ### The document's own palette, read out of the .docx
 
 The print form's colours are **not** theme tokens, and the difference was found in the
@@ -2579,11 +2728,34 @@ those two went `available`, the third stayed `assigned`. A child table would hav
 made that one operation, and would also have made "the mouse came back" a fact
 the schema cannot record without the parent being re-opened.
 
-**A checkbox list rather than the `MultiSelect` primitive**, which is one of the
+**A searchable picker rather than the `MultiSelect` primitive**, which is one of the
 13 retained and has no consumer. `MultiSelect` has no search, and this list is
 every available asset in the unit — finding one code would mean opening a dropdown
 and scrolling. It also renders its own `<label>` from a string prop, which cannot
-be tied to this form's `Label` the way every other field here is.
+be tied to this form's `Label` the way every other field here is, and it takes
+**one string per option**, which would have meant `"2609110103 — HP ProDesk 4 — New"`
+in a single line: the three facts squashed together, with the code — the part an
+admin scans for — no longer aligned in a column.
+
+`AssetPicker` (`src/components/form/AssetPicker.tsx`) is the replacement, and the
+reason it is a **new primitive** rather than an edit to `MultiSelect` is that the
+difference is shape, not quality: rows instead of one string, and a search box.
+Editing `MultiSelect` to gain those would have changed a retained component's
+contract for a consumer it does not have.
+
+**The panel is `absolute inset-x-0`, and that is why the modal is `max-w-2xl`.** A
+panel narrower than its control is a small box hanging under a field, which was
+reported from the browser; at `max-w-md` the name column truncates to a few words,
+which defeats the reason the picker exists. Search matches **code and name only**,
+deliberately not condition: it is five closed words, and matching it would surface
+every `new` laptop when somebody typed "new" into a search box looking for a name.
+
+**Enter toggles a row without closing the panel.** That is the whole reason a
+multi-select needs it: picking three assets is three Enters, not three Enters and
+three reopens. Arrow keys move an active row through `aria-activedescendant` with
+focus staying in the search box — moving real focus into the listbox would need a
+blur handler to recover from, which is how a panel ends up closing on the keystroke
+that was meant to filter it.
 
 **The condition snapshot is one value for the batch, not per asset**, and that is
 a simplification rather than a claim that they match — a charger may be `new`
@@ -2601,7 +2773,9 @@ to turn the trigger's bare uuid into asset codes the admin can see on screen.
 
 No transfer between holders, no disposal, no maintenance scheduling, no
 child-table inventory. Issue / Return / Delete on the loan record, filtered by
-unit, is the whole surface. A batch is several rows, not a parent with children. `maintenance` still has no UI, so
+unit, is the whole surface. A batch is several rows, not a parent with children.
+Accessories ride along with a device rather than being a permanent kit — see
+A handover records what went with the device. `maintenance` still has no UI, so
 `guard_maintenance_assignment` remains reachable only from SQL — the same gap
 recorded under The asset inventory.
 
@@ -3323,6 +3497,9 @@ These were deliberate. Do not "clean them up" without asking.
 | `assignments.handover_doc_no` was **removed** rather than kept beside `assets.handover_doc_no` | The issue's argument was sound — one laptop handed over five times has five berita acara, and a per-asset number cannot express that. The owner's answer was one column, and the form shows `assets.handover_doc_no` as a read-only reference instead. The cost is named in `01900`'s own header: a second handover overwrites the number the first was recorded under. Two columns for one fact is the trap this repo refuses elsewhere, and here they were the same fact |
 | Only `available` assets can be handed over, so `retired` / `damaged` / `maintenance` are refused too | Not an oversight in the guard. Those three are judgements rather than loan state, and `00500`'s triggers do not reason about them. A wider guard would make the refusal message depend on which judgement it was and reintroduce a state the status triggers ignore. The target picker is `status = 'available'` to match, rather than being wider than the trigger |
 | The available-only guard is `before insert` only, and takes `FOR UPDATE` on the asset | Insert-only is what lets the existing `assignments_sync_asset_status` keep owning the return. The row lock is what makes two admins racing on the same asset produce `23514` ("that asset just went out") instead of `23505` from the index — correct, but a duplicate-key error the admin cannot act on |
+| Accessories are added from the handover's **detail modal**, not from the Issue form | An admin who forgets the bag while issuing has no way to record it afterwards, because the form closed and the batch was written. The issue-time shape cannot express the common case at all. It is also the honest reading of `assignments_accessories`: the accessories are a fact about the *handover*, and a handover that exists can be corrected. `02500` dropped the RPC the issue-time model needed. See Where the accessory editor lives |
+| An accessory may be added to a handover that is already **returned**, and already printed | If the bag did not come back, saying so is the useful thing to be able to do. The alternative — a forgotten bag that can never be recorded — is a register that silently disagrees with the shelf. There is no "not yet printed" guard because a handover does not record whether it has been printed, and one column for it would be a second source of truth about an event this app cannot observe. The write stays admin-only |
+| Accessories print as **full rows** with the device's asset tag repeated | A document somebody signs should list every item that went out as a line of its own, because that is what the signature attests to. The first version printed indented sub-rows with blank cells, which read as a form nobody filled in. Repeating the tag is the opposite of the old reasoning but is the *correct* answer: a bag cannot have its own code, so the device's is the only true one available. Only the row number stays blank — that column is the template's device index. See On paper they are full rows |
 | The recipient is `handover_users`, and the issuer stays `profiles` | One column conflated *who received the asset* with *who can log in*, and those came apart the first time a hard hat went to a contractor. Splitting them means the recipient outlives the account, so deleting somebody no longer erases their handover history — and `assigned_by` still answers "which admin did this", which a roster row cannot |
 | `position` is a reference table, and `handover_users.position_id` replaced the text column | Free text means the list of positions is only the ones somebody remembered to type — `Technician` and `technician` are two entries with nothing able to tell them apart. The old column is dropped rather than kept beside the new one, which is the same two-columns-for-one-fact rule the schema refuses elsewhere. See Position is a list, not a text box |
 | The roster's position dropdown offers no "type a new one here" path | A typo typed into a box becomes a position of its own, permanently — the exact failure the table exists to remove. Adding a title is a deliberate trip to the Position screen, and that screen can rename, so a mistake stays cheap to fix |
@@ -3690,6 +3867,18 @@ not go looking for them unprompted.
   removed by decision, and `assets.handover_doc_no` shown read-only is the agreed
   source. Adding it back is two columns for one fact, and the second handover
   would overwrite the number the first was recorded under.
+- Don't point a `Label`'s `htmlFor` at an `id` nothing renders, and don't use it for
+  a `role="group"` div. The handover form had `<Label htmlFor="handover-assets-label">`
+  against a `role="group"` container, which is not a labelable element, so the `for`
+  matched nothing and Chrome reported it under a11y as "The label's for attribute
+  doesn't match any element id" while the page looked correct. A label pointing at
+  nothing is also a browser that skips the field for autofill. `AssetPicker` takes
+  the label as `ReactNode` and puts its own `useId`-generated id on the real
+  `<input>` that receives focus.
+- Don't render a dropdown panel narrower than the control it belongs to. The picker
+  uses `absolute inset-x-0`, so the panel is as wide as the field rather than a
+  small box hanging under it — which is why the handover modal is `max-w-2xl` and
+  not `max-w-md`, since three columns of code / name / condition need the room.
 - Don't add a sidebar row without its `sidebar.items.<key>` i18n entry. The
   renderer falls back to printing the key path verbatim, so a missing entry looks
   like a styling bug (`sidebar.items.handoverIt` on the page) rather than a
@@ -3741,6 +3930,35 @@ not go looking for them unprompted.
   `getHandoverDocument` finds the batch by `(user_id, assigned_by, assigned_at)` and
   `now()` only repeats within one transaction. Every row would print as its own
   one-device form.
+- Don't add the accessory editor back to the Issue form. It belongs in the handover's
+  detail modal: an admin who forgets the bag while issuing has no way to record it
+  afterwards from a form that closed, and the issue-time shape cannot express the
+  common case at all. That change is what `02500` exists for. See Where the accessory
+  editor lives.
+- Don't re-create `issue_handover_batch`. `02500` dropped it, and nothing calls it.
+  All-or-nothing across a batch comes from PostgREST inserting an array in one
+  transaction, not from a function.
+- Don't put an accessory's name in `assignments.notes` or give it a quantity column.
+  Notes is batch-wide free text and cannot be listed or reproduced on a reprint; the
+  template's Qty column is print-form state already, and a handover row *is* one
+  asset, so "2 tas" is two names. See A handover records what went with the device.
+- Don't print an accessory's row number on the document. The No column is a device
+  index, and the premise is one kit under one code — a charger is not the second
+  device. Its asset tag **is** printed, deliberately, and that half did not change.
+  See A handover records what went with the device.
+- Don't key an accessory's Qty, Unit or Notes by the device's id. Both rows would
+  read and write `qty[asset.id]`, so typing a quantity for the bag overwrites the
+  laptop's. Key them by `accessory.id`.
+- Don't seed an accessory's Notes cell from `assignments.notes` the way the device
+  row's is. One sentence repeated once per item pushes the table across a page
+  boundary, which is the batch-wide-note mistake documented under the printed
+  document.
+- Don't let a staff member add or remove an accessory by hiding the control.
+  `assignments_accessories_insert_admin` and `_delete_admin` are the boundary, and
+  they are admin-only on purpose: `assignments_update_own_or_admin` lets a holder
+  update their own row, which is what stamps `returned_at`, and editing the accessory
+  list at that moment would let the person returning the kit decide what the signed
+  paper says went out with it.
 - Don't let `body.handover-printing` survive a closed modal, and don't add a reset-
   on-close effect to the print modal to compensate. The parent already unmounts it
   (`printHandoverId !== null && …`), which resets signatures and quantities for free —

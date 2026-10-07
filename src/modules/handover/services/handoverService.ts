@@ -149,6 +149,20 @@ export type Handover = {
   holder: HandoverHolder | null;
   /** Who handed it over, from the login list. */
   issuedBy: HandoverIssuer | null;
+  /**
+   * The bag, the charger — whatever went out with **this** device.
+   *
+   * Read as an embedded one-to-many rather than a second query per row, because the
+   * document and the Detail modal both need them per row and a list of ten devices
+   * would otherwise be eleven requests to display eleven things already related to
+   * each other.
+   *
+   * Always an array, never null: PostgREST returns an empty array for a row with no
+   * accessories, and a `null` here would mean two different things — "no
+   * accessories" and "the embed is wrong" — which is the same distinction
+   * `asset: assets(…)` without `!inner` fails to make.
+   */
+  accessories: HandoverAccessory[];
 };
 
 /** An asset that can be handed over right now. */
@@ -156,6 +170,15 @@ export type HandoverTarget = {
   id: string;
   assetCode: string;
   name: string;
+  /**
+   * The device's own serial, on the target list rather than only on `Handover`.
+   *
+   * It is here because the picker's rows are where an admin decides **which** of
+   * several similar codes is the device in front of them, and the serial is the fact
+   * that settles it. Reading it from the list it arrives with costs no extra request —
+   * the picker gets these rows from the one query this already made.
+   */
+  serialNumber: string | null;
   condition: AssetCondition;
   /** The asset's own document number, shown read-only on the issue form. */
   handoverDocNo: string | null;
@@ -240,7 +263,26 @@ export type HandoverTarget = {
  * why the list below has to be read when a column changes.
  */
 const HANDOVER_COLUMNS =
-  `id, asset_id, user_id, assigned_by, assigned_at, due_date, returned_at, notes, condition_at_handover, asset:assets!assignments_asset_id_fkey!inner(id, asset_code, name, status, condition, department, handover_doc_no), holder:handover_users!assignments_user_id_fkey(name, position:positions(name), department:departments(name)), issuedBy:profiles!assignments_assigned_by_fkey(full_name, email)` as const;
+  `id, asset_id, user_id, assigned_by, assigned_at, due_date, returned_at, notes, condition_at_handover, asset:assets!assignments_asset_id_fkey!inner(id, asset_code, name, status, condition, department, handover_doc_no), accessories:assignments_accessories(id, name), holder:handover_users!assignments_user_id_fkey(name, position:positions(name), department:departments(name)), issuedBy:profiles!assignments_assigned_by_fkey(full_name, email)` as const;
+
+/**
+ * The accessories embed, read through a shape check.
+ *
+ * Same reason as `mapHolder` and the `position` embed: an aliased embed arrives as
+ * an **object**, not a string, so `String(row.accessories)` would put
+ * `[object Object]` in the list. And `Array.isArray` rather than a truthiness
+ * test, because PostgREST returns `[]` for a row with none and the caller then gets
+ * an empty list rather than having to guard every read.
+ */
+function mapAccessories(value: unknown): HandoverAccessory[] {
+  if (!Array.isArray(value)) return [];
+  return (value as Record<string, unknown>[])
+    .filter(
+      (row): row is Record<string, unknown> =>
+        typeof row === "object" && row !== null,
+    )
+    .map((row) => ({ id: String(row.id), name: String(row.name ?? "") }));
+}
 
 /** What PostgREST hands back before it is flattened. */
 type RawHandover = Record<string, unknown>;
@@ -318,8 +360,27 @@ function mapHandover(row: RawHandover): Handover {
         : null,
     holder: mapHolder(row.holder),
     issuedBy: mapIssuer(row.issuedBy),
+    accessories: mapAccessories(row.accessories),
   };
 }
+
+/**
+ * One non-device item that travelled with a device: the bag, the charger, the case.
+ *
+ * **These are not `assets`, and cannot be.** A bag shares its laptop's
+ * `asset_code`, and `assets_asset_code_ci_key` is unique over
+ * `upper(btrim(asset_code))` — which is the whole point of the code being a usable
+ * identifier. So a kit is one `assets` row and everything that came with it hangs
+ * off the handover row instead. See `20260927002400` for why that is per-handover
+ * rather than a property of the asset.
+ *
+ * Free text, and that is the design: the item is not in the inventory, so there is
+ * no reference list to validate it against.
+ */
+export type HandoverAccessory = {
+  id: string;
+  name: string;
+};
 
 /**
  * Every handover for one unit, newest first.
@@ -360,7 +421,7 @@ export async function getHandoverTargets(
 ): Promise<HandoverTarget[]> {
   const { data, error } = await supabase
     .from("assets")
-    .select("id, asset_code, name, condition, handover_doc_no")
+    .select("id, asset_code, name, serial_number, condition, handover_doc_no")
     .eq("department", unit)
     .eq("status", "available")
     .order("asset_code", { ascending: true });
@@ -371,6 +432,7 @@ export async function getHandoverTargets(
     id: String(row.id),
     assetCode: String(row.asset_code ?? ""),
     name: String(row.name ?? ""),
+    serialNumber: str(row.serial_number),
     condition: String(row.condition ?? "") as AssetCondition,
     handoverDocNo: str(row.handover_doc_no),
   }));
@@ -532,6 +594,15 @@ export async function getHandoverUserOptions(): Promise<HandoverUserOption[]> {
  */
 export type HandoverDocumentAsset = {
   id: string;
+  /**
+   * The `assignments` row this device went out on.
+   *
+   * Carried on the document asset because the accessories are keyed by it, and the
+   * device's own `id` is its `assets.id` — two different ids for two different
+   * things, which is exactly the confusion that makes an accessory list appear
+   * empty when it was looked up with the wrong one.
+   */
+  assignmentId: string;
   assetCode: string;
   serialNumber: string | null;
   name: string;
@@ -539,6 +610,8 @@ export type HandoverDocumentAsset = {
   categoryName: string | null;
   condition: AssetCondition;
   handoverDocNo: string | null;
+  /** The bag, the charger — what travelled with this device on this handover. */
+  accessories: HandoverAccessory[];
 };
 
 export type HandoverDocument = {
@@ -608,7 +681,7 @@ export async function getHandoverDocument(
   const { data: seed, error: seedError } = await supabase
     .from("assignments")
     .select(
-      "id, user_id, assigned_by, assigned_at, due_date, notes, holder:handover_users!assignments_user_id_fkey(name, position:positions(name), department:departments(name)), issuedBy:profiles!assignments_assigned_by_fkey(full_name, email, department:departments(name))",
+      "id, user_id, assigned_by, assigned_at, due_date, notes, accessories:assignments_accessories(id, name), holder:handover_users!assignments_user_id_fkey(name, position:positions(name), department:departments(name)), issuedBy:profiles!assignments_assigned_by_fkey(full_name, email, department:departments(name))",
     )
     .eq("id", handoverId)
     .maybeSingle();
@@ -652,26 +725,67 @@ export async function getHandoverDocument(
     ]),
   );
 
+  // One query for the whole batch's accessories rather than one per row: ten
+  // devices would otherwise be ten requests to display ten things the database
+  // already relates to each other. `.in()` needs the same empty-guard treatment as
+  // the asset read above for the same reason — `in ()` is a syntax error, not an
+  // empty result.
+  const { data: accessoryRows, error: accessoryError } = await supabase
+    .from("assignments_accessories")
+    .select("id, assignment_id, name")
+    .in(
+      "assignment_id",
+      rows.length > 0
+        ? rows.map((r) => r.id)
+        : ["00000000-0000-0000-0000-000000000000"],
+    )
+    .order("id", { ascending: true });
+
+  if (accessoryError) throw accessoryError;
+
+  // Grouped by the assignment they belong to, so each device below reads its own
+  // list. `assignment_id` is the grouping column rather than `asset_id` because
+  // that is what the foreign key is — and it means a device handed over twice has
+  // each handover's own accessories rather than the union of both.
+  const accessoriesByAssignment = new Map<string, HandoverAccessory[]>();
+  for (const row of (accessoryRows ?? []) as Record<string, unknown>[]) {
+    const assignmentId = String(row.assignment_id);
+    const list = accessoriesByAssignment.get(assignmentId) ?? [];
+    list.push({ id: String(row.id), name: String(row.name ?? "") });
+    accessoriesByAssignment.set(assignmentId, list);
+  }
+
   /**
    * Assets in **batch order**, not asset order.
    *
    * The rows come back in `assignments.id` order and the document lists what was
    * handed over in the order it was ticked. Sorting by `asset_code` instead would
    * print a valid document in a different order from the one on screen.
+   *
+   * The row is carried alongside each asset rather than only its `asset_id`, because
+   * the accessories hang off the **assignment**, not off the device — two handovers
+   * of one laptop have different bags and the document must print each one's own.
    */
   const assets: HandoverDocumentAsset[] = rows
-    .map((r) => byId.get(r.asset_id))
-    .filter((a): a is Record<string, unknown> => a !== undefined)
-    .map((a) => {
+    .map((r) => ({ assignmentId: r.id, asset: byId.get(r.asset_id) }))
+    .filter(
+      (
+        pair,
+      ): pair is { assignmentId: string; asset: Record<string, unknown> } =>
+        pair.asset !== undefined,
+    )
+    .map(({ assignmentId, asset: a }) => {
       const category = a.category as Record<string, unknown> | null | undefined;
       return {
         id: String(a.id),
+        assignmentId,
         assetCode: String(a.asset_code ?? ""),
         serialNumber: str(a.serial_number),
         name: String(a.name ?? ""),
         categoryName: category ? str(category.name) : null,
         condition: String(a.condition ?? "") as AssetCondition,
         handoverDocNo: str(a.handover_doc_no),
+        accessories: accessoriesByAssignment.get(assignmentId) ?? [],
       };
     });
 
@@ -784,15 +898,24 @@ async function currentUserId(): Promise<string | null> {
  *   so this is left unmapped rather than dressed up as a user-facing message.
  */
 export async function issueHandover(input: HandoverInput): Promise<Handover[]> {
-  // An empty batch would insert zero rows, and PostgREST answers that with an
-  // empty array rather than an error — so `issueHandover` would report success for
-  // a handover that never happened. The form checks this too; checking here as
-  // well is because a service that can report success for doing nothing is the
-  // exact failure this codebase keeps documenting.
+  // An empty batch would write zero rows and report success — so `issueHandover`
+  // would announce a handover that never happened. The form checks this too;
+  // checking here as well is because a service that can report success for doing
+  // nothing is the exact failure this codebase keeps documenting.
   if (input.assetIds.length === 0) {
     throw new NoAssetsSelectedError();
   }
 
+  // `assigned_at` is not sent and cannot be: it is the server's `now()`, and the
+  // batch grouping depends on every row of one call carrying that same value.
+  //
+  // **A plain multi-row insert again, not a function call.** `02400` introduced
+  // `issue_handover_batch` so that the assignments and their accessories landed in
+  // one transaction. Accessories are now added from the detail modal rather than at
+  // issue time, so there is no second statement here to make atomic with this one,
+  // and `02500` drops the function. All-or-nothing across the batch is unaffected:
+  // PostgREST inserts an array in a single transaction, which is where that property
+  // comes from, and it never came from the function.
   const rows = input.assetIds.map((assetId) => ({
     asset_id: assetId,
     user_id: input.userId,
@@ -819,6 +942,94 @@ export async function issueHandover(input: HandoverInput): Promise<Handover[]> {
 }
 
 /**
+ * Record one accessory travelling with a device.
+ *
+ * **Added from the handover's detail modal, not from the issue form.** That is the
+ * shape the feature ended up with, and it is the better one: an admin who forgets
+ * the bag at issue time can still record it afterwards, which the issue-time model
+ * could not express at all. It is also the honest reading of the table — the
+ * accessories are a fact about the handover, and a handover that exists can be
+ * corrected.
+ *
+ * The trade this accepts is that a handover already printed and signed can gain an
+ * accessory, which rewrites what the signed paper says. That is deliberate: the
+ * alternative is a forgotten bag that can never be recorded, and this register's
+ * job is to say what is actually held. `assignments_accessories_insert_admin` keeps
+ * the boundary at admins, which is the same person who issues handovers.
+ *
+ * **A returned handover still accepts accessories**, following from the same
+ * reasoning: the device came back, and if the bag did not, saying so is the useful
+ * thing to be able to do. There is no "not yet printed" guard, because a handover
+ * does not record whether it has been printed — that is true of every other field
+ * here, and one column for it would be a second source of truth about an event this
+ * application cannot observe.
+ *
+ * The name is trimmed and refused when blank **here**, rather than letting
+ * `assignments_accessories_name_not_blank` raise. That check answers with `23514`
+ * naming a constraint, which is not something an admin holding an empty text box can
+ * act on.
+ */
+export async function addHandoverAccessory(
+  assignmentId: string,
+  name: string,
+): Promise<HandoverAccessory> {
+  const trimmed = name.trim();
+  if (trimmed === "") throw new AccessoryNameRequiredError();
+
+  const { data, error } = await supabase
+    .from("assignments_accessories")
+    .insert({ assignment_id: assignmentId, name: trimmed })
+    .select("id, name")
+    .single();
+
+  if (error) throw error;
+
+  const row = (data ?? {}) as Record<string, unknown>;
+  return { id: String(row.id), name: String(row.name ?? trimmed) };
+}
+
+/**
+ * Raised when the accessory field was left empty.
+ *
+ * A separate class rather than reusing the database's `23514`, because that one
+ * means "RLS refused the write" to every other caller in this file, and an empty
+ * text box is not that. Folding them together would show an admin an
+ * access-control message for typing nothing.
+ */
+export class AccessoryNameRequiredError extends Error {
+  constructor() {
+    super("An accessory needs a name");
+    this.name = "AccessoryNameRequiredError";
+  }
+}
+
+/**
+ * Remove one accessory.
+ *
+ * `.select()` and a zero-row check for the reason every write here has one: the
+ * delete policy is `is_admin()`, so a non-admin's statement matches nothing and
+ * PostgREST reports success. The page hides the control with `useIsAdmin()`, which
+ * is a convenience rather than the boundary — this is the boundary.
+ *
+ * Removal rather than an "is this right" flag, because an accessory is only a claim
+ * about what travelled with the device, and the way to say "that was not in the bag"
+ * is to delete the line. A tombstone would add a state nothing reads.
+ */
+export async function deleteHandoverAccessory(
+  accessoryId: string,
+): Promise<void> {
+  const { data, error } = await supabase
+    .from("assignments_accessories")
+    .delete()
+    .eq("id", accessoryId)
+    .select("id")
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) throw new NoRowsWrittenError("deleted");
+}
+
+/**
  * Which of these assets are no longer `available`.
  *
  * Called **only after a `23514`**, never before the insert, and that ordering is
@@ -839,7 +1050,7 @@ export async function findUnavailableAssets(
 
   const { data, error } = await supabase
     .from("assets")
-    .select("id, asset_code, name, condition, handover_doc_no")
+    .select("id, asset_code, name, serial_number, condition, handover_doc_no")
     .eq("department", unit)
     .eq("status", "available")
     .in("id", assetIds);
@@ -858,7 +1069,9 @@ export async function findUnavailableAssets(
       .map(async (id) => {
         const { data: row } = await supabase
           .from("assets")
-          .select("id, asset_code, name, condition, handover_doc_no")
+          .select(
+            "id, asset_code, name, serial_number, condition, handover_doc_no",
+          )
           .eq("id", id)
           .maybeSingle();
         const r = (row ?? {}) as RawHandover;
@@ -866,6 +1079,7 @@ export async function findUnavailableAssets(
           id,
           assetCode: String(r.asset_code ?? id),
           name: String(r.name ?? ""),
+          serialNumber: str(r.serial_number),
           condition: String(r.condition ?? "") as AssetCondition,
           handoverDocNo: str(r.handover_doc_no),
         };

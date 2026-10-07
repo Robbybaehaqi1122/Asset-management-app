@@ -1,0 +1,43 @@
+-- Drop `issue_handover_batch`, because accessories are now added in the detail
+-- modal rather than at handover time.
+--
+-- ## Why this function is being removed
+--
+-- `02400` added it for one reason: issuing a handover with accessories would
+-- otherwise be **two** statements, and a dropped request between them would leave a
+-- laptop out on loan whose bag was recorded nowhere while the printed document — which
+-- is derived from what is stored — listed the device alone.
+--
+-- **That problem no longer exists, because accessories are no longer written at
+-- issue time.** The request changed: an accessory is added from the handover's
+-- detail modal, after the handover exists, as its own statement. There is no longer
+-- a batch insert that has to be made atomic with an accessories insert, which was
+-- the function's entire reason to exist.
+--
+-- So this is not a capability being removed — it was scaffolding for a shape of the
+-- feature that was not the shape that got built. A function left behind after the
+-- need for it disappears is a second way to write a handover, and it is the *worse*
+-- way: it has to be kept in step with `assignments` columns by hand, and nothing in
+-- the app calls it any more.
+--
+-- ## What survives, and what it means for the history
+--
+-- `assignments_accessories` stays, with its four policies and its index. That was
+-- never the problem — the table is the point. The owner-facing decision it now
+-- carries is the one that matters: an accessory can be recorded **after** the
+-- handover, which `02400`'s model could not express at all.
+--
+-- ## The trade this accepts, stated plainly
+--
+-- Adding an accessory to a handover that has **already been printed and signed**
+-- rewrites what the signed paper says. That is a real loosening, and it is
+-- deliberate: the alternative was that a forgotten bag could never be recorded, and
+-- the register's job is to say what is actually held. The write policies are still
+-- `is_admin()` only, so the person who can do it is the one who issues handovers.
+--
+-- `02500` does not add a "not yet printed" rule to enforce that, because a handover
+-- does not record whether it has been printed — that is true of every other field
+-- here too, and inventing one column for it would be a second source of truth about
+-- an event this application cannot observe.
+
+drop function public.issue_handover_batch(jsonb, jsonb);

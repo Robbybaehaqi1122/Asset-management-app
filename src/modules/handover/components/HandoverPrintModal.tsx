@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import Select from "@/components/form/Select";
 import Input from "@/components/form/input/InputField";
 import Button from "@/components/ui/button/Button";
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { getDepartmentOptions } from "@/modules/departments/services/departmentService";
@@ -225,19 +225,39 @@ export default function HandoverPrintModal({
         );
 
         // Every row defaults to 1 — the one quantity that is always true.
+        //
+        // **Accessory rows are seeded here too**, keyed by the **accessory's** id
+        // rather than the device's. Sharing the device's key would be a quiet and
+        // total collision: typing a quantity for the bag would overwrite the laptop's,
+        // because both rows would read and write `qty[asset.id]`. Seeding them
+        // together is also why the reset-on-reopen is correct for them — the parent
+        // unmounts the modal, which resets all three maps for free.
         const defaultQty: Record<string, string> = {};
-        for (const asset of loaded.assets) defaultQty[asset.id] = "1";
+        const defaultUnit: Record<string, string> = {};
+        for (const asset of loaded.assets) {
+          defaultQty[asset.id] = "1";
+          defaultUnit[asset.id] = t("defaultUnit");
+          for (const accessory of asset.accessories) {
+            defaultQty[accessory.id] = "1";
+            defaultUnit[accessory.id] = t("defaultUnit");
+          }
+        }
         setQty(defaultQty);
-        setUnit(
-          Object.fromEntries(
-            loaded.assets.map((a) => [a.id, t("defaultUnit")]),
-          ),
-        );
+        setUnit(defaultUnit);
+
         // Every row of a batch carries the same recorded note, so that is what each
-        // cell opens showing. The admin can then change any single cell.
+        // device cell opens showing. The admin can then change any single cell.
+        //
+        // **Accessory notes start empty**, deliberately, where the device row seeds
+        // `loaded.notes`. Copying the handover's note onto every accessory line would
+        // repeat one sentence once per item and push the table across a page
+        // boundary — the batch-wide-note mistake this file already documents once.
         const defaultNotes: Record<string, string> = {};
         for (const asset of loaded.assets) {
           defaultNotes[asset.id] = loaded.notes ?? "";
+          for (const accessory of asset.accessories) {
+            defaultNotes[accessory.id] = "";
+          }
         }
         setRowNotes(defaultNotes);
         setIsLoading(false);
@@ -760,59 +780,66 @@ function DeviceTable({
         </thead>
         <tbody>
           {assets.map((asset, index) => (
-            <tr key={asset.id}>
-              {/* The row number is navy in the template too, matching its header. */}
-              <Td>
-                <span style={{ color: DOC.navy }}>{index + 1}</span>
-              </Td>
-              <Td>
-                <span className="block">{asset.name}</span>
-                {asset.categoryName && (
-                  <span className="block text-gray-600">
-                    {asset.categoryName}
-                  </span>
-                )}
-              </Td>
-              <Td>
-                <span className="block">{asset.assetCode}</span>
-                {asset.serialNumber && (
-                  <span className="block text-gray-600">
-                    {asset.serialNumber}
-                  </span>
-                )}
-              </Td>
-              <Td>
-                {/* The printed value and the input are siblings rather than one inside
+            // A fragment, because each device is now **two or more** rows: the
+            // device itself and one sub-row per accessory. The key is on the
+            // fragment rather than the `<tr>` so React reconciles the whole group
+            // per device — keying each accessory row by its own id would leave the
+            // device row needing a key of its own, and `index` would then be reused
+            // across two different lists.
+            <Fragment key={asset.id}>
+              <tr>
+                {/* The row number is navy in the template too, matching its header. */}
+                <Td>
+                  <span style={{ color: DOC.navy }}>{index + 1}</span>
+                </Td>
+                <Td>
+                  <span className="block">{asset.name}</span>
+                  {asset.categoryName && (
+                    <span className="block text-gray-600">
+                      {asset.categoryName}
+                    </span>
+                  )}
+                </Td>
+                <Td>
+                  <span className="block">{asset.assetCode}</span>
+                  {asset.serialNumber && (
+                    <span className="block text-gray-600">
+                      {asset.serialNumber}
+                    </span>
+                  )}
+                </Td>
+                <Td>
+                  {/* The printed value and the input are siblings rather than one inside
                   the other, so `print:hidden` on the input leaves the text alone. */}
-                <span className="print:hidden">
-                  <input
-                    type="number"
-                    min={1}
-                    value={qty[asset.id] ?? "1"}
-                    onChange={(e) => onQtyChange(asset.id, e.target.value)}
-                    aria-label={t("qtyLabel", { code: asset.assetCode })}
-                    className="w-10 [appearance:textfield] border border-gray-300 px-1 text-center [&::-webkit-inner-spin-button]:appearance-none"
-                  />
-                </span>
-                <span className="hidden print:inline">
-                  {qty[asset.id] ?? "1"}
-                </span>
-              </Td>
-              <Td>
-                <span className="print:hidden">
-                  <input
-                    type="text"
-                    value={unit[asset.id] ?? ""}
-                    onChange={(e) => onUnitChange(asset.id, e.target.value)}
-                    aria-label={t("unitLabel", { code: asset.assetCode })}
-                    className="w-16 border border-gray-300 px-1 text-center"
-                  />
-                </span>
-                <span className="hidden print:inline">
-                  {unit[asset.id] ?? ""}
-                </span>
-              </Td>
-              {/* The per-device note, which is **editable per row** here — unlike Qty
+                  <span className="print:hidden">
+                    <input
+                      type="number"
+                      min={1}
+                      value={qty[asset.id] ?? "1"}
+                      onChange={(e) => onQtyChange(asset.id, e.target.value)}
+                      aria-label={t("qtyLabel", { code: asset.assetCode })}
+                      className="w-10 [appearance:textfield] border border-gray-300 px-1 text-center [&::-webkit-inner-spin-button]:appearance-none"
+                    />
+                  </span>
+                  <span className="hidden print:inline">
+                    {qty[asset.id] ?? "1"}
+                  </span>
+                </Td>
+                <Td>
+                  <span className="print:hidden">
+                    <input
+                      type="text"
+                      value={unit[asset.id] ?? ""}
+                      onChange={(e) => onUnitChange(asset.id, e.target.value)}
+                      aria-label={t("unitLabel", { code: asset.assetCode })}
+                      className="w-16 border border-gray-300 px-1 text-center"
+                    />
+                  </span>
+                  <span className="hidden print:inline">
+                    {unit[asset.id] ?? ""}
+                  </span>
+                </Td>
+                {/* The per-device note, which is **editable per row** here — unlike Qty
                 and Unit it is not a single batch-wide value, and it lands inside the
                 cell it belongs to rather than under the table.
 
@@ -825,21 +852,127 @@ function DeviceTable({
 
                 The printed value and the input are siblings rather than one inside
                 the other, because a form control does not print. */}
-              <Td>
-                <span className="print:hidden">
-                  <textarea
-                    rows={2}
-                    value={rowNotes[asset.id] ?? ""}
-                    onChange={(e) => onNoteChange(asset.id, e.target.value)}
-                    aria-label={t("noteLabel", { code: asset.assetCode })}
-                    className="w-full resize-none border border-gray-300 px-1 text-[8.5pt]"
-                  />
-                </span>
-                <span className="hidden print:inline">
-                  {rowNotes[asset.id] ?? ""}
-                </span>
-              </Td>
-            </tr>
+                <Td>
+                  <span className="print:hidden">
+                    <textarea
+                      rows={2}
+                      value={rowNotes[asset.id] ?? ""}
+                      onChange={(e) => onNoteChange(asset.id, e.target.value)}
+                      aria-label={t("noteLabel", { code: asset.assetCode })}
+                      className="w-full resize-none border border-gray-300 px-1 text-[8.5pt]"
+                    />
+                  </span>
+                  <span className="hidden print:inline">
+                    {rowNotes[asset.id] ?? ""}
+                  </span>
+                </Td>
+              </tr>
+
+              {/* The bag, the charger — printed as **full rows of their own**, each
+                  immediately after the device it went out with.
+
+                  The first version printed them as indented sub-rows with the number,
+                  tag and notes cells left blank, on the reasoning that a bag sharing
+                  a laptop's code should not read as a separately tagged item. That was
+                  right about the tag and wrong about the shape: a document somebody
+                  signs should list every item that went out as a line of its own,
+                  because that is what they are attesting to, and an empty cell reads
+                  as a form nobody filled in.
+
+                  So each accessory gets the same six columns as a device, and the
+                  three cells that were blank are now filled from the device row:
+
+                  - **Name** — the accessory, which is what it is.
+                  - **Asset Tag** — the device's code, deliberately repeated. This is
+                    the case where repetition is the *correct* answer rather than a
+                    duplicate: the tag column answers "which registered asset does this
+                    line belong to", and a bag belongs to the laptop it travelled with.
+                    A bag cannot have its own code — `assets_asset_code_ci_key` is
+                    unique over `upper(btrim(asset_code))` — so the device's code is
+                    the only true answer available, and the name beside it is what
+                    distinguishes the two lines.
+                  - **Qty and Unit** — editable per row, like a device's. "2 tas" is
+                    a real thing an admin types when handing over two bags, and the
+                    Qty column is print-form state by the same argument as everywhere
+                    else in this file: a handover row is one asset, an accessory line
+                    is one item, and both quantities are what the paper says rather
+                    than a column in the database.
+                  - **Notes** — the accessory's own, blank by default rather than
+                    seeded with the handover's note. Copying the device's note down
+                    would repeat one sentence across every line, which is the batch-
+                    wide-note mistake this file already documents once.
+
+                  **The row number is still omitted**, and that part did not change: it
+                  is the template's device index, and a charger is not the second
+                  device in the kit. */}
+              {asset.accessories.map((accessory) => (
+                <tr key={accessory.id}>
+                  {/* No number — see above. */}
+                  <Td />
+                  <Td>
+                    <span className="block">{accessory.name}</span>
+                  </Td>
+                  <Td>
+                    {/* The device's own code, repeated deliberately. */}
+                    <span className="block">{asset.assetCode}</span>
+                  </Td>
+                  <Td>
+                    {/* Print-form state, keyed by the **accessory's** id rather than
+                        the device's: sharing the key would make typing a quantity for
+                        the bag overwrite the laptop's. */}
+                    <span className="print:hidden">
+                      <input
+                        type="number"
+                        min={1}
+                        value={qty[accessory.id] ?? "1"}
+                        onChange={(e) =>
+                          onQtyChange(accessory.id, e.target.value)
+                        }
+                        aria-label={t("qtyLabel", { code: accessory.name })}
+                        className="w-10 [appearance:textfield] border border-gray-300 px-1 text-center [&::-webkit-inner-spin-button]:appearance-none"
+                      />
+                    </span>
+                    <span className="hidden print:inline">
+                      {qty[accessory.id] ?? "1"}
+                    </span>
+                  </Td>
+                  <Td>
+                    <span className="print:hidden">
+                      <input
+                        type="text"
+                        value={unit[accessory.id] ?? ""}
+                        onChange={(e) =>
+                          onUnitChange(accessory.id, e.target.value)
+                        }
+                        aria-label={t("unitLabel", { code: accessory.name })}
+                        className="w-16 border border-gray-300 px-1 text-center"
+                      />
+                    </span>
+                    <span className="hidden print:inline">
+                      {unit[accessory.id] ?? ""}
+                    </span>
+                  </Td>
+                  <Td>
+                    {/* Blank by default, unlike the device row which seeds
+                        `loaded.notes`. See the note above. */}
+                    <span className="print:hidden">
+                      <textarea
+                        rows={2}
+                        value={rowNotes[accessory.id] ?? ""}
+                        onChange={(e) =>
+                          onNoteChange(accessory.id, e.target.value)
+                        }
+                        aria-label={t("noteLabel", { code: accessory.name })}
+                        className="w-full resize-none border border-gray-300 px-1 text-[8.5pt]"
+                      />
+                    </span>
+                    <span className="hidden print:inline">
+                      {rowNotes[accessory.id] ?? ""}
+                    </span>
+                  </Td>
+                </tr>
+              ))}
+            </Fragment>
           ))}
         </tbody>
       </table>
