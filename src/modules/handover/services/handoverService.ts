@@ -121,6 +121,17 @@ export type HandoverHolder = {
    */
   companyName: string | null;
   /**
+   * The referenced `companies` row's id.
+   *
+   * **Both the id and the name, and the asymmetry is the point.** The print form's
+   * Company control is a `Select`, which needs the id to preselect; the paper needs the
+   * name to print. Seeding the Select with a name matches no option and silently
+   * renders blank — which reads as "this person has no employer" rather than "the
+   * dropdown was given the wrong kind of value". The same split `HandoverUserRow` has
+   * for `positionId` against `position`.
+   */
+  companyId: string | null;
+  /**
    * Their staff number, printed as `NIK/EID`.
    *
    * Free text rather than a reference, and not unique: these come from a human
@@ -280,7 +291,7 @@ export type HandoverTarget = {
  * why the list below has to be read when a column changes.
  */
 const HANDOVER_COLUMNS =
-  `id, asset_id, user_id, assigned_by, assigned_at, due_date, returned_at, notes, condition_at_handover, asset:assets!assignments_asset_id_fkey!inner(id, asset_code, name, status, condition, department, handover_doc_no), accessories:assignments_accessories(id, name), holder:handover_users!assignments_user_id_fkey(name, position:positions(name), department:departments(name)), issuedBy:profiles!assignments_assigned_by_fkey(full_name, email)` as const;
+  `id, asset_id, user_id, assigned_by, assigned_at, due_date, returned_at, notes, condition_at_handover, asset:assets!assignments_asset_id_fkey!inner(id, asset_code, name, status, condition, department, handover_doc_no), accessories:assignments_accessories(id, name, serial_number), holder:handover_users!assignments_user_id_fkey(name, position:positions(name), department:departments(name)), issuedBy:profiles!assignments_assigned_by_fkey(full_name, email)` as const;
 
 /**
  * The accessories embed, read through a shape check.
@@ -298,7 +309,11 @@ function mapAccessories(value: unknown): HandoverAccessory[] {
       (row): row is Record<string, unknown> =>
         typeof row === "object" && row !== null,
     )
-    .map((row) => ({ id: String(row.id), name: String(row.name ?? "") }));
+    .map((row) => ({
+      id: String(row.id),
+      name: String(row.name ?? ""),
+      serialNumber: str(row.serial_number),
+    }));
 }
 
 /** What PostgREST hands back before it is flattened. */
@@ -338,6 +353,7 @@ function mapHolder(value: unknown): HandoverHolder | null {
         : null,
     companyName:
       company && typeof company === "object" ? str(company.name) : null,
+    companyId: company && typeof company === "object" ? str(company.id) : null,
     nikEid: str(row.nik_eid),
   };
 }
@@ -401,6 +417,15 @@ function mapHandover(row: RawHandover): Handover {
 export type HandoverAccessory = {
   id: string;
   name: string;
+  /**
+   * This item's own serial, or null for the ones that have none — most bags.
+   *
+   * **Not the device's serial.** An adapter's serial is not its laptop's, and copying
+   * the device's across would make two different objects print identically. The document
+   * puts this in front of the device's asset code precisely because the accessory
+   * inherits that code by design and needs something to tell it apart.
+   */
+  serialNumber: string | null;
 };
 
 /**
@@ -652,6 +677,8 @@ export type HandoverDocument = {
    * the per-device Notes cell already follows.
    */
   holderCompany: string | null;
+  /** The id behind `holderCompany`, for the print form's Company dropdown. */
+  holderCompanyId: string | null;
   holderNikEid: string | null;
   /** Issuer: the account that recorded it. */
   issuerName: string;
@@ -713,7 +740,7 @@ export async function getHandoverDocument(
   const { data: seed, error: seedError } = await supabase
     .from("assignments")
     .select(
-      "id, user_id, assigned_by, assigned_at, due_date, notes, accessories:assignments_accessories(id, name), holder:handover_users!assignments_user_id_fkey(name, nik_eid, position:positions(name), department:departments(name), company:companies(name)), issuedBy:profiles!assignments_assigned_by_fkey(full_name, email, department:departments(name))",
+      "id, user_id, assigned_by, assigned_at, due_date, notes, accessories:assignments_accessories(id, name, serial_number), holder:handover_users!assignments_user_id_fkey(name, nik_eid, position:positions(name), department:departments(name), company:companies(id, name)), issuedBy:profiles!assignments_assigned_by_fkey(full_name, email, department:departments(name))",
     )
     .eq("id", handoverId)
     .maybeSingle();
@@ -764,7 +791,7 @@ export async function getHandoverDocument(
   // empty result.
   const { data: accessoryRows, error: accessoryError } = await supabase
     .from("assignments_accessories")
-    .select("id, assignment_id, name")
+    .select("id, assignment_id, name, serial_number")
     .in(
       "assignment_id",
       rows.length > 0
@@ -783,7 +810,11 @@ export async function getHandoverDocument(
   for (const row of (accessoryRows ?? []) as Record<string, unknown>[]) {
     const assignmentId = String(row.assignment_id);
     const list = accessoriesByAssignment.get(assignmentId) ?? [];
-    list.push({ id: String(row.id), name: String(row.name ?? "") });
+    list.push({
+      id: String(row.id),
+      name: String(row.name ?? ""),
+      serialNumber: str(row.serial_number),
+    });
     accessoriesByAssignment.set(assignmentId, list);
   }
 
@@ -828,6 +859,10 @@ export async function getHandoverDocument(
     Record<string, unknown> | null | undefined;
   const holderCompany = holder.company as
     Record<string, unknown> | null | undefined;
+  const holderCompanyId =
+    holderCompany && typeof holderCompany === "object"
+      ? str(holderCompany.id)
+      : null;
   const issuer = (row.issuedBy ?? {}) as Record<string, unknown>;
   const issuerDepartment = issuer.department as
     Record<string, unknown> | null | undefined;
@@ -838,6 +873,7 @@ export async function getHandoverDocument(
     holderPosition: holderPosition ? str(holderPosition.name) : null,
     holderDepartment: holderDepartment ? str(holderDepartment.name) : null,
     holderCompany: holderCompany ? str(holderCompany.name) : null,
+    holderCompanyId,
     holderNikEid: str(holder.nik_eid),
     issuerName: str(issuer.full_name) ?? str(issuer.email) ?? "",
     issuerEmail: str(issuer.email),
@@ -1008,20 +1044,34 @@ export async function issueHandover(input: HandoverInput): Promise<Handover[]> {
 export async function addHandoverAccessory(
   assignmentId: string,
   name: string,
+  serialNumber?: string | null,
 ): Promise<HandoverAccessory> {
   const trimmed = name.trim();
   if (trimmed === "") throw new AccessoryNameRequiredError();
 
+  // The serial is trimmed to null rather than to "": an empty box is "this item has
+  // no serial", and `assignments_accessories_serial_number_not_blank` exists to make
+  // sure that never becomes an empty string printed as ` / 2601101047`.
+  const serial = serialNumber?.trim() || null;
+
   const { data, error } = await supabase
     .from("assignments_accessories")
-    .insert({ assignment_id: assignmentId, name: trimmed })
-    .select("id, name")
+    .insert({
+      assignment_id: assignmentId,
+      name: trimmed,
+      serial_number: serial,
+    })
+    .select("id, name, serial_number")
     .single();
 
   if (error) throw error;
 
   const row = (data ?? {}) as Record<string, unknown>;
-  return { id: String(row.id), name: String(row.name ?? trimmed) };
+  return {
+    id: String(row.id),
+    name: String(row.name ?? trimmed),
+    serialNumber: str(row.serial_number),
+  };
 }
 
 /**
@@ -1037,6 +1087,46 @@ export class AccessoryNameRequiredError extends Error {
     super("An accessory needs a name");
     this.name = "AccessoryNameRequiredError";
   }
+}
+
+/**
+ * Correct one accessory in place — a mistyped name, or a serial that was left blank.
+ *
+ * **This exists because a `delete` + `add` round trip is not an acceptable way to fix a
+ * typo.** It is what the UI offered first, and it made the ordinary mistake — forgetting
+ * the serial while adding a bag — unrecoverable without retyping the name and risking a
+ * second mistake. `accessories_accessories_insert_admin` has no unique constraint to
+ * collide with, so the round trip "worked"; it just silently discarded the original
+ * `created_at` and the row id that any future reference would use.
+ *
+ * `.select()` and a zero-row throw for the reason every write here has one: the UPDATE
+ * policy is `is_admin()`, so a non-admin's statement matches nothing and PostgREST reports
+ * success.
+ */
+export async function updateHandoverAccessory(
+  accessoryId: string,
+  input: { name: string; serialNumber?: string | null },
+): Promise<HandoverAccessory> {
+  const name = input.name.trim();
+  if (name === "") throw new AccessoryNameRequiredError();
+  const serial = input.serialNumber?.trim() || null;
+
+  const { data, error } = await supabase
+    .from("assignments_accessories")
+    .update({ name, serial_number: serial })
+    .eq("id", accessoryId)
+    .select("id, name, serial_number")
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) throw new NoRowsWrittenError("updated");
+
+  const row = (data ?? {}) as Record<string, unknown>;
+  return {
+    id: String(row.id),
+    name: String(row.name ?? name),
+    serialNumber: str(row.serial_number),
+  };
 }
 
 /**

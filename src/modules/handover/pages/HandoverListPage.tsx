@@ -17,7 +17,7 @@ import { DropdownItem } from "@/components/ui/dropdown/DropdownItem";
 import { useAuth } from "@/context/AuthContext";
 import { useIsAdmin } from "@/hooks/useIsAdmin";
 import { useModal } from "@/hooks/useModal";
-import { CloseIcon, HorizontaLDots, PlusIcon } from "@/icons";
+import { CloseIcon, HorizontaLDots, PencilIcon, PlusIcon } from "@/icons";
 import type {
   AssetCondition,
   AssetUnit,
@@ -37,6 +37,7 @@ import {
   isUnavailableAssetError,
   issueHandover,
   returnHandover,
+  updateHandoverAccessory,
   AccessoryNameRequiredError,
   HandoverOpenError,
   NoAssetsSelectedError,
@@ -566,11 +567,15 @@ export default function HandoverListPage() {
    * about one cause. What must not happen is leaving the admin thinking the accessory
    * was saved, so the reload is unconditional.
    */
-  const handleAddAccessory = async (assignmentId: string, name: string) => {
+  const handleAddAccessory = async (
+    assignmentId: string,
+    name: string,
+    serialNumber: string,
+  ) => {
     setIsSaving(true);
     setSaveError(null);
     try {
-      await addHandoverAccessory(assignmentId, name);
+      await addHandoverAccessory(assignmentId, name, serialNumber);
       reload();
     } catch (error) {
       if (error instanceof AccessoryNameRequiredError) {
@@ -583,6 +588,37 @@ export default function HandoverListPage() {
       // Reloaded even on failure. A partial outcome is possible in principle — the
       // insert landed and the reload did not — and the alternative is the modal
       // showing a list that might be stale with no indication either way.
+      reload();
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  /**
+   * Correct one accessory in place.
+   *
+   * **Written because a delete-and-re-add round trip is not an acceptable fix for a
+   * typo.** It is what this offered first, and it made forgetting the serial while
+   * adding a bag unrecoverable — which is the ordinary mistake, not an edge case.
+   */
+  const handleUpdateAccessory = async (
+    accessoryId: string,
+    name: string,
+    serialNumber: string,
+  ) => {
+    setIsSaving(true);
+    setSaveError(null);
+    try {
+      await updateHandoverAccessory(accessoryId, { name, serialNumber });
+      reload();
+    } catch (error) {
+      if (error instanceof AccessoryNameRequiredError) {
+        setSaveError(t("detail.accessoryNameRequired"));
+      } else if (error instanceof NoRowsWrittenError) {
+        setSaveError(t("detail.accessoryNotSaved"));
+      } else {
+        setSaveError(t("detail.accessoryFailed"));
+      }
       reload();
     } finally {
       setIsSaving(false);
@@ -1296,11 +1332,18 @@ export default function HandoverListPage() {
                           <AccessoryEditor
                             assetCode={row.asset?.assetCode ?? row.id}
                             names={row.accessories}
-                            onAdd={(name) =>
-                              void handleAddAccessory(row.id, name)
+                            onAdd={(name, serial) =>
+                              void handleAddAccessory(row.id, name, serial)
                             }
                             onRemove={(accessoryId) =>
                               void handleRemoveAccessory(accessoryId)
+                            }
+                            onEdit={(accessoryId, name, serial) =>
+                              void handleUpdateAccessory(
+                                accessoryId,
+                                name,
+                                serial,
+                              )
                             }
                             isSaving={isSaving}
                           />
@@ -1446,55 +1489,88 @@ function AccessoryEditor({
   names,
   onAdd,
   onRemove,
+  onEdit,
   isSaving,
 }: {
   assetCode: string;
   names: HandoverAccessory[];
-  onAdd: (name: string) => void;
+  onAdd: (name: string, serialNumber: string) => void;
   onRemove: (accessoryId: string) => void;
+  onEdit: (accessoryId: string, name: string, serialNumber: string) => void;
   isSaving: boolean;
 }) {
   const { t } = useTranslation("common", { keyPrefix: "handover" });
   const [draft, setDraft] = useState("");
+  const [draftSerial, setDraftSerial] = useState("");
 
-  // Keyed on the asset so switching devices starts from an empty box rather than
-  // carrying the last one's half-typed name across.
+  // Keyed on the asset so switching devices starts from empty boxes rather than
+  // carrying the last one's half-typed name and serial across.
   const [lastAsset, setLastAsset] = useState(assetCode);
   if (lastAsset !== assetCode) {
     setLastAsset(assetCode);
     setDraft("");
+    setDraftSerial("");
   }
 
+  /**
+   * One submit for the whole row, reached from Enter in **either** box.
+   *
+   * An earlier draft made Enter in the serial box jump focus back to the name box
+   * rather than submit, on the reasoning that a half-typed serial should not be
+   * committed. That needed a ref, and `Input` does not forward one — fixing that
+   * meant changing a shared primitive for one focus call. Entering the serial and
+   * pressing Enter is the admin saying the line is finished; a half-typed one is
+   * something they can see and clear in the chip list above.
+   */
   const submit = () => {
     if (draft.trim() === "") return;
-    onAdd(draft);
+    onAdd(draft, draftSerial);
     setDraft("");
+    setDraftSerial("");
   };
 
-  const inputId = `handover-accessory-${assetCode}`;
+  /**
+   * Enter submits the row rather than being taken as a form submit.
+   *
+   * There is no `<form>` here today, but this modal is where the signed document is
+   * produced, and a stray Enter that closed it would lose the admin's place.
+   */
+  const submitOnEnter = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    submit();
+  };
+
+  const nameId = `handover-accessory-${assetCode}`;
+  const serialId = `handover-accessory-serial-${assetCode}`;
 
   return (
     <div className="mt-2 border-t border-dashed border-gray-200 ps-11 pt-2 dark:border-gray-700">
-      <Label htmlFor={inputId} className="text-xs">
+      <Label htmlFor={nameId} className="text-xs">
         {t("detail.accessoriesLabel")}
       </Label>
       <div className="mt-1 flex items-center gap-2">
         <Input
-          id={inputId}
+          id={nameId}
           value={draft}
           placeholder={t("detail.accessoryPlaceholder")}
           onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              // `preventDefault` stops the keystroke being taken as a submit. There is
-              // no form here today, but this modal is where the signed document is
-              // produced and a stray Enter that closed it would lose the admin's
-              // place.
-              e.preventDefault();
-              submit();
-            }
-          }}
+          onKeyDown={submitOnEnter}
           className="h-9 py-1 text-sm"
+        />
+        {/* The serial is a second box rather than part of the name, because the two
+            are different facts: "Adaptor HP" is what the item is and "0VFHDX" is
+            what is engraved on it. One box holding both would put a string like
+            "Adaptor HP (0VFHDX)" into a name column that the document prints
+            verbatim. */}
+        <Input
+          id={serialId}
+          name="serial_number"
+          value={draftSerial}
+          placeholder={t("detail.accessorySerialPlaceholder")}
+          onChange={(e) => setDraftSerial(e.target.value)}
+          onKeyDown={submitOnEnter}
+          className="h-9 w-32 py-1 text-sm"
         />
         <Button
           variant="outline"
@@ -1507,33 +1583,167 @@ function AccessoryEditor({
           {t("detail.accessoryAdd")}
         </Button>
       </div>
+      <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+        {t("detail.accessorySerialHint")}
+      </p>
 
-      {/* What has been recorded, each removable. Rendered only when there is
-          something: an empty "none" row under every device would be a wall of text
-          saying nothing. */}
+      {/* What has been recorded.
+
+          Each is **editable, not just removable.** Deleting and re-adding was the first
+          design and it made the ordinary mistake unrecoverable: forgetting the serial
+          while adding a bag meant retyping the name and hoping for a second, different
+          mistake. The pencil turns the chip into a two-field editor in place.
+
+          The editor keeps its own draft, so cancelling really cancels: `onEdit` is only
+          called on save, and the chip shows the stored value throughout. An editor that
+          pushed every keystroke to the database would make a half-typed serial a saved
+          one. */}
       {names.length > 0 && (
-        <ul className="mt-2 flex flex-wrap gap-1.5">
+        <ul className="mt-2 flex flex-col gap-1.5">
           {names.map((accessory) => (
-            <li key={accessory.id}>
-              <span className="inline-flex items-center gap-1 rounded-full bg-gray-200 py-1 ps-2.5 pe-1 text-xs text-gray-700 dark:bg-gray-700 dark:text-gray-200">
-                {accessory.name}
-                <button
-                  type="button"
-                  onClick={() => onRemove(accessory.id)}
-                  disabled={isSaving}
-                  aria-label={t("detail.accessoryRemove", {
-                    name: accessory.name,
-                  })}
-                  className="rounded-full p-0.5 hover:bg-gray-300 disabled:opacity-50 dark:hover:bg-gray-600"
-                >
-                  <CloseIcon className="size-3" />
-                </button>
-              </span>
-            </li>
+            <AccessoryRow
+              key={accessory.id}
+              accessory={accessory}
+              isSaving={isSaving}
+              onEdit={onEdit}
+              onRemove={onRemove}
+            />
           ))}
         </ul>
       )}
     </div>
+  );
+}
+
+/**
+ * One recorded accessory: a chip, or an inline editor when it is being corrected.
+ *
+ * **The draft is local and only committed on save.** Every keystroke going to the
+ * database would make a half-typed serial a saved one, and `serial_number` is nullable
+ * precisely so an empty box is a decision rather than a mistake.
+ *
+ * Enter saves from either field, Escape cancels, and the pencil is hidden while the
+ * row is already open so there is exactly one editor per accessory.
+ */
+function AccessoryRow({
+  accessory,
+  isSaving,
+  onEdit,
+  onRemove,
+}: {
+  accessory: HandoverAccessory;
+  isSaving: boolean;
+  onEdit: (accessoryId: string, name: string, serialNumber: string) => void;
+  onRemove: (accessoryId: string) => void;
+}) {
+  const { t } = useTranslation("common", { keyPrefix: "handover" });
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(accessory.name);
+  const [serial, setSerial] = useState(accessory.serialNumber ?? "");
+
+  // Re-seed from the stored row when an edit is abandoned, so reopening the editor
+  // never shows the abandoned draft.
+  const startEditing = () => {
+    setName(accessory.name);
+    setSerial(accessory.serialNumber ?? "");
+    setEditing(true);
+  };
+
+  const cancel = () => {
+    setName(accessory.name);
+    setSerial(accessory.serialNumber ?? "");
+    setEditing(false);
+  };
+
+  const save = () => {
+    if (name.trim() === "") return;
+    onEdit(accessory.id, name, serial);
+    setEditing(false);
+  };
+
+  if (!editing) {
+    return (
+      <li className="flex items-center gap-2">
+        <span className="inline-flex items-center gap-1 rounded-full bg-gray-200 py-1 ps-2.5 pe-1 text-xs text-gray-700 dark:bg-gray-700 dark:text-gray-200">
+          {accessory.name}
+          {/* The serial is shown beside the name because an adapter and a spare
+              battery are told apart by their serial, not their name. */}
+          {accessory.serialNumber && (
+            <span className="text-gray-500 dark:text-gray-400">
+              {accessory.serialNumber}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={startEditing}
+            disabled={isSaving}
+            aria-label={t("detail.accessoryEdit", { name: accessory.name })}
+            className="rounded-full p-0.5 hover:bg-gray-300 disabled:opacity-50 dark:hover:bg-gray-600"
+          >
+            <PencilIcon className="size-3" />
+          </button>
+          <button
+            type="button"
+            onClick={() => onRemove(accessory.id)}
+            disabled={isSaving}
+            aria-label={t("detail.accessoryRemove", { name: accessory.name })}
+            className="rounded-full p-0.5 hover:bg-gray-300 disabled:opacity-50 dark:hover:bg-gray-600"
+          >
+            <CloseIcon className="size-3" />
+          </button>
+        </span>
+      </li>
+    );
+  }
+
+  return (
+    <li className="flex items-center gap-2">
+      <Input
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            save();
+          }
+          if (e.key === "Escape") cancel();
+        }}
+        placeholder={t("detail.accessoryPlaceholder")}
+        aria-label={t("detail.accessoriesLabel")}
+        className="h-8 py-0.5 text-xs"
+      />
+      <Input
+        value={serial}
+        onChange={(e) => setSerial(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            save();
+          }
+          if (e.key === "Escape") cancel();
+        }}
+        placeholder={t("detail.accessorySerialPlaceholder")}
+        aria-label={t("detail.accessorySerialHint")}
+        className="h-8 w-28 py-0.5 text-xs"
+      />
+      <Button
+        size="sm"
+        onClick={save}
+        disabled={isSaving || name.trim() === ""}
+        className="shrink-0 px-2 py-1"
+      >
+        {t("detail.accessorySave")}
+      </Button>
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={cancel}
+        disabled={isSaving}
+        className="shrink-0 px-2 py-1"
+      >
+        {t("cancel")}
+      </Button>
+    </li>
   );
 }
 

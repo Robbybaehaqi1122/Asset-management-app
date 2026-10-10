@@ -286,9 +286,10 @@ vercel.json                    SPA rewrite only — no framework, no buildComman
 | `20260927002500_drop_issue_handover_batch.sql` | drops `issue_handover_batch`, which existed only to batch-issue with accessories |
 | `20260927002600_companies.sql` | the `companies` list, its unique index and its four policies; see Company is a list, and nothing points at it |
 | `20260927002700_handover_user_company_nik.sql` | `handover_users.company_id` and `.nik_eid`, plus the `companies_guard_delete` the previous migration owed; see The recipient is not an account |
+| `20260927002800_accessory_serial.sql` | `assignments_accessories.serial_number`; see A handover records what went with the device |
 
-**All twenty-seven are applied to the remote**, confirmed by reading
-`supabase_migrations.schema_migrations` after the `02700` push, which lists **27**
+**All twenty-eight are applied to the remote**, confirmed by reading
+`supabase_migrations.schema_migrations` after the `02800` push, which lists **28**
 rows. The remote carries **13 tables** and **45 indexes** in `public`, measured
 after that push; `02700` added no table and one index; `02600` added the thirteenth table and two indexes (the case-folded
 name index and the primary key) with it; `02400` added the twelfth table and two indexes (the FK and the
@@ -312,9 +313,10 @@ applying 004, with no "Applying migration" line. That message is not a reliable
 signal in either direction — confirm a push landed by reading
 `supabase_migrations.schema_migrations`, not by trusting the CLI's wording.
 
-`pg_indexes` reports **45** for `public`, measured on the remote after the `02700`
-push, and after a clean `db reset --local` that replayed all twenty-seven
-files. Before `02000` it was 32; that migration added `handover_users_name_idx`,
+`pg_indexes` reports **45** for `public`, measured on the remote after the `02800`
+push, and after a clean `db reset --local` that replayed all twenty-eight
+files. `02800` added a column and a check constraint and **no** index, so that count is
+unchanged from `02700`. Before `02000` it was 32; that migration added `handover_users_name_idx`,
 `handover_users_department_idx` and `handover_users_profile_idx`, the last of
 which exists purely for the join in the two rewritten `assignments` policies.
 Measured after a clean The earlier figure of 27 in
@@ -2395,6 +2397,148 @@ holds devices, and until a bag has a code of its own there is no row to point at
 otherwise answer with `23514` naming a constraint, which is not something an admin
 holding an empty text box can act on.
 
+**`serial_number` (`02800`) is the accessory's own serial, and it is not the device's.**
+The code cannot carry it: an accessory shares its laptop's `asset_code`, so the kit is
+one `assets` row and there is nowhere else for a serial to live. The reference document
+prints it like this:
+
+```
+1 Dell Latitude 5450              J9BLPB4 / 2601101047
+2 AC Adapter Dell Latitude 5450   0VFHDX / 2601101047
+3 Dell Notebook Bag               -
+```
+
+So the accessory **inherits the device's asset code and puts its own serial in front of
+it**, and an accessory with no serial prints a bare dash. The earlier version printed the
+device's code alone for every accessory, which made row 2 identical to row 1 — a reader
+could not tell an adapter from the laptop it came with.
+
+**The dash, not the bare code.** Repeating the device's code with nothing in front of it
+reads as a second device rather than as the same kit minus a serial number. That is what
+the reference does, and it is copied rather than improved on.
+
+**Nullable, and deliberately not unique.** A bag rarely has a serial, so null is the
+normal case and not an error. Two identical chargers from one box can genuinely share
+one, and `unique` would refuse a true statement about the physical world — which is the
+opposite of the `02300` argument for `asset_code`, where two spellings of one code are
+always a mistake.
+
+**The serial box is separate from the name box, and Enter submits from either.** One box
+holding both would put `"Adaptor HP (0VFHDX)"` into a name column the document prints
+verbatim. An earlier draft made Enter in the serial box jump focus back to the name box
+instead of submitting, which needed a ref — and `Input` does not forward one, so fixing
+it meant changing a shared primitive for one focus call. Entering the serial and pressing
+Enter is the admin saying the line is finished.
+
+**A dropped argument in a handler chain compiles silently, and that is how the serial
+was lost the first time.** The browser found it: the accessory saved with
+`serial_number = null` after the admin had typed one. The chain was three links long —
+`submit()` passed `(draft, draftSerial)`, the call site was written
+`onAdd={(name) => handleAddAccessory(row.id, name)}`, and `handleAddAccessory` took
+`(assignmentId, name)`.
+
+**`tsc` cannot catch this, and that is a property of the type system rather than a gap
+in it.** A callback that accepts *fewer* parameters than its declared type is
+assignable — `(name: string, serialNumber: string) => void` is satisfied by
+`(name: string) => void`, and the extra argument is simply discarded at the boundary.
+That is sound in general; it is only unsound when the dropped argument is a **value**
+rather than an extra hook, which is the case here.
+
+Two things follow, and both are worth remembering rather than re-learning:
+
+- **Read the whole chain when a value does not arrive.** Every link looked correct in
+  isolation and the file compiled, the built, and passed `eslint`. The database was the
+  only place the truth was visible, and it said `NULL`.
+- **A handler that forwards arguments should forward them by name**, not by restating a
+  signature, so that widening one link makes the next one a compile error instead of a
+  silent drop.
+
+**The same pass produced an invalid-nesting warning**, and it is the other half of the
+same shape: `PartyField` wrapped its control in a `<p>`, and `Select` renders a `<div>`
+at its root, so the browser closed the `<p>` itself and re-parented everything after it
+underneath. React reported it as *"In HTML, `<div>` cannot be a descendant of `<p>`"* and
+pointed at a `<p class="mt-2.5">`. The wrapper is now a `<div>` — which is legal for both
+shapes the component has to cover, since the text case only puts `<span>` and `<input>`
+inside it.
+
+Two things are worth keeping from that pair. **`<p>` is not a neutral box**: it is a
+paragraph, so it may only contain phrasing content, and any block-level descendant makes
+the browser restructure the tree rather than the markup that was written. And **a wrapper
+that serves two different child shapes is where that shows up** — the `<p>` was correct
+for the `<input>` case and only became wrong when the dropdown arrived.
+
+Scanning for it across `src/` is cheap after a change like this, and the **strip-the-
+comments part is not optional**: a comment that discusses `<p>` nesting matches itself,
+and a scan that reports its own prose as the finding is worse than no scan.
+
+#### An accessory could be added and removed, but never corrected — and that was the blocker
+
+Fixing the dropped argument made the *new* path work, and the browser still printed `-`.
+The row on the remote was unchanged at `created_at 15:13:36` with `serial_number` still
+`NULL`, which says the admin never re-created it — and could not have been expected to,
+because **the only way to attach a serial to an existing accessory was to delete it and
+add it again**.
+
+That is not a workaround, it is the missing feature. Forgetting the serial while adding a
+bag is the *ordinary* mistake, not an edge case, and the repair demanded retyping the name
+and risking a second, different mistake. The delete/re-add round trip also discarded
+`created_at` and the row id, silently, with no error and no unique constraint to collide
+with — the same class of "it worked, and it was still wrong" as the bare-key mistake
+`02300` refused.
+
+`updateHandoverAccessory` and an inline pencil on each chip close it. Three decisions:
+
+- **The draft is local and committed only on save.** Every keystroke going to the database
+  would make a half-typed serial a saved one, and `serial_number` is nullable precisely so
+  an empty box is a decision rather than a mistake. Cancelling re-seeds from the stored
+  row, so an abandoned draft cannot reappear.
+- **Escape cancels, Enter saves from either field**, matching the add editor rather than
+  inventing a second convention.
+- **`onEdit` is passed by name down two levels**, because the whole reason this exists is
+  the dropped-argument bug above. Restating a signature at a call site is what started it.
+
+`updateHandoverAccessory` takes an **accessory id**, not an assignment id, for the reason
+the batched read groups by `assignment_id`: a device handed over twice has different bags
+on each handover, and keying an edit by the handover would let one handover's accessory
+edit another's.
+
+#### A staff UPDATE on the accessory is silent, and that is the fourth time here
+
+Measured on the local stack through PostgREST, not inferred:
+
+| call | result |
+|---|---|
+| admin sets `serial_number = '0VFHDX'` | `200`, the row with the serial |
+| admin clears it to `null` | `200`, the row with `null` |
+| **staff sets the same serial** | **`200` with `[]`** — no error, no rows |
+| admin sends `name = '   '` | `400` / `23514` on `assignments_accessories_name_not_blank` |
+
+So `updateHandoverAccessory` throws `NoRowsWrittenError` on `if (!data)`, and pre-empts
+the `23514` with `AccessoryNameRequiredError` so the admin gets a sentence rather than a
+constraint name. **This is the fourth time this repo has written a permission test or a
+guard by expecting a staff UPDATE to raise** — after `companies`, the handover service, and
+`02700`'s suite. A row-level `using` filter is a filter: the statement matches nothing and
+PostgREST reports success. It is worth writing down as a standing reflex rather than
+rediscovering.
+
+#### The print chain was verified end to end, because the browser had already lied once
+
+The read was suspected too, so it was proven rather than reasoned about: on the local stack,
+with a fixture that **reproduces the remote row exactly** — one handover, one accessory
+named `adaptor HP` with `serial_number` `NULL`, asset `2601101017` — the write was
+replayed over HTTP and every link checked in turn.
+
+| step | result |
+|---|---|
+| admin `PATCH` with `{"name":…,"serial_number":"0VFHDX"}` | `200`, `serial_number: "0VFHDX"` |
+| the exact `getHandoverDocument` read — `.select("id, assignment_id, name, serial_number").in("assignment_id",[…]).order("id")` | returns `"0VFHDX"` |
+| the `DeviceTable` expression, applied verbatim | `0VFHDX / 2601101017` |
+| admin `POST` with a serial, then with `null` for a bag | both accepted, the bag `null` |
+
+That matches the reference document's `0VFHDX / 2601101047` for the adapter and `-` for
+the bag. The `PATCH` is an **update**, so `created_at` and the row id survive — which is
+the whole point of the feature.
+
 #### Where the accessory editor lives, and why it is not in the issue form
 
 **This is the decision the rest of `02400` was reshaped around, and it was the
@@ -2574,9 +2718,18 @@ not, because the rules are thin and the indent is small.
 on this machine is xpdf's build, which has no `-bbox`, so the positions were read by
 inflating page 1's stream and pairing each `Tm`/`TD` with the `TJ`/`Tj` run that
 follows. `Tm` is an identity translation in this file, so a glyph sits at
-`Tm`-translation + `TD`-offset. **A4 at 96dpi is 595.28 x 841.89 CSS px, which makes one
-PDF point equal to one CSS px** — so the coordinates can be used as layout values
-directly rather than scaled.
+`Tm`-translation + `TD`-offset.
+
+**One PDF point is 4/3 CSS px, not one.** A point is 1/72 inch and a CSS pixel is
+1/96 inch, so A4 is 595.28pt across and 793.70px at 96dpi. This was first written here
+as "a PDF point equals one CSS px", which is wrong, and acting on it put the block
+**11px** out — about 3mm. Every PDF coordinate has to be multiplied by 4/3 before it
+is usable as a Tailwind value.
+
+The rule width survives the mistake because the factor cancels when the answer is
+expressed in millimetres: 27 underscores spanning 77.66pt to 228pt is 150.3pt, which is
+200px, which is `w-[53mm]`. A value that happens to come out right for the wrong reason
+is the one worth writing down.
 
 | element | y | x |
 |---|---|---|
@@ -2584,26 +2737,75 @@ directly rather than scaled.
 | `Bapak/Ibu` | 573.91 | 58.56 |
 | `NIK/EID` label | 551.11 | 75.86 |
 | value `SHI-OPS-086` | 536.11 | 78.38 |
-| **rule (32 `_`)** | 532.63 | 77.66 |
+| **rule (27 `_`)** | 532.63 | 77.66 |
 | `Company` label | 507.91 | 75.86 |
 | value | 492.07 | 77.78 |
-| **rule (32 `_`)** | 489.43 | 77.66 |
+| **rule (26 `_`)** | 489.43 | 77.66 |
 
 Three things follow, and none were visible on the page:
 
-1. **The value has a rule under it.** The template prints 32 underscore glyphs, which
-   is what a filled-in form field looks like on paper. Reproduced with a `border-b` on
-   a `w-[53mm]` span — the glyph count, not literal underscores, because a rule whose
-   width depends on how many `_` were typed changes width when somebody edits the text.
-2. **`ps-8`, not `ps-10`.** The `<ol>` carries `pl-4`, so its text is 16px right of the
-   article's content edge; the fields need only ~17px more to reach x=75.86. That is
-   33px total, and `ps-8` is within 1.3px — a third of a millimetre.
+1. **The value has a rule under it.** The template prints 26 and 27 underscore glyphs,
+   which is what a filled-in form field looks like on paper. Reproduced with a `border-b`
+   on a `w-[53mm]` span (150.3pt, measured) — the glyph count, not literal underscores,
+   because a rule whose width depends on how many `_` were typed changes width when
+   somebody edits the text.
+2. **`ps-7`, not `ps-8` or `ps-10`.** x=75.86pt is 101.15px after the 4/3 conversion,
+   the article's `p-[19mm]` content edge is at 71.81px, and the difference is
+   **29.34px**. `ps-7` is 28px — 1.3px out, a third of a millimetre. `ps-8` overshoots
+   by 2.7px and `ps-10` by 10.7px.
 3. **Label and value are separate lines, 15pt apart** (`mt-2.5`), and the value sits
    ~3pt above its rule.
 
-**`company_id` is a dropdown of the managed list**, so `PT Satuan` and
-`PT. Satuan Harapan Indonesia` cannot become two roster entries that then print two
-different company lines.
+**Both fields print whether or not they hold a value, and that reversed an earlier
+decision made here.** They were conditional on a non-empty value, on the reasoning that
+an empty label over a blank cell reads as a form nobody completed. That reasoning is
+sound for a **readout** and wrong for an **editable field**, and these are the second
+kind: the admin types them on this screen, so an empty one is a value they chose to
+leave blank rather than a fact that does not exist. The template prints both fields
+whatever the data, so hiding them was a rule the paper never agreed to.
+
+The browser found it: every roster entry had `nik_eid` and `company_id` null, so the
+whole block simply did not appear. **A rule that hides UI fails silently and completely
+when the data turns out empty**, and that failure is indistinguishable from the feature
+never having been built. The two signature blocks' `NIK/EID` and `Company` lines carried
+the same conditional and were changed the same way.
+
+**`company_id` is a dropdown of the managed list** — in the roster form *and* on the
+print form — so `PT Satuan` and `PT. Satuan Harapan Indonesia` cannot become two values
+that then print two different company lines. The print form reads it with
+`getCompanyOptions()`, the same call the roster uses.
+
+**NIK/EID stays plain text everywhere.** There is no list of staff numbers in this
+project to pick from — they are issued by a human resources system this application has
+no model of — so a picker would offer nothing.
+
+**The parties block and the recipient's signature block share one value each**, and
+that is the mechanism behind "the signature block fills itself in". The two lines
+describe the same person, and the reference document has the same value in both. Two
+separate states plus an effect to copy one into the other would be a second place that
+can disagree, and it would fail later and silently — so there is one state instead and
+no way to be out of step. **The issuer keeps its own two**, because the issuer is a
+different person with no roster row.
+
+Three things make this work that are not obvious from the JSX:
+
+- **`Select` reads `defaultValue` once and holds it internally**, so every Company
+  control is keyed on its current value. Without the key it would ignore the shared
+  state and keep the value it mounted with — which is the second copy in everything but
+  name, and the exact bug this was supposed to remove.
+- **The seed is the company's id, not its name.** `holderCompany` is the name; handing
+  it to a `Select` matches no option and renders blank, which reads as "this person has
+  no employer" rather than "the dropdown was given the wrong kind of value". That is why
+  `HandoverHolder` carries `companyId` beside `companyName` — the same id/name split
+  `HandoverUserRow` has for `positionId` against `position`.
+- **`pickAvailableById` is separate from `pickAvailable`.** Departments are stored and
+  compared by name, companies by id, and one implementation matching `name` for both
+  would fail every company comparison silently — no option would ever match and the
+  dropdown would fall through to the first company on the list on every document. It
+  also takes `CompanyRef[]` rather than the `{value,label}` shape the dropdowns use,
+  because it is called from the same `.then()` that **sets** `companies`: a memo built
+  inside that closure would be the previous render's value, which on a first load is an
+  empty list.
 
 ### The document's own palette, read out of the .docx
 
@@ -3622,6 +3824,70 @@ Run the same assertions twice, once against `--local` and once against
 `--linked`. A policy that behaves differently in the two is a policy depending on
 something local, which is itself the bug.
 
+### `db query` takes one statement, and a fixture is not one statement
+
+`supabase db query -f file.sql` fails on a multi-statement file with
+
+```
+failed to execute query: error: cannot insert multiple commands into a prepared statement
+```
+
+So a fixture — two users, a role toggle, a category, an asset, a handover — cannot be
+one file. Either run one file per statement, which is tedious and easy to get out of
+sync, or go through the container:
+
+```bash
+docker exec -i supabase_db_asset-management-app \
+  psql -U postgres -d postgres -v ON_ERROR_STOP=1 < fixture.sql
+```
+
+`ON_ERROR_STOP=1` matters — without it `psql` keeps going after a failed statement and
+you get a fixture that is half-built with no error. The container name carries the
+project slug, so read it rather than assuming: `docker ps --format '{{.Names}}' | grep db`.
+
+**A fixture will trip a delete guard, and that is the guard working.** Deleting the
+seeded categories raises on `guard_category_delete` because the seed has 6
+sub-categories — the local database is not empty after your fixture even though you
+think it is. `db reset --local` is the way back to a known state, and it is fast
+because the local database is disposable.
+
+### Testing PostgREST over HTTP needs a signed JWT, and GoTrue will not make you one
+
+The `request.jwt.claims` trick above proves a **policy**. It cannot prove a **select
+string** — the thing most likely to be wrong in this codebase, since a dropped or
+misspelled column fails the whole statement with `42703` and every column list here is
+written out by hand.
+
+For that, sign your own token. PostgREST verifies the signature with the same secret
+`supabase status -o env` prints, so a hand-built HS256 JWT is a real request:
+
+```bash
+JS=$(npx supabase status -o env | grep '^JWT_SECRET=' | cut -d= -f2- | tr -d '"')
+AK=$(npx supabase status -o env | grep '^ANON_KEY='  | cut -d= -f2- | tr -d '"')
+```
+
+`tr -d '"'` is required, not cosmetic: `status -o env` quotes both values, and a secret
+carrying literal quotes fails with `PGRST301 None of the keys was able to decode the
+JWT` — which names neither the cause nor the fix.
+
+Build the token with `hmac` + `base64.urlsafe_b64encode` from the stdlib (claims:
+`sub`, `aud: "authenticated"`, `role`, `iat`, `exp`, `iss: "supabase"`), then:
+
+```bash
+curl -s "http://127.0.0.1:54321/rest/v1/<table>?select=…" \
+  -H "apikey: $AK" -H "Authorization: Bearer $JWT"
+```
+
+**Do not try to sign in as a hand-inserted `auth.users` row.** GoTrue answers
+`invalid_credentials` for every password grant, and its logs say nothing beyond that —
+so you burn a cycle on a problem that has no error message. The reason is
+`auth.identities`: password login resolves the user through an identity row, and
+inserting into `auth.users` alone creates none. Setting `encrypted_password` with
+`crypt(…, gen_salt('bf'))` is not enough either, and neither is
+`email_confirmed_at`. Adding the `auth.identities` row is necessary and, as it turns
+out, still not sufficient. The signed JWT above costs ten lines and has no such
+failure mode.
+
 ## Conventions
 
 - Component files are PascalCase with a default export. Hook files are camelCase.
@@ -3738,6 +4004,7 @@ These were deliberate. Do not "clean them up" without asking.
 | Accessories are added from the handover's **detail modal**, not from the Issue form | An admin who forgets the bag while issuing has no way to record it afterwards, because the form closed and the batch was written. The issue-time shape cannot express the common case at all. It is also the honest reading of `assignments_accessories`: the accessories are a fact about the *handover*, and a handover that exists can be corrected. `02500` dropped the RPC the issue-time model needed. See Where the accessory editor lives |
 | An accessory may be added to a handover that is already **returned**, and already printed | If the bag did not come back, saying so is the useful thing to be able to do. The alternative — a forgotten bag that can never be recorded — is a register that silently disagrees with the shelf. There is no "not yet printed" guard because a handover does not record whether it has been printed, and one column for it would be a second source of truth about an event this app cannot observe. The write stays admin-only |
 | Accessories print as **full rows** with the device's asset tag repeated | A document somebody signs should list every item that went out as a line of its own, because that is what the signature attests to. The first version printed indented sub-rows with blank cells, which read as a form nobody filled in. Repeating the tag is the opposite of the old reasoning but is the *correct* answer: a bag cannot have its own code, so the device's is the only true one available. Only the row number stays blank — that column is the template's device index. See On paper they are full rows |
+| An accessory can be **edited**, not only added and removed | Forgetting the serial while adding a bag is the *ordinary* mistake, and with no edit the only repair was delete-and-re-add: retype the name, risk a second different mistake, and silently lose `created_at` and the row id with no error and nothing to collide with. `updateHandoverAccessory` keys on the **accessory id** rather than the assignment, because the batched read groups by `assignment_id` and a device handed over twice has different bags on each handover. The draft is local and committed on save, so a half-typed serial is never a saved one. See An accessory could be added and removed, but never corrected |
 | `companies` is a list, and only the roster references it | A second classification of an **asset** that already carries `department` is the problem this repo refuses seven times over. A company's *employer of a person* is a different fact and `02700` points the roster at it. Wiring it to assets is still a decision, not a default. See Company is a list |
 | `companies.name` is unique case-insensitively, unlike `departments.name` | `02300` found `AST-0001` and `ast-0001` were two rows, and a company name is a human-typed identifier in the same way. "PT. Patimban Global Gateway Terminal" and its lower-case spelling are one company. See Company is a list |
 | The recipient is `handover_users`, and the issuer stays `profiles` | One column conflated *who received the asset* with *who can log in*, and those came apart the first time a hard hat went to a contractor. Splitting them means the recipient outlives the account, so deleting somebody no longer erases their handover history — and `assigned_by` still answers "which admin did this", which a roster row cannot |
@@ -3906,14 +4173,35 @@ not go looking for them unprompted.
   `pg_indexes` under the right name on the right expression — an index named `_key`
   with no `unique` reads as protection in the schema and is not. See Company is a
   list.
-- Don't print an empty `NIK/EID` or `Company` label on the handover document. Both
-  roster columns are nullable — a contractor has neither, and the roster has to be able
-  to record them — so the line is omitted rather than printed over a blank. An empty
-  label where a value belongs reads as a form nobody finished, on a document being
-  signed.
+- Don't seed a `Select` from a name. `Select` matches on `value`, which is the uuid, so
+  a name matches no option and the control renders blank — which reads as "no value"
+  rather than "the wrong kind of value". Carry the id beside the name, as
+  `HandoverHolder` does with `companyId`.
+- Don't leave a `Select` on a value it should follow. It reads `defaultValue` once and
+  holds it internally, so a control driven by shared state has to be keyed on that
+  state or it silently keeps what it mounted with.
+- Don't hide a handover field when its value is empty. `NIK/EID` and `Company` were
+  once drawn only when they held something, and with every roster row null the whole
+  block vanished — a presentation rule written for a *readout* and then applied to an
+  *editable field*. They print either way, ruled line included.
+- Don't answer "it's not showing" with a theory about the code before reading the rows
+  behind it. The roster here was three rows of `NULL`, which is why the block was
+  absent — and the code was doing exactly what it had been told to do.
 - Don't expect a staff `update` on a table to raise. `handover_users_update_admin` is a
   row filter, so the statement matches nothing and PostgREST reports success. This has
-  been written wrong in this repo's own test three times.
+  been written wrong in this repo's own test three times, and `assignments_accessories`
+  made it a fourth: its `PATCH` returns `200` with `[]`.
+- Don't offer delete-and-re-add as the only way to fix a typo. An accessory that could
+  be added and removed but never **corrected** made the ordinary mistake — forgetting the
+  serial while adding a bag — unrecoverable without retyping the name and risking a
+  second, different one. The round trip also discarded `created_at` and the row id with
+  no error and nothing to collide with. `updateHandoverAccessory` keys on the **accessory
+  id**, not the assignment, because the batched read groups by `assignment_id` and a
+  device handed over twice has different bags on each handover.
+- Don't hold an inline edit's draft in the database. Every keystroke going to the server
+  would make a half-typed serial a saved one, and `serial_number` is nullable precisely
+  so an empty box is a decision rather than a mistake. Cancel re-seeds from the stored
+  row so an abandoned draft cannot reappear.
 - Don't add a table to `public` without `revoke all on … from anon` next to its
   `grant`. Supabase's default privileges already give `anon` all seven
   privileges, and with no `anon` policy every query comes back empty, so the
@@ -4213,6 +4501,25 @@ not go looking for them unprompted.
   column heading. The column reads "Serial Number / Asset Tag", so the value is
   `J9BLPB4 / 2601101047`; a value that contradicts its heading reads as a transposition
   on a document somebody signs.
+- Don't print an accessory's asset code alone. It shares the device's code by design,
+  so the code repeats on every accessory row and cannot tell them apart — the
+  accessory's own `serial_number` goes in front of it, and `-` when there is none. The
+  earlier version printed the bare code and made an adapter's row identical to the
+  laptop's.
+- Don't copy the device's serial onto its accessories. Two different objects with two
+  different serials would print identically, which is the exact thing the accessory
+  column exists to prevent.
+- Don't make `assignments_accessories.serial_number` unique. Two identical chargers from
+  one box can share a serial, and `unique` would refuse a true statement about the
+  physical world — the opposite of the `asset_code` argument, where two spellings are
+  always a mistake.
+- Don't put a `<Select`, a `<Modal`, or any other `<div>`-rooted component inside a
+  `<p>`. It renders, it prints, and React reports it as a hydration error pointing at a
+  paragraph — because the browser closed the `<p>` itself and moved everything after it.
+- Don't restate a handler's parameters at a call site when it forwards them. `tsc`
+  accepts a callback with fewer parameters than its type declares, so `onAdd={(name) =>
+  handleAddAccessory(row.id, name)}` compiles and silently drops the serial — which
+  is how an accessory saved with `serial_number = null` after the admin had typed one.
 - Don't key an accessory's Qty, Unit or Notes by the device's id. Both rows would
   read and write `qty[asset.id]`, so typing a quantity for the bag overwrites the
   laptop's. Key them by `accessory.id`.

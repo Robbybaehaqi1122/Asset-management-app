@@ -7,6 +7,8 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { getDepartmentOptions } from "@/modules/departments/services/departmentService";
+import { getCompanyOptions } from "@/modules/companies/services/companyService";
+import type { CompanyRef } from "@/modules/companies/services/companyService";
 import type { DepartmentRef } from "@/lib/profiles";
 
 import { SignaturePad } from "./SignaturePad";
@@ -167,6 +169,14 @@ export default function HandoverPrintModal({
 
   /** Departments for the two signature blocks, both editable. */
   const [departments, setDepartments] = useState<DepartmentRef[]>([]);
+  /**
+   * The company list, for every Company dropdown on this form.
+   *
+   * Read here rather than fetched per field, and it is the same read the roster form
+   * uses: `companies` is `using (true)` for every signed-in user, so no admin gate is
+   * involved and this is one extra request alongside the departments rather than three.
+   */
+  const [companies, setCompanies] = useState<CompanyRef[]>([]);
   const [issuerDept, setIssuerDept] = useState("");
   const [employeeDept, setEmployeeDept] = useState("");
 
@@ -190,11 +200,37 @@ export default function HandoverPrintModal({
    */
   const [issuerNikEid, setIssuerNikEid] = useState("");
   const [issuerCompany, setIssuerCompany] = useState("");
-  const [employeeNikEid, setEmployeeNikEid] = useState("");
-  const [employeeCompany, setEmployeeCompany] = useState("");
+  /**
+   * The **recipient's** staff number and employer, as **one** piece of state each,
+   * shared by the parties block and the recipient's signature block.
+   *
+   * **Shared rather than two copies kept in step**, and that is the whole point. Both
+   * lines on the paper describe the same person, and the reference document has the
+   * same value in both (`SHI-OPS-086` / `PT Satuan Harapan Indonesia` twice). Two
+   * separate states plus an effect to copy one into the other would be a second place
+   * that can disagree — it would simply fail later and silently, which is the failure
+   * this repo keeps documenting. One value has no way to be out of step.
+   *
+   * The issuer keeps its own two, because the issuer is a different person and has no
+   * roster row to seed from.
+   */
+  const [recipientNikEid, setRecipientNikEid] = useState("");
+  const [recipientCompany, setRecipientCompany] = useState("");
 
   /** Signed today by default; the form's own date field, not the handover's. */
   const [signDate, setSignDate] = useState(() => todayInputValue());
+
+  /**
+   * The company dropdown's options, in the `{value,label}` shape `Select` wants.
+   *
+   * Derived here rather than passed down as `companies` so all three Company
+   * controls — the parties block and the two signature blocks — read the same list
+   * and there is one place that shape is built.
+   */
+  const companyChoices = useMemo(
+    () => companies.map((row) => ({ value: row.id, label: row.name })),
+    [companies],
+  );
 
   const [issuerSignature, setIssuerSignature] = useState<string | null>(null);
   const [employeeSignature, setEmployeeSignature] = useState<string | null>(
@@ -224,11 +260,13 @@ export default function HandoverPrintModal({
     void Promise.all([
       getHandoverDocument(handoverId),
       getDepartmentOptions(),
+      getCompanyOptions(),
     ]).then(
-      ([loaded, deptRows]) => {
+      ([loaded, deptRows, companyRows]) => {
         if (cancelled) return;
         setDoc(loaded);
         setDepartments(deptRows);
+        setCompanies(companyRows);
 
         // Default both departments from the data, and fall back to the first
         // available one. A `<select>` whose value matches no option renders blank,
@@ -251,8 +289,15 @@ export default function HandoverPrintModal({
         // than derived at render time so they are editable here: a roster entry can
         // be missing one, and a document printed with the wrong one is worse than one
         // an admin had a chance to correct.
-        setEmployeeNikEid(loaded.holderNikEid ?? "");
-        setEmployeeCompany(loaded.holderCompany ?? "");
+        setRecipientNikEid(loaded.holderNikEid ?? "");
+        // The **id**, not `holderCompany` — that is the name, and a `Select` seeded
+        // with a name matches no option and renders blank. Falls back to the first
+        // company for the same reason the departments do: a roster row whose company
+        // has been deleted must not print as "no employer" when there are employers
+        // on the list.
+        setRecipientCompany((current) =>
+          pickAvailableById(loaded.holderCompanyId, companyRows, current),
+        );
 
         // Every row defaults to 1 — the one quantity that is always true.
         //
@@ -545,10 +590,10 @@ export default function HandoverPrintModal({
                   | `Bapak/Ibu`        | 573.91 |  58.56 |
                   | `NIK/EID`          | 551.11 |  75.86 |
                   | value `SHI-OPS-086`| 536.11 |  78.38 |
-                  | rule (32 `_`)      | 532.63 |  77.66 |
+                  | **rule (27 `_`)**  | 532.63 | 77.66 |
                   | `Company`          | 507.91 |  75.86 |
                   | value             | 492.07 |  77.78 |
-                  | rule (32 `_`)      | 489.43 |  77.66 |
+                  | **rule (26 `_`)**  | 489.43 | 77.66 |
 
                   Three things follow from that table, none of which were obvious from
                   the rendered page:
@@ -556,41 +601,62 @@ export default function HandoverPrintModal({
                   1. **The label sits above the value, not beside it.** A first reading
                      of the page said label and value were on one line; the content
                      stream puts them 15pt apart, which is a separate line.
-                  2. **The value has a ruled line under it** — the template prints 32
-                     underscore glyphs, which is how a filled-in form field looks on
+                  2. **The value has a ruled line under it** — the template prints 26 and
+                     27 underscore glyphs, which is how a filled-in form field looks on
                      paper. A `border-b` reproduces that visually and is far more
                      robust than counting characters.
                   3. **The block is indented only ~17pt from the parties list**, not the
                      ~33pt a first attempt used. It reads as *less* inset than the
                      `2. Mr/Ms` line because the `<ol>` marker hangs outside it.
 
-                  **`ps-8`, not `ps-10`.** The `<ol>` carries `pl-4`, so its text sits
-                  16px right of the article's content edge; the fields then need another
-                  ~17px to land at the PDF's x. That is 33px total, and `ps-8` is the
-                  Tailwind step nearest it — 1.3px, about a third of a millimetre.
+                  **The indent is `ps-7`, and it follows from the unit conversion.**
+                  A PDF point is 1/72 inch and a CSS pixel is 1/96 inch, so
+                  **one point is 4/3 px, not one** — A4 is 595.28pt across and
+                  793.70px, and treating them as the same number puts the block
+                  11px out. Converting properly: x=75.86pt is 101.15px, the article's
+                  `p-[19mm]` content edge is at 71.81px, and the difference is
+                  **29.34px** — which is `ps-7` (28px) to within 1.3px, a third of a
+                  millimetre. `ps-8` overshoots by 2.7px and `ps-10` by 10.7px.
 
-                  **Both fields render only when there is a value.** `nik_eid` and
-                  `company_id` are nullable on the roster — a contractor has neither,
-                  and the roster has to be able to record them — so printing the label
-                  over an empty cell would put `NIK/EID` and `Company` on the paper
-                  with nothing under them. That reads as a form nobody completed, on a
-                  document being signed. */}
-              {(doc.holderNikEid || doc.holderCompany) && (
-                <div className="mt-3 space-y-3 ps-8 text-[9pt]">
-                  {doc.holderNikEid && (
-                    <PartyField
-                      label={t("nikLabel")}
-                      value={doc.holderNikEid}
-                    />
-                  )}
-                  {doc.holderCompany && (
-                    <PartyField
-                      label={t("companyLabelRecipient")}
-                      value={doc.holderCompany}
-                    />
-                  )}
-                </div>
-              )}
+                  The rule width, by the same conversion, checks out: 27 underscores
+                  spanning 77.66pt to 228pt is 150.3pt, which is 200px, which is
+                  `w-[53mm]`. That one was right by luck rather than by arithmetic,
+                  because the 4/3 factor cancels when the value is expressed in mm.
+
+                  **Both fields render whether or not they hold a value**, and that
+                  reversed an earlier decision made here. They were conditional on a
+                  non-empty value, on the reasoning that an empty label over a blank cell
+                  reads as a form nobody completed. That reasoning is sound for a
+                  **readout** and wrong for an **editable field**, and these are the
+                  second kind: the admin types them on this screen, so an empty one is a
+                  value they chose to leave blank rather than a fact that does not exist.
+                  The template prints both fields whatever the data, so hiding them was a
+                  rule the paper never agreed to.
+
+                  The browser found it: every roster entry had `nik_eid` and
+                  `company_id` null, so the whole block simply did not appear. That is
+                  the failure mode of optimising for a case the template does not have
+                  — **a rule that hides UI fails silently and completely when the data
+                  turns out empty**, which is indistinguishable from the feature never
+                  having been built. */}
+              <div className="mt-3 space-y-3 ps-7 text-[9pt]">
+                <PartyField
+                  id="print-party-nik"
+                  label={t("nikLabel")}
+                  value={recipientNikEid}
+                  onChange={setRecipientNikEid}
+                  placeholder={t("fieldNikPlaceholder")}
+                />
+                <PartyField
+                  id="print-party-company"
+                  label={t("companyLabelRecipient")}
+                  value={recipientCompany}
+                  onChange={setRecipientCompany}
+                  placeholder={t("fieldCompanyPlaceholder")}
+                  options={companyChoices}
+                  emptyLabel={t("noCompanySelected")}
+                />
+              </div>
 
               <Bilingual
                 className="mt-4"
@@ -662,6 +728,7 @@ export default function HandoverPrintModal({
                   onNikEidChange={setIssuerNikEid}
                   company={issuerCompany}
                   onCompanyChange={setIssuerCompany}
+                  companyOptions={companyChoices}
                   date={signDate}
                   onDateChange={setSignDate}
                   signature={issuerSignature}
@@ -675,10 +742,11 @@ export default function HandoverPrintModal({
                   department={employeeDept}
                   departmentOptions={departmentOptions}
                   onDepartmentChange={setEmployeeDept}
-                  nikEid={employeeNikEid}
-                  onNikEidChange={setEmployeeNikEid}
-                  company={employeeCompany}
-                  onCompanyChange={setEmployeeCompany}
+                  nikEid={recipientNikEid}
+                  onNikEidChange={setRecipientNikEid}
+                  company={recipientCompany}
+                  onCompanyChange={setRecipientCompany}
+                  companyOptions={companyChoices}
                   date={signDate}
                   onDateChange={setSignDate}
                   signature={employeeSignature}
@@ -796,29 +864,106 @@ function TermsTable() {
  * One labelled value with a ruled line beneath it, as the parties block prints
  * `NIK/EID` and `Company`.
  *
- * **The rule is the point.** The template draws 32 underscore glyphs under each value,
- * which is what a filled-in form field looks like on paper: the value is written above
- * a line rather than beside it. The first version of this block printed the value with
- * no rule at all, which on a signed document reads as an unexplained floating value
- * instead of a completed field.
+ * ## Always rendered, and that reversed an earlier decision
  *
- * `w-[53mm]` is the measured width of those 32 glyphs at the template's 9.48pt body
- * size (`32 x 0.5em`). A `border-b` rather than the literal underscores, for the same
- * reason the parties block's dotted rule is not reproduced character-for-character:
- * a rule that depends on how many `_` were typed is a rule that silently changes width
- * when someone edits the text.
+ * The first version drew these two fields **only when there was a value**, on the
+ * reasoning that an empty `NIK/EID` label over a blank cell reads as a form nobody
+ * completed on a document being signed. That reasoning was sound *for a readout* and
+ * wrong here, because these are **editable fields**, not readouts: the admin types
+ * them on this screen, so an empty one is a field they chose to leave blank, and the
+ * ruled line is the printed form doing its job.
  *
- * The gap between label and value is `mt-2.5`, chosen to land near the PDF's 15pt.
+ * The browser found it — the whole block simply did not appear, because every roster
+ * entry had `nik_eid` and `company_id` null. That is the failure mode of optimising
+ * for a case the template does not have: the template prints both fields whatever the
+ * data, so hiding them was a rule the paper never agreed to.
+ *
+ * ## The rule is the point
+ *
+ * The template draws 26 and 27 underscore glyphs under the two values, which is what a filled-in
+ * form field looks like on paper. `w-[53mm]` is the measured width of that run (150.3pt
+ * — see the note on PDF units in `AGENTS.md`), reproduced with a `border-b` rather than
+ * literal underscores, because a rule whose width depends on how many `_` were typed
+ * changes width when somebody edits the text.
+ *
+ * `print:hidden` on the input and the text as a **sibling**, not a child, because a form
+ * control does not print: an `<input>` renders as an empty box on paper, which would
+ * put the typed value nowhere.
  */
-function PartyField({ label, value }: { label: string; value: string }) {
+function PartyField({
+  id,
+  label,
+  value,
+  onChange,
+  placeholder,
+  /** Present for a dropdown; absent for a plain text field. */
+  options,
+  emptyLabel,
+}: {
+  id: string;
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  options?: { value: string; label: string }[];
+  emptyLabel?: string;
+}) {
+  /** A dropdown prints its **name**, not the id — a raw uuid is not a company. */
+  const printed = options
+    ? (options.find((row) => row.value === value)?.label ?? "")
+    : value;
+
   return (
     <div>
-      <p className="font-semibold">{label}</p>
-      <p className="mt-2.5">
-        <span className="inline-block w-[53mm] border-b border-gray-500 pb-px">
-          {value}
+      <label
+        htmlFor={id}
+        className="block text-[9pt] font-semibold print:hidden"
+      >
+        {label}
+      </label>
+      {/* The printed label. A separate node rather than `print:hidden` on the one
+          above, because the paper needs the label and the screen must not show it
+          twice. */}
+      <p className="hidden text-[9pt] font-semibold print:block">{label}</p>
+      {/* A `<div>`, not a `<p>`: `Select` renders a `<div>` at its root, and a `<div>`
+          inside a `<p>` is invalid nesting — the browser closes the `<p>` itself and
+          the rest of the document re-parents underneath it, which React reports as a
+          hydration error and which shifts the printed geometry. The text case below
+          only puts `<span>` and `<input>` in here, so a `<p>` would be legal there and
+          illegal here; one wrapper for both shapes is the fix. */}
+      <div className="mt-2.5">
+        {options ? (
+          <span className="print:hidden">
+            {/* Keyed on the value because `Select` reads `defaultValue` once and
+                holds it internally. Without this it would ignore the other Company
+                control on the form that shares this value — which is the behaviour
+                being asked for. */}
+            <Select
+              key={`party-${id}-${value}`}
+              id={id}
+              className="w-[53mm] text-[9pt]"
+              options={[{ value: "", label: emptyLabel ?? "" }, ...options]}
+              defaultValue={value}
+              onChange={onChange}
+            />
+          </span>
+        ) : (
+          <span className="print:hidden">
+            <input
+              id={id}
+              name={id}
+              type="text"
+              value={value}
+              onChange={(e) => onChange(e.target.value)}
+              placeholder={placeholder}
+              className="w-[53mm] border-b border-gray-500 bg-transparent pb-px text-[9pt] outline-hidden focus:border-brand-400"
+            />
+          </span>
+        )}
+        <span className="hidden w-[53mm] border-b border-gray-500 pb-px print:inline-block">
+          {printed}
         </span>
-      </p>
+      </div>
     </div>
   );
 }
@@ -1068,12 +1213,32 @@ function DeviceTable({
                     <span className="block">{accessory.name}</span>
                   </Td>
                   <Td>
-                    {/* The device's own code, repeated, in the same "serial / code"
-                        shape the device row above uses. An accessory has no serial of
-                        its own, so the code alone is printed rather than a dangling
-                        separator — ` / 2601101022` on its own reads as a missing value
-                        rather than an absent one. */}
-                    <span className="block">{asset.assetCode}</span>
+                    {/* The tag cell, and the shape is the reference document's:
+                        the accessory's **own** serial in front of the device's asset
+                        code, and a plain dash when it has no serial.
+
+                        ```
+                        1 Dell Latitude 5450              J9BLPB4 / 2601101047
+                        2 AC Adapter Dell Latitude 5450   0VFHDX / 2601101047
+                        3 Dell Notebook Bag               -
+                        ```
+
+                        An earlier version printed the device's code alone, because an
+                        accessory cannot have an asset code of its own — but that made
+                        row 2 print exactly like row 1, and a reader could not tell an
+                        adapter from the laptop it came with. The accessory inherits the
+                        kit's code by design, so the serial is the only thing here that
+                        distinguishes the two lines.
+
+                        **The dash, not the bare code.** When there is no accessory
+                        serial the reference prints `-`, and repeating the device's code
+                        with nothing in front of it would read as a second device rather
+                        than as the same kit minus a serial number. */}
+                    <span className="block">
+                      {accessory.serialNumber
+                        ? `${accessory.serialNumber} / ${asset.assetCode}`
+                        : "-"}
+                    </span>
                   </Td>
                   <Td>
                     {/* Print-form state, keyed by the **accessory's** id rather than
@@ -1200,6 +1365,7 @@ function SignatureBlock({
   onNikEidChange,
   company,
   onCompanyChange,
+  companyOptions,
   date,
   onDateChange,
   signature,
@@ -1215,9 +1381,11 @@ function SignatureBlock({
   /** The signer's staff number, or "" when there is none to print. */
   nikEid: string;
   onNikEidChange: (value: string) => void;
-  /** The signer's employer, or "" when there is none to print. */
+  /** The signer's employer, as a `companies` id, or "" when none is chosen. */
   company: string;
   onCompanyChange: (value: string) => void;
+  /** The company list, as `{value,label}` for the dropdown. */
+  companyOptions: { value: string; label: string }[];
   date: string;
   onDateChange: (value: string) => void;
   signature: string | null;
@@ -1285,13 +1453,26 @@ function SignatureBlock({
           />
         </LabelledRow>
 
+        {/* Company is a **dropdown of the managed list**, not a text box: it is a
+            company somebody has to be able to change later, and free text here is
+            exactly what the `02200` argument was about for positions — `PT Satuan` and
+            `PT. Satuan Harapan Indonesia` would be two values that both print.
+
+            **Keyed on the current value**, because `Select` reads `defaultValue` once
+            and holds it internally. Without the key this control would ignore the
+            parties block above it, which is the whole behaviour being asked for: the
+            two are one shared value, and a `Select` that refuses to be told is a
+            second copy in everything but name. */}
         <LabelledRow label={t("fieldCompany")}>
-          <Input
+          <Select
+            key={`company-${roleEn}-${company}`}
             id={`print-company-${roleEn}`}
-            name="company"
-            value={company}
-            onChange={(e) => onCompanyChange(e.target.value)}
-            placeholder={t("fieldCompanyPlaceholder")}
+            options={[
+              { value: "", label: t("noCompanySelected") },
+              ...companyOptions,
+            ]}
+            defaultValue={company}
+            onChange={onCompanyChange}
           />
         </LabelledRow>
 
@@ -1311,29 +1492,27 @@ function SignatureBlock({
           <span style={{ color: DOC.field }}>{t("fieldName")} : </span>
           {name}
         </p>
-        {/* The NIK/EID and Company lines print **only when there is a value.**
-
-            The issuer has no roster row, so there is nothing to seed either of them
-            from, and the whole point of the field is that an admin may leave it
-            empty for a signer without a staff number. Printing `NIK/EID : ` with
-            nothing after it puts an unfilled label on a document being signed, which
-            reads as an incomplete form rather than an absent fact. */}
-        {nikEid.trim() !== "" && (
-          <p>
-            <span style={{ color: DOC.field }}>{t("fieldNik")} : </span>
-            {nikEid}
-          </p>
-        )}
+        {/* NIK/EID and Company print **whether or not they hold a value**, for the
+            same reason the parties block's do: these are editable fields, so an empty
+            one is a value the admin chose to leave blank rather than a fact that does
+            not exist. They were previously conditional, which made the issuer's block
+            lose both lines whenever nobody typed a staff number — on a document the
+            template prints in full either way. */}
+        <p>
+          <span style={{ color: DOC.field }}>{t("fieldNik")} : </span>
+          {nikEid}
+        </p>
         <p>
           <span style={{ color: DOC.field }}>{t("fieldDeptPosition")}: </span>
           {department}
         </p>
-        {company.trim() !== "" && (
-          <p>
-            <span style={{ color: DOC.field }}>{t("fieldCompany")} : </span>
-            {company}
-          </p>
-        )}
+        {/* The printed company is the **name**, resolved from the id — the same
+            asymmetry `pickAvailable` exists for on the department line, and for the
+            same reason: a raw uuid on a signed document is not a company. */}
+        <p>
+          <span style={{ color: DOC.field }}>{t("fieldCompany")} : </span>
+          {companyOptions.find((row) => row.value === company)?.label ?? ""}
+        </p>
         <p>
           <span style={{ color: DOC.field }}>{t("fieldDate")} : </span>
           {formatLongDate(date)}
@@ -1424,4 +1603,30 @@ function pickAvailable(
   if (current !== "" && rows.some((r) => r.name === current)) return current;
   if (recorded && rows.some((r) => r.name === recorded)) return recorded;
   return rows[0]?.name ?? "";
+}
+
+/**
+ * The same fallback, matched on **id** rather than name.
+ *
+ * A separate function rather than a parameter, because the two carry different values
+ * and passing the wrong one is exactly the bug this exists to prevent: departments are
+ * stored and compared by name, companies by id, and a shared implementation that
+ * matched `name` for both would silently fail every company comparison — no option
+ * would ever match and the dropdown would fall through to the first company on the
+ * list on every document.
+ *
+ * It takes `CompanyRef[]` rather than the `{value,label}` shape the dropdowns use, and
+ * that is deliberate: it is called from the same `.then()` that **sets** `companies`,
+ * so it reads `companyRows` — the rows that arrived — rather than the memo built from
+ * state that has not been committed yet. A memo derived inside that closure would be
+ * the previous render's value, which on a first load is an empty list.
+ */
+function pickAvailableById(
+  recorded: string | null | undefined,
+  rows: CompanyRef[],
+  current: string,
+): string {
+  if (current !== "" && rows.some((r) => r.id === current)) return current;
+  if (recorded && rows.some((r) => r.id === recorded)) return recorded;
+  return rows[0]?.id ?? "";
 }
