@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import type { Asset } from "@/modules/assets/services/assetService";
 import {
@@ -66,19 +66,44 @@ export default function AssetLabel({ asset }: { asset: Asset }) {
   const qrDataUrl = qr?.code === content.assetCode ? qr.url : null;
   const qrError = qrFailed?.code === content.assetCode;
 
-  const box = (line: LabelLine, extra?: string) =>
-    [
-      "absolute",
-      `left-[${line.x}mm]`,
-      `top-[${line.y}mm]`,
-      `w-[${line.width}mm]`,
-      `text-[${line.fontPt}pt]`,
+  /**
+   * One text object at the coordinates Brother's editor wrote for it.
+   *
+   * ## The geometry is inline `style`, not Tailwind arbitrary values
+   *
+   * The first version built the class names from the data — `` `left-[${line.x}mm]` `` —
+   * which cannot work. **Tailwind's scanner only reads class names that appear literally
+   * in the source**, and the literal it found was the string `left-[${line.x}mm]`, a class
+   * that matches nothing. The real classes were never emitted: measured in `dist`, there
+   * are **zero** occurrences of `left-[1.98mm]`, `top-[1.41mm]`, `w-[18.84mm]` or
+   * `text-[8.5pt]`.
+   *
+   * The failure was quiet and looked like a layout mistake rather than a build one:
+   * `absolute` is a literal so it applied, and without any offset **all three spans sat at
+   * the same static position** — the asset code printed on top of the company line, with
+   * the description underneath neither. A value that arrives from data cannot be a class
+   * name; only the weight and the wrapping, which are static, stay in `className`.
+   */
+  const box = (
+    line: LabelLine,
+    extraClass?: string,
+    extraStyle?: CSSProperties,
+  ) => ({
+    className: [
+      "absolute leading-[1.15]",
       line.bold ? "font-bold" : "font-normal",
-      "leading-[1.15]",
-      extra ?? "",
+      extraClass ?? "",
     ]
       .filter(Boolean)
-      .join(" ");
+      .join(" "),
+    style: {
+      left: `${line.x}mm`,
+      top: `${line.y}mm`,
+      width: `${line.width}mm`,
+      fontSize: `${line.fontPt}pt`,
+      ...extraStyle,
+    },
+  });
 
   return (
     <div
@@ -89,7 +114,7 @@ export default function AssetLabel({ asset }: { asset: Asset }) {
         fontFamily: LABEL_FONT_FAMILY,
       }}
     >
-      <span className={box(LINE_ASSET_CODE)}>{content.assetCode}</span>
+      <span {...box(LINE_ASSET_CODE)}>{content.assetCode}</span>
 
       {/* The rule under the code. A border rather than a filled box because the template
           draws it as a line object, and a solid background that thin renders unevenly at
@@ -104,15 +129,14 @@ export default function AssetLabel({ asset }: { asset: Asset }) {
         }}
       />
 
-      <span className={box(LINE_COMPANY_UNIT)}>{content.companyAndUnit}</span>
+      <span {...box(LINE_COMPANY_UNIT)}>{content.companyAndUnit}</span>
 
       {/* The description wraps rather than truncating. The template gives this object a
           4.97 mm box with `autoLF="true"`, which at 6 pt is two lines, so the name is
-          allowed to use both — see `buildLabelContent`. */}
-      <span
-        className={box(LINE_DESCRIPTION, "break-words")}
-        style={{ height: "4.97mm" }}
-      >
+          allowed to use both — see `buildLabelContent`. The height is passed **into**
+          `box` rather than written beside it: a second `style` prop on the same element
+          replaces the first one outright, which would silently drop the position. */}
+      <span {...box(LINE_DESCRIPTION, "break-words", { height: "4.97mm" })}>
         {content.description}
       </span>
 

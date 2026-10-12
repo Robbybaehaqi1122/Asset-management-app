@@ -27,9 +27,22 @@ dist-ssr
 *.sln
 *.sw?
 
-# Brother b-PAC SDK vendor file
-# Proprietary, redistributable only under Brother's licence, and it arrives with the
-# b-PAC SDK installer rather than from npm. Copy it in from the installer's vendor
-# folder; every checkout and every CI build needs it dropped in before the silent
-# print button can work. See src/modules/assets/services/bpacService.ts.
-/public/vendor/bpac.js
+# Brother b-PAC SDK vendor file — COMMITTED ON PURPOSE, do not re-add this rule.
+#
+# `public/vendor/bpac.js` is Brother's, and it arrives with the b-PAC SDK installer
+# rather than from npm. It used to be ignored, on the grounds that Brother's licence
+# does not permit redistribution — and that was right, and it was also the reason
+# **silent printing worked on localhost and not on the deployed site.**
+#
+# A gitignored file is not in the deployment, and `vercel.json`'s SPA rewrite answers
+# any path missing from the filesystem with `index.html` — *successfully*. Measured:
+#
+#   GET /vendor/bpac.js  ->  200, text/html, 495 bytes, body "<!DOCTYPE html>…"
+#
+# The loader fetched that 200, wrapped it in a blob, and `import()` handed the module
+# parser an HTML document, which surfaced to the operator as
+# `SyntaxError: Unexpected token '<'` — a message naming neither the cause nor the fix.
+#
+# The file is therefore tracked. Refresh it from
+# `C:\Program Files (x86)\Brother bPAC3 SDK\Samples\JavaScript\bpac.js`.
+# See src/modules/assets/services/bpacService.ts.

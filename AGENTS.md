@@ -622,6 +622,20 @@ applies rewrites**. `/assets/index-*.js` and `/images/**` exist on disk, so
 they are served directly and never reach the rewrite. Verified: every
 `src`/`href` in the built `dist/index.html` resolves to a real file.
 
+**"Exists on disk" means "is in the deployment", and that is the whole caveat.** A
+file the repository does not track is not on Vercel's disk, so the rewrite catches it —
+**and it answers with a `200`, not a `404`**, because that is what a rewrite does. This
+was discovered by shipping `public/vendor/bpac.js` gitignored:
+
+```
+GET /vendor/bpac.js  ->  200, text/html; charset=utf-8, 495 bytes, "<!DOCTYPE html>…"
+```
+
+So `response.ok` was true, the HTML went into a blob, and `import()` handed the module
+parser a document: `SyntaxError: Unexpected token '<'`. **A missing static file is
+indistinguishable from a present one unless you look at the content type** — see The
+vendor file is committed, and the 200 that hid it below.
+
 Adding a route does not need a matching entry here. The rewrite is
 deliberately `/(.*)`, so a new page works on a hard load as soon as it is
 registered in `App.tsx`.
@@ -1398,6 +1412,29 @@ container that is exactly the paper. That reproduces P-touch Editor's model dire
 flex layout has to *derive* an arrangement and then hope it agrees, which is what the
 first versions did.
 
+**The coordinates are inline `style`, not Tailwind arbitrary values — and that is not a
+style preference, it is the difference between a label and a pile of overlapping text.**
+The first version built the class names from the data:
+
+```tsx
+`left-[${line.x}mm]`   `top-[${line.y}mm]`   `w-[${line.width}mm]`   `text-[${line.fontPt}pt]`
+```
+
+**Tailwind's scanner only reads class names that appear literally in the source.** The
+literal it found was the string `left-[${line.x}mm]`, which matches nothing; the classes it
+would have needed were never emitted. Measured in the built CSS: **zero** occurrences of
+`left-[1.98mm]`, `top-[1.41mm]`, `w-[18.84mm]` or `text-[8.5pt]`.
+
+The failure is quiet and reads as a layout mistake rather than a build one. `absolute` *is*
+a literal, so it applied — and with no offset at all, **all three text spans sat at the
+same static position**: the asset code printed on top of the company line, with the
+description under neither. Only `font-bold`/`font-normal` and `break-words`, which are
+static, stay in `className`.
+
+**A value that arrives from data cannot be a class name.** This bit twice in the same
+screen: once because a `scale` was applied to the container instead of the content, and
+once because these offsets were never applied at all.
+
 **The description does not truncate.** The template gives that text object a 4.97 mm box
 with `autoLF="true"` — it is *designed* to wrap to a second line, and 6 pt × 2 fits. The
 old `DESCRIPTION_MAX_CHARS = 22` existed only because the guessed column was believed to
@@ -1566,11 +1603,56 @@ Verified against the running dev server, both requests on the same port:
 | `GET /vendor/bpac.js` | **200, 28847 bytes**, SHA-256 **identical** to the SDK file |
 | `GET /vendor/bpac.js?import` | **500** — the old route, and why it never worked |
 
-#### The vendor file is not committed, and `tsc` still has to pass without it
+#### The vendor file is committed, and the 200 that hid it missing
 
 `public/vendor/bpac.js` is Brother's, copied from the installed SDK at
 `C:\Program Files (x86)\Brother bPAC3 SDK\Samples\JavaScript\bpac.js`. Not on npm, and
-their licence does not permit redistribution — `.gitignore` keeps it out.
+their licence does not permit redistribution — so it **was** gitignored, and that is the
+wrong call, and the reason is worth keeping.
+
+**A gitignored file is not in the deployment.** Vercel builds from the repository, so a
+file the repository does not track does not exist on Vercel's disk — and `vercel.json`'s
+catch-all rewrite answers any path it cannot find with `index.html`. Measured against the
+deployed site:
+
+```
+GET /vendor/bpac.js  ->  200, text/html; charset=utf-8, 495 bytes, "<!DOCTYPE html>…"
+GET /label/asset-36x15.lbx  ->  200, application/octet-stream, 2706 bytes, PK\x03\x04
+```
+
+The `.lbx` was tracked and worked. `bpac.js` was not, and **the rewrite's answer is a
+`200`**, so `response.ok` was true. The HTML went into a blob and `import()` handed the
+module parser a document:
+
+```
+SyntaxError: Unexpected token '<'
+```
+
+**Silent printing therefore worked on localhost and failed in production, with no build
+error, no network error, and a message naming neither the cause nor the fix.** It was
+found by `curl`ing the deployed path — which is the step worth repeating whenever a static
+file "works locally and not on Vercel".
+
+Three guards in `loadViaBlob()` now, in order, because a `200` is not evidence:
+
+1. **Content type before status.** `text/html` on a `.js` path *is* the SPA rewrite; the
+   message says so by name.
+2. **`response.ok`**, for the ordinary 404.
+3. **A markup sniff on the body**, `^\s*<!doctype` / `^\s*<html`, for a server that
+   serves it as octet-stream.
+
+plus a `catch` around the `import()` itself, because a parse failure there means the
+source was not JavaScript and the `SyntaxError` names a punctuation character rather than
+the file. Verified against the live site — the guards reject `bpac.js` and pass the `.lbx`:
+
+```
+bpac.js : BLOCKED by content-type guard -> "answered text/html — that is the app's
+          index.html, not the SDK. bpac.js is gitignored, so it is not in this deployment."
+lbx     : PASSES -> would import() 2582 bytes of application/octet-stream
+```
+
+`public/vendor/.gitkeep` was removed with the rule — it only ever held an empty directory
+in git, and the directory now carries a real file.
 
 - **`src/vendor/bpac.d.ts` is hand-written and deliberately narrow** — only the calls the
   service makes, so a typo is a compile error rather than a runtime
@@ -1773,6 +1855,20 @@ are P-touch Transfer Manager with a hand-made data file, or a small local agent 
 **Do not split the one menu item back into two.** A separate *Preview label* and a separate
 *Print label* ask the same question twice and make it possible to print a label nobody
 looked at. The picture costs almost nothing to render and belongs in front of the button.
+
+**Do not gitignore a file the deployment needs.** `public/vendor/bpac.js` was ignored on
+licence grounds and that is why silent printing worked on localhost and failed in
+production: the file was not on Vercel's disk, the SPA rewrite answered `200 text/html`,
+and `import()` reported `Unexpected token '<'`. The file is tracked now.
+
+**Do not trust a `200` from a static file.** The SPA rewrite answers a missing path with
+`200 text/html`, so `response.ok` proves nothing about a path Vercel could not find. Check
+the content type before the status. See the three guards in `loadViaBlob()`.
+
+**Do not build a class name from a runtime value.** `` `left-[${line.x}mm]` `` emits
+nothing — Tailwind reads only literal class names — and the element then applies
+`absolute` with no offset, so it stacks on whatever is beside it. Inline `style` for
+anything that comes from data; `className` for what is written in the source.
 
 ### What is verified, and what is not
 

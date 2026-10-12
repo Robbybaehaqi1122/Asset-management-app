@@ -242,6 +242,27 @@ function loadModule(): Promise<BpacModule> {
  */
 async function loadViaBlob(): Promise<BpacModule> {
   const response = await fetch(VENDOR_MODULE_URL);
+
+  // A content-type check **before** the status check, because the failure this catches is
+  // a 200. `public/vendor/bpac.js` is proprietary and gitignored, so a deployment built
+  // from the repository does not contain it — and `vercel.json`'s SPA rewrite answers any
+  // path it cannot find on disk with `index.html`, *successfully*. Measured against the
+  // deployed site:
+  //
+  //   GET /vendor/bpac.js  ->  200, text/html, 495 bytes, body "<!DOCTYPE html>…"
+  //
+  // So `response.ok` is true, the HTML is wrapped in a blob, and `import()` hands the
+  // module parser a document — which is where `Unexpected token '<'` came from. That
+  // message names neither the cause nor the fix, and it reaches the operator.
+  const type = response.headers.get("content-type") ?? "";
+  if (type.includes("text/html")) {
+    throw new BpacUnavailableError(
+      `${VENDOR_MODULE_URL} answered ${type} — that is the app's index.html, not the SDK. ` +
+        `bpac.js is gitignored, so it is not in this deployment. Commit it into ` +
+        `public/vendor/, or point VENDOR_MODULE_URL at a copy the build can reach.`,
+    );
+  }
+
   if (!response.ok) {
     throw new BpacUnavailableError(
       `${VENDOR_MODULE_URL} returned HTTP ${response.status}. Copy bpac.js from the b-PAC SDK into public/vendor/.`,
@@ -249,6 +270,17 @@ async function loadViaBlob(): Promise<BpacModule> {
   }
 
   const source = await response.text();
+
+  // Belt and braces: a server can serve JavaScript as octet-stream, but nothing should
+  // ever serve this path as markup. Catching it here names the file rather than letting
+  // the module parser report a punctuation error.
+  if (/^\s*<!doctype/i.test(source) || /^\s*<html/i.test(source)) {
+    throw new BpacUnavailableError(
+      `${VENDOR_MODULE_URL} served markup instead of the SDK. It is not in this deployment — ` +
+        `commit it into public/vendor/.`,
+    );
+  }
+
   const blobUrl = URL.createObjectURL(
     new Blob([source], { type: "text/javascript" }),
   );
@@ -259,6 +291,14 @@ async function loadViaBlob(): Promise<BpacModule> {
       throw new BpacUnavailableError("bpac.js loaded but exposes no IDocument");
     }
     return mod;
+  } catch (err) {
+    // A parse failure here means the source was not JavaScript after all, and the
+    // SyntaxError names a punctuation character rather than the file. Say which file.
+    throw err instanceof BpacUnavailableError
+      ? err
+      : new BpacUnavailableError(
+          `bpac.js at ${VENDOR_MODULE_URL} could not be parsed: ${describe(err)}`,
+        );
   } finally {
     // Safe once the import has settled: the module source is already fetched and
     // evaluated, and keeping the blob alive would pin 28 KB for the session.
