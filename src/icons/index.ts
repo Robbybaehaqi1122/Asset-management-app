@@ -8,6 +8,8 @@ import { ReactComponent as GroupIcon } from "./group.svg?react";
 import { ReactComponent as BoxIconLine } from "./box-line.svg?react";
 import { ReactComponent as TrashBinIcon } from "./trash.svg?react";
 import { ReactComponent as PencilIcon } from "./pencil.svg?react";
+import { ReactComponent as QrCodeIcon } from "./qr-code.svg?react";
+import { ReactComponent as PrinterIcon } from "./printer.svg?react";
 import { ReactComponent as ChevronDownIcon } from "./chevron-down.svg?react";
 import { ReactComponent as EnvelopeIcon } from "./envelope.svg?react";
 import { ReactComponent as CalenderIcon } from "./calender-line.svg?react";
@@ -41,6 +43,8 @@ export {
   BoxIconLine,
   TrashBinIcon,
   PencilIcon,
+  QrCodeIcon,
+  PrinterIcon,
   ChevronDownIcon,
   EnvelopeIcon,
   CalenderIcon,

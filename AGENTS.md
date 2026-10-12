@@ -1360,6 +1360,107 @@ filter state to survive a reload.
   cells had no padding at all so the text sat flush against the card border — so
   treat the first click-through as the real test.
 
+## The asset label is 36 × 15 mm, and the page size is a named page
+
+`src/modules/assets/document/labelSpec.ts` holds what the label says;
+`AssetLabelModal.tsx` renders it; the print rules are at the bottom of
+`index.css`. It is the same pipeline as the handover document — a portal onto
+`<body>`, a body class the print rules key on, and `window.print()` with no PDF
+library — at a different paper size.
+
+### The named page is the whole trick, and a second `@page` rule would break the app
+
+`@page` is a **cascade, not a scope.** `@media print` already contains
+`@page { size: A4; margin: 0 }` for the handover document. Adding
+`@page { size: 36mm 15mm }` below it would not create a second page size — the
+later rule wins for the *entire document*, and every A4 handover page would come
+out 36 mm wide.
+
+So the small box is a **named** page:
+
+```css
+@page asset-label { size: 36mm 15mm; margin: 0; }
+.asset-label { page: asset-label; }
+```
+
+`page:` assigns the box to that element alone, so the A4 default still governs
+everything else — and since every other element is `display: none` under the
+body class, there is nothing else for it to govern. Chrome supports named pages
+from 85. **This is not verified on this machine**, which is stated below.
+
+### The dimensions are millimetres, and the printer is inches
+
+The Brother driver is configured in inches (`1.4 in` media, `0.63 in` length)
+because that is the driver's unit. The label is authored in mm. Nothing converts
+between them, and that is deliberate — the conversion is the thing that would be
+wrong. `LABEL_WIDTH_MM` / `LABEL_HEIGHT_MM` are repeated in three places (the
+`@page` rule, the label's own box, and the preview's magnified wrapper) rather
+than shared, because one of the three is a CSS declaration and the others are
+Tailwind arbitrary values. A single source of truth that silently diverges in one
+of them prints misaligned labels, which is worse than the duplication.
+
+**The text column is 20.9 mm and `DESCRIPTION_MAX_CHARS` is 22 because of it.** At
+5 pt a proportional face averages about half the point size per glyph, so the third
+line fits roughly 22 characters. Changing the font size means re-deciding that
+number, which is why both live in `labelSpec.ts` with the arithmetic next to them.
+
+### The QR is an SVG data URL, and the raster alternative was measurably wrong
+
+**The payload is `asset_code` alone**, and three facts decided it. It is the one
+field the register guarantees unique — `02300` made it unique over
+`upper(btrim(asset_code))` precisely so a code identifies exactly one asset, and a
+symbol carrying a value two rows may share is a symbol that can be wrong. **This
+app has no asset detail page**, so a URL payload has nowhere to point. And a name
+and unit in the payload would make the symbol dense enough to stop scanning at
+11.5 mm, while duplicating text printed *beside* it — which means the two could
+disagree, the exact failure the label format exists to prevent.
+
+**The first version asked for 384 px and was wrong in a measurable way.** A QR is
+a grid of equal squares and a scanner samples square centres, so anything that
+resamples the grid softens the edges that carry the data. `asset_code` is ten
+characters → version 1 → a 21 × 21 grid, plus the quiet zone, 23 × 23. And:
+
+```
+384 / 23 = 16.696 px per module    <- fractional
+368 / 23 = 16.000                  <- exact
+```
+
+Picking an exact width does not fix it either, because the multiple depends on the
+**QR version**, which depends on the payload length. `AST-0001-A` is still version
+1; one character more crosses to version 2, the grid becomes 25 × 25, and the width
+that was exact is now fractional. A hard-coded width is exact for exactly one
+range of payloads.
+
+The SVG renderer has no such problem. It emits `viewBox="0 0 23 23"` — whole
+modules — so every edge lands on an integer boundary, and it sets
+`shape-rendering="crispEdges"`, which disables anti-aliasing on those edges
+outright. Resolution-independent, so there is no width to get wrong. Verified in
+Node against three payload shapes: integer grids, exact base64 round-trip, ~1.25 kB
+each.
+
+**Base64, not a percent-encoded URL.** The SVG contains `#ffffff`, and a `#` in a
+`data:` URL starts the fragment — the browser shows a blank image with no error.
+
+**Still an `<img>`, not inlined markup.** The handover's signature pad is the reason
+the print path is known-good through an image element: a `<canvas>` prints as a
+bitmap rasterised at the canvas's own resolution. And this project's "never inline
+SVG" rule is about *icons* — `google.svg` exists because of it. A QR is machine
+output whose geometry is the feature, not a hand-drawn glyph.
+
+### What is verified, and what is not
+
+Verified: `tsc`, `eslint` (0 errors, 5 pre-existing warnings), Prettier, a
+production build, and the QR's grid geometry and round-trip measured in Node.
+
+**Not verified: that the page actually comes out 36 × 15 mm.** Headless Chrome on
+this machine forwards to the running browser session and produces no PDF, so the
+named-page mechanism is reasoned about and standards-supported rather than measured
+here — which is a weaker claim than the A4 figure recorded above, and should be
+treated as such. **Test-print one label before printing fifty.** If it is wrong the
+two things to check are the named-page support and the driver's own paper setting,
+in that order, because the driver overrides `@page` whenever it is configured for a
+specific stock.
+
 ## Asset settings manages the reference data
 
 `src/modules/asset-settings/` is issue #51: the admin screen behind the asset

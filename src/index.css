@@ -823,3 +823,82 @@ span.flatpickr-weekday,
     margin: 0;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Asset label — Brother PT-P900W, 36 × 15 mm.
+
+   A second `@media print` block rather than more rules in the one above, because
+   the two documents want opposite page sizes and a single `@page` rule cannot
+   express both.
+
+   **The named page is what makes that work.** `@page` is a cascade, not a scope:
+   a second `@page { size: 36mm 15mm }` would simply win for the *whole*
+   document and every A4 handover page would come out 36 mm wide. `page:
+   asset-label` assigns the small box to the label element alone, so the A4
+   default above still governs everything else — and because every other element
+   is `display: none` here, there is nothing else for it to govern anyway. Chrome
+   has supported named pages since 85; there is no fallback that would silently
+   produce a correctly-sized label on a browser without it, which is why this is
+   worth stating rather than assuming.
+   --------------------------------------------------------------------------- */
+@media print {
+  /* Everything else in the document is gone, not merely invisible. `display:
+     none` rather than `visibility: hidden` — see the handover block above for
+     why the latter leaves the boxes in flow and pushes the sheet down the page. */
+  body.asset-label-printing > *:not(.asset-label-print-root) {
+    display: none !important;
+  }
+
+  /* The preview chrome: a centred scroll box on screen, and nothing at all on
+     paper. Every dimension has to be released, because on screen the panel is
+     the fixed thing and the label floats inside it. */
+  body.asset-label-printing .asset-label-print-root,
+  body.asset-label-printing .asset-label-print-panel,
+  body.asset-label-printing .asset-label-print-sheet {
+    position: static !important;
+    inset: auto !important;
+    display: block !important;
+    width: auto !important;
+    height: auto !important;
+    max-width: none !important;
+    max-height: none !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+    background: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+  }
+
+  /* The screen preview is magnified so a 36 mm label is legible on a monitor.
+     `transform` does not change a box's layout size, so the magnified wrapper
+     would still occupy 36 × 15 mm here and the label would print at a tenth of
+     the page. Dropping it puts the label at 1:1, which is the only size that is
+     correct. */
+  body.asset-label-printing .asset-label-scale {
+    transform: none !important;
+    width: auto !important;
+    height: auto !important;
+  }
+
+  /* The label itself. `page: asset-label` is the whole point of this block; the
+     rest is taking the on-screen affordances off — the shadow would print as a
+     grey band, and the label is exactly the page, so any margin here is a
+     margin the printer cannot honour on a continuous roll. */
+  body.asset-label-printing .asset-label {
+    page: asset-label;
+    margin: 0 !important;
+    box-shadow: none !important;
+    border: 0 !important;
+    outline: 0 !important;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  @page asset-label {
+    size: 36mm 15mm;
+    margin: 0;
+  }
+}

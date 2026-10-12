@@ -26,6 +26,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import AssetLabelModal from "../components/AssetLabelModal";
 import { useClickOutside } from "@/hooks/useClickOutside";
 import { useIsAdmin } from "@/hooks/useIsAdmin";
 import { useModal } from "@/hooks/useModal";
@@ -34,6 +35,7 @@ import {
   MoreDotIcon,
   PencilIcon,
   PlusIcon,
+  QrCodeIcon,
   SliderHorizontalIcon,
   TrashBinIcon,
 } from "@/icons";
@@ -651,6 +653,7 @@ function RowActions({
   onClose,
   onEdit,
   onChangeStatus,
+  onPrintLabel,
   onDelete,
 }: {
   row: Asset;
@@ -659,6 +662,7 @@ function RowActions({
   onClose: () => void;
   onEdit: () => void;
   onChangeStatus: () => void;
+  onPrintLabel: () => void;
   onDelete: () => void;
 }) {
   const { t } = useTranslation("common", { keyPrefix: "assets.rowActions" });
@@ -791,6 +795,15 @@ function RowActions({
             {t("changeStatus")}
           </DropdownItem>
 
+          {/* Printing a label does not change the asset, so it sits above the
+              destructive item and is not styled as one. It lives in this menu rather
+              than on the row itself because a label is a whole document, not a field
+              — the same reason Print and Detail sit behind the handover list's row. */}
+          <DropdownItem onClick={onPrintLabel} baseClassName={itemClass}>
+            <QrCodeIcon className="size-4 shrink-0" />
+            {t("printLabel")}
+          </DropdownItem>
+
           <DropdownItem
             onClick={onDelete}
             baseClassName={itemClass}
@@ -851,6 +864,8 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
    * the time the modal closes.
    */
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  /** Which row's label is being previewed, or null. Read back out of `assets` below. */
+  const [labelAssetId, setLabelAssetId] = useState<string | null>(null);
 
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -1037,6 +1052,19 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
    * slower and would need the filter state to survive a reload. This is the same
    * approach the user list takes.
    */
+  /**
+   * The asset the label modal shows.
+   *
+   * **Read out of `assets` by id rather than captured from the click**, so the preview
+   * is always built from the current list row. If it were held as a snapshot, a
+   * `reload()` that completed while the modal was open would leave the label
+   * describing the asset as it was before the reload.
+   */
+  const labelAsset = useMemo(
+    () => assets.find((row) => row.id === labelAssetId) ?? null,
+    [assets, labelAssetId],
+  );
+
   const visible = useMemo(() => {
     const needle = search.trim().toLowerCase();
 
@@ -1085,6 +1113,19 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
     setEditingStatus(null);
     setSaveError(null);
     formModal.openModal();
+  };
+
+  /**
+   * Open the label preview for one row.
+   *
+   * **The id is stored rather than the asset**, for the reason `editingId` and
+   * `editingStatus` are: the modal reads the asset back out of the current `assets`
+   * state by id, so a `reload()` in flight cannot leave the preview showing whichever
+   * row happened to be in memory when the click landed.
+   */
+  const handleOpenLabel = (row: Asset) => {
+    setOpenMenuId(null);
+    setLabelAssetId(row.id);
   };
 
   const handleOpenEdit = (row: Asset) => {
@@ -1518,6 +1559,7 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
                           onClose={() => setOpenMenuId(null)}
                           onEdit={() => handleOpenEdit(row)}
                           onChangeStatus={() => handleOpenStatus(row)}
+                          onPrintLabel={() => handleOpenLabel(row)}
                           onDelete={() => handleOpenDelete(row)}
                         />
                       </TableCell>
@@ -1535,6 +1577,18 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
           </p>
         )}
       </div>
+
+      {/* ------------------------------------------------------- asset label */}
+      {/* Mounted only while an id exists, so the label's own data work cannot start
+          for a row the admin never opened. It portals onto <body> and keys its print
+          rules off `asset-label-print-root` — see `AssetLabelModal`. */}
+      {labelAsset !== null && (
+        <AssetLabelModal
+          asset={labelAsset}
+          isOpen
+          onClose={() => setLabelAssetId(null)}
+        />
+      )}
 
       {/* ---------------------------------------------------------------- form */}
       <Modal

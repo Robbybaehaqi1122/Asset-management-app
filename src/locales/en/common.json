@@ -495,6 +495,7 @@
       "menuLabel": "Actions for {name}",
       "edit": "Edit details",
       "changeStatus": "Change status",
+      "printLabel": "Print asset label",
       "delete": "Delete asset"
     },
     "table": {
@@ -551,6 +552,19 @@
     "deleteBody": "Delete {name}? Its credential row goes with it. This is refused if the asset is still on loan or has any maintenance record, so that history cannot be lost by accident.",
     "deleteConfirm": "Delete",
     "deleting": "Deleting…",
+    "label": {
+      "title": "Asset label",
+      "subtitle": "{width} × {height} mm — Brother PT-P900W continuous stock",
+      "print": "Print label",
+      "close": "Close",
+      "dialogTitle": "Before printing, set these in the print dialog under \"More settings\":",
+      "hintHeaders": "Turn OFF \"Headers and footers\" — this is the one that matters. With it on, Chrome applies its own ~10 mm margins, which is taller than the 15 mm label, so the label is scaled down to fit and prints tiny.",
+      "hintMargins": "Set Margins to \"None\" so the label reaches both edges.",
+      "hintScale": "Leave Scale on \"Default\". \"Fit to printable area\" re-scales the label and breaks its 36 mm width.",
+      "hintPaper": "Leave Paper size as the printer default (1.4\" × 0.63\" roll). The page size in the stylesheet is already 36 × 15 mm.",
+      "qrFailed": "The barcode could not be generated, so printing is disabled. The asset code is still the label’s content — retry by closing this window.",
+      "qrAlt": "Barcode for asset {code}"
+    },
     "units": {
       "IT": "Asset IT",
       "HSSE": "Asset HSSE"
