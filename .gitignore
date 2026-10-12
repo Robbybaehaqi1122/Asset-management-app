@@ -26,3 +26,10 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Brother b-PAC SDK vendor file
+# Proprietary, redistributable only under Brother's licence, and it arrives with the
+# b-PAC SDK installer rather than from npm. Copy it in from the installer's vendor
+# folder; every checkout and every CI build needs it dropped in before the silent
+# print button can work. See src/modules/assets/services/bpacService.ts.
+/public/vendor/bpac.js

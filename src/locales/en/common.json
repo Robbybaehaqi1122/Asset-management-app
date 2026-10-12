@@ -495,7 +495,7 @@
       "menuLabel": "Actions for {name}",
       "edit": "Edit details",
       "changeStatus": "Change status",
-      "printLabel": "Print asset label",
+      "printLabel": "Print label",
       "delete": "Delete asset"
     },
     "table": {
@@ -553,16 +553,6 @@
     "deleteConfirm": "Delete",
     "deleting": "Deleting…",
     "label": {
-      "title": "Asset label",
-      "subtitle": "{width} × {height} mm — Brother PT-P900W continuous stock",
-      "print": "Print label",
-      "close": "Close",
-      "dialogTitle": "Before printing, set these in the print dialog under \"More settings\":",
-      "hintHeaders": "Turn OFF \"Headers and footers\" — this is the one that matters. With it on, Chrome applies its own ~10 mm margins, which is taller than the 15 mm label, so the label is scaled down to fit and prints tiny.",
-      "hintMargins": "Set Margins to \"None\" so the label reaches both edges.",
-      "hintScale": "Leave Scale on \"Default\". \"Fit to printable area\" re-scales the label and breaks its 36 mm width.",
-      "hintPaper": "Leave Paper size as the printer default (1.4\" × 0.63\" roll). The page size in the stylesheet is already 36 × 15 mm.",
-      "qrFailed": "The barcode could not be generated, so printing is disabled. The asset code is still the label’s content — retry by closing this window.",
       "qrAlt": "Barcode for asset {code}"
     },
     "units": {
@@ -690,6 +680,30 @@
       "duplicateCode": "That asset code is already used by another asset.",
       "statusContradictsLoans": "That status disagrees with the current loans, so the database refused it. An asset out on loan is Assigned on its own.",
       "inUse": "{name} cannot be deleted: it still has {assignments} loan record(s) and {maintenance} maintenance record(s). Returning it and clearing its history is the only way to remove it."
+    },
+    "labelModal": {
+      "title": "Print label",
+      "size": "{width} × {height} mm ({inches}\" × {inchesH}\")",
+      "alt": "Preview of the label for asset {code}",
+      "printLabel": "Print label",
+      "printing": "Sending to the printer…",
+      "close": "Close",
+      "print.sent": "Label sent. b-PAC hands the job over at this point; the label is still printing.",
+      "print.unavailable": "Silent printing needs the Brother b-PAC browser extension, and it was not detected.",
+      "print.noPrinter": "No Brother label printer was found.",
+      "print.offline": "The printer is not ready.",
+      "print.failed": "The label could not be printed.",
+      "templateErrorTitle": "b-PAC could not render the label template.",
+      "templateErrorBody": "Brother's own message is above. Nothing in a browser can repair a template, so check the .lbx against the four object names in bpacService.",
+      "fallbackTitle": "This is the application’s own drawing of the label, not the printer’s.",
+      "fallbackBody": "It comes from the geometry in labelSpec.ts, measured from the Brother template, and it can differ from the real output if the template has been edited in P-touch Editor since. For a preview rendered by the printer itself, install:",
+      "chromeStore": "Chrome Web Store",
+      "edgeStore": "Microsoft Edge Add-ons",
+      "extensionHint": "Install it from the links above, then reload this page — Chrome only injects an extension when a page loads.",
+      "checkAgain": "Check again",
+      "checking": "Checking…",
+      "stillMissing": "Still not detected.",
+      "nowReady": "Detected. You can print now."
     }
   },
   "handover": {

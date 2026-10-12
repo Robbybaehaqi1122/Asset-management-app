@@ -1360,106 +1360,433 @@ filter state to survive a reload.
   cells had no padding at all so the text sat flush against the card border — so
   treat the first click-through as the real test.
 
-## The asset label is 36 × 15 mm, and the page size is a named page
+## The asset label is measured out of Brother's own label file, not guessed
 
-`src/modules/assets/document/labelSpec.ts` holds what the label says;
-`AssetLabelModal.tsx` renders it; the print rules are at the bottom of
-`index.css`. It is the same pipeline as the handover document — a portal onto
-`<body>`, a body class the print rules key on, and `window.print()` with no PDF
-library — at a different paper size.
+`src/modules/assets/document/labelSpec.ts` holds every dimension,
+`components/AssetLabel.tsx` draws them, and `bpacService.ts` prints them. **The label is
+rendered and printed by Brother's b-PAC from the template in `public/label/`; this
+application never sends the label to the printer itself.**
 
-### The named page is the whole trick, and a second `@page` rule would break the app
+### The source is `Label Layout 36x15 mm (3).lbx`, and it corrected five numbers
 
-`@page` is a **cascade, not a scope.** `@media print` already contains
-`@page { size: A4; margin: 0 }` for the handover document. Adding
-`@page { size: 36mm 15mm }` below it would not create a second page size — the
-later rule wins for the *entire document*, and every A4 handover page would come
-out 36 mm wide.
+That file is a **P-touch Editor template: a ZIP containing `label.xml`**. Sheet `36x15`
+declares the paper and every object on it:
 
-So the small box is a **named** page:
-
-```css
-@page asset-label { size: 36mm 15mm; margin: 0; }
-.asset-label { page: asset-label; }
+```
+<style:paper width="102.4pt" height="45.4pt" marginLeft="5.8pt" marginTop="2.8pt" .../>
+<barcode x="59.2pt" y="2.7pt" width="40pt" height="40pt"/>          <!-- QRCODE, margin on -->
+<text   x="5.6pt" y="4pt"   width="53.4pt" height="10.9pt"/>         <!-- Helsinki 8.5pt, weight 700 -->
+<poly   x="5.3pt" y="14.6pt" width="54pt"   height="0.6pt"/>
+<text   x="5.8pt" y="15.5pt" width="56.6pt" height="7.7pt"/>          <!-- Helsinki 6pt -->
+<text   x="5.6pt" y="24.4pt" width="53.4pt" height="14.1pt"/>         <!-- Helsinki 6pt -->
 ```
 
-`page:` assigns the box to that element alone, so the A4 default still governs
-everything else — and since every other element is `display: none` under the
-body class, there is nothing else for it to govern. Chrome supports named pages
-from 85. **This is not verified on this machine**, which is stated below.
+`pt → mm` is `× 25.4 / 72`. **The first version of this feature was authored by eye
+from a screenshot and every number in it was wrong:**
 
-### The dimensions are millimetres, and the printer is inches
+| | guessed | measured | why it mattered |
+|---|---|---|---|
+| paper | 36 × 15 mm | **36.12 × 16.02 mm** | the roll is 16 mm — the `0.63 in` in the driver. 1 mm per label of empty stock, over a stock-take that is the difference between running out and not |
+| QR | 11.5 mm | **14.11 mm** | a 2.6 mm error on the one element that has to machine-scan, traded away to give the description room the template never asked for |
+| line 1 font | 7 pt | **8.5 pt bold** | |
+| lines 2–3 font | 5 pt | **6 pt** | |
+| the rule under line 1 | absent | **19.05 × 0.21 mm** | it is what separates the identifier from the two descriptive lines |
 
-The Brother driver is configured in inches (`1.4 in` media, `0.63 in` length)
-because that is the driver's unit. The label is authored in mm. Nothing converts
-between them, and that is deliberate — the conversion is the thing that would be
-wrong. `LABEL_WIDTH_MM` / `LABEL_HEIGHT_MM` are repeated in three places (the
-`@page` rule, the label's own box, and the preview's magnified wrapper) rather
-than shared, because one of the three is a CSS declaration and the others are
-Tailwind arbitrary values. A single source of truth that silently diverges in one
-of them prints misaligned labels, which is worse than the duplication.
+**So `AssetLabel.tsx` lays out in absolute millimetres at the template's own coordinates,
+not as a flex row.** Every object is `position: absolute` at its measured `x`/`y` on a
+container that is exactly the paper. That reproduces P-touch Editor's model directly; a
+flex layout has to *derive* an arrangement and then hope it agrees, which is what the
+first versions did.
 
-**The text column is 20.9 mm and `DESCRIPTION_MAX_CHARS` is 22 because of it.** At
-5 pt a proportional face averages about half the point size per glyph, so the third
-line fits roughly 22 characters. Changing the font size means re-deciding that
-number, which is why both live in `labelSpec.ts` with the arithmetic next to them.
+**The description does not truncate.** The template gives that text object a 4.97 mm box
+with `autoLF="true"` — it is *designed* to wrap to a second line, and 6 pt × 2 fits. The
+old `DESCRIPTION_MAX_CHARS = 22` existed only because the guessed column was believed to
+be 20.9 mm at 5 pt, and clipping a name to fit a box that was never a clipping box loses
+what the template intended to carry.
+
+**Helsinki is not available in a browser**, and that is fine: it is Brother's
+metric-compatible clone of Helvetica, so the stack is `Helvetica, Arial, sans-serif` —
+Arial is metrically Helvetica, so the measured box widths hold. No webfont: a download in
+front of every label print is a worse trade than the exact typeface.
 
 ### The QR is an SVG data URL, and the raster alternative was measurably wrong
 
-**The payload is `asset_code` alone**, and three facts decided it. It is the one
-field the register guarantees unique — `02300` made it unique over
-`upper(btrim(asset_code))` precisely so a code identifies exactly one asset, and a
-symbol carrying a value two rows may share is a symbol that can be wrong. **This
-app has no asset detail page**, so a URL payload has nowhere to point. And a name
-and unit in the payload would make the symbol dense enough to stop scanning at
-11.5 mm, while duplicating text printed *beside* it — which means the two could
-disagree, the exact failure the label format exists to prevent.
+**The payload is `asset_code` alone**, which is what the template holds too. It is the one
+field the register guarantees unique — `02300` made it unique over `upper(btrim(asset_code))`
+precisely so a code identifies exactly one asset. **This app has no asset detail page**, so
+a URL payload has nowhere to point. And a name and unit in the payload would make the
+symbol dense enough to stop scanning, while duplicating text printed *beside* it — so the
+two could disagree, which is the failure a label format exists to prevent.
 
-**The first version asked for 384 px and was wrong in a measurable way.** A QR is
-a grid of equal squares and a scanner samples square centres, so anything that
-resamples the grid softens the edges that carry the data. `asset_code` is ten
-characters → version 1 → a 21 × 21 grid, plus the quiet zone, 23 × 23. And:
+**The first version asked for 384 px and was wrong in a measurable way.** A QR is a grid of
+equal squares and a scanner samples square centres, so anything that resamples the grid
+softens the edges that carry the data. `asset_code` is ten characters → version 1 → a
+21 × 21 grid, plus the quiet zone, 23 × 23:
 
 ```
 384 / 23 = 16.696 px per module    <- fractional
 368 / 23 = 16.000                  <- exact
 ```
 
-Picking an exact width does not fix it either, because the multiple depends on the
-**QR version**, which depends on the payload length. `AST-0001-A` is still version
-1; one character more crosses to version 2, the grid becomes 25 × 25, and the width
-that was exact is now fractional. A hard-coded width is exact for exactly one
-range of payloads.
+Choosing an exact width does not fix it either, because the multiple depends on the **QR
+version**, which depends on payload length. `AST-0001-A` is still version 1; one character
+more crosses to version 2, the grid becomes 25 × 25, and the width that was exact is now
+fractional. **A hard-coded width is exact for exactly one range of payloads.**
 
-The SVG renderer has no such problem. It emits `viewBox="0 0 23 23"` — whole
-modules — so every edge lands on an integer boundary, and it sets
-`shape-rendering="crispEdges"`, which disables anti-aliasing on those edges
-outright. Resolution-independent, so there is no width to get wrong. Verified in
-Node against three payload shapes: integer grids, exact base64 round-trip, ~1.25 kB
-each.
+The SVG renderer has no such problem: it emits `viewBox="0 0 23 23"` — whole modules — and
+sets `shape-rendering="crispEdges"`, which disables anti-aliasing on those edges outright.
+Resolution-independent, so there is no width to get wrong. Verified in Node against three
+payload shapes: integer grids, exact base64 round-trip, ~1.25 kB each.
 
-**Base64, not a percent-encoded URL.** The SVG contains `#ffffff`, and a `#` in a
-`data:` URL starts the fragment — the browser shows a blank image with no error.
+**Base64, not a percent-encoded URL.** The SVG contains `#ffffff`, and a `#` in a `data:`
+URL starts the fragment — the browser shows a blank image with no error.
 
-**Still an `<img>`, not inlined markup.** The handover's signature pad is the reason
-the print path is known-good through an image element: a `<canvas>` prints as a
-bitmap rasterised at the canvas's own resolution. And this project's "never inline
-SVG" rule is about *icons* — `google.svg` exists because of it. A QR is machine
-output whose geometry is the feature, not a hand-drawn glyph.
+**Still an `<img>`, not inlined markup.** The handover's signature pad is why the print path
+is known-good through an image element: a `<canvas>` prints as a bitmap rasterised at the
+canvas's own resolution. And the "never inline SVG" rule is about *icons* — `google.svg`
+exists because of it. A QR is machine output whose geometry is the feature.
+
+### Silent printing goes through b-PAC, and the browser was never going to win
+
+`src/modules/assets/services/bpacService.ts` and the **Print label** row action.
+The chain is
+
+```
+this page  ->  b-PAC browser extension  ->  b-PAC Client (local agent)  ->  printer
+```
+
+**The label is rendered from a template b-PAC fetches, not from this page's layout**, so
+the page, the print dialog and the driver's paper list are not in the loop at all.
+`StartPrint` → `PrintOut` → `EndPrint` is the programmatic path and shows no dialog.
+
+**The PT-P900W is supported.** Brother's b-PAC operating-environment table lists
+`PT-P900W/P900Wc` as "Yes" for every version since 3.2.
+
+**Two per-machine prerequisites, and neither is presentable from here.** The b-PAC
+**Client** is required for a browser to reach the printer at all, and the **extension**
+carries the call across. That is why this is a menu item and not a feature detection: the
+button is always there and says what to install.
+
+**The `.lbx` is served from this app's own origin, and same-origin is required** — not an
+optimisation. `Doc.Open` takes a file path *or* a URL and the extension performs the
+fetch. Serving it from `public/label/` removes the "copy this file onto every cashier's PC"
+step.
+
+**The four object names are a contract with a binary file.** Read out of sheet `36x15`:
+
+| key | what |
+|---|---|
+| `asset-code` | the QR barcode |
+| `Text7` | asset code, 8.5 pt bold |
+| `Text8` | company and unit, 6 pt |
+| `Text9` | description, 6 pt |
+
+Renaming an object in P-touch Editor silently breaks the binding and the failure is a
+**blank field on a printed label**, not an error. `Shape10` is the rule and has no data,
+so it is deliberately absent.
+
+**The barcode goes through `GetBarcodeIndex`, and the split is hard-coded rather than
+dispatched on `object.Type`** — that method *throws* for a key that is not a barcode, and
+the type constants are numbers this code cannot verify. A wrong constant there would be
+silent.
+
+**`IDocument` is a class of statics over one document object**, so two clicks would
+interleave `Open`/`SetPrinter`/`StartPrint` and the second job would print the first
+asset's data. Every call is serialised through a promise chain; the second caller waits.
+
+**Every call returns a Promise resolving to a boolean**, because the objects underneath are
+COM/ActiveX — so `if (!await …)` is the error report, not defensive noise. And **`Close`
+runs in a `finally`**: b-PAC keeps the document open after a failed job, and the next
+`Open` on an already-open document is what turns one failure into a printer that stops
+responding for the rest of the session.
+
+**Printer choice is remembered first, then matched on `/p-?touch|pt-?p9/i`, then a
+single-printer fallback — in that order.** A machine may have a QL and a P-touch, and
+silently switching would put 36 mm labels on a 102 mm roll. The match is loose because the
+driver appends the port and `W`/`Wc`. More than one printer and none recognisable
+**refuses** rather than guessing. **`fitPage` is `0`** — `-1` is fit-to-page, which is the
+rescaling this whole exercise exists to avoid.
+
+#### The extension is not withdrawn, and `bpac-js` does not replace it
+
+A change request arrived asking to drop the extension, migrate to `bpac-js` (described as
+talking to the local component over a local socket), and remove the extension check.
+**Every part of that premise is false, and acting on it would have replaced a working
+integration with a broken one.**
+
+| claim | what the actual file and the live stores say |
+|---|---|
+| extension removed from the Chrome Web Store | **It is live.** "Brother b-PAC Extension", **v3.4.3.2, updated 9 December 2024**, Brother Industries, 10,000 users, and its own description reads *"allows to control Brother label and mobile printers from Chrome programs using b-PAC."* |
+| `bpac-js` uses a local socket | **`bpac.js` has no network API at all.** `fetch` 0, `XMLHttpRequest` 0, `WebSocket` 0, `EventSource` 0, `sendBeacon` 0, URLs 0, ports 0. Its only transport is `document.dispatchEvent(new CustomEvent("bpac_send", {detail}))` plus 99 `addEventListener` waits. **The extension *is* the transport.** |
+| migrate to `bpac-js` to avoid it | its source is `import * as bpac from "./vendor/bpac-3.4.js"` — a wrapper over the same module — and its README lists **both** the BPac Client **and** the extension. Switching keeps the dependency *and* breaks, because `bpac-v3.4.js` does not exist in this SDK. |
+| the SDK ships a loadable replacement extension | It does not. `Redist/Manifest/bpac.manifest` is a **COM registration** manifest for `bpac.dll`, and `bpac.xpi` is the **Firefox** add-on. |
+
+**What is easily mistaken for withdrawal is the store being unavailable in a managed
+environment** — a corporate policy blocks the *install*, not the listing.
+
+#### So the fix was the message, not the transport
+
+`IsExtensionInstalled()` reads a class the content script puts on `document.body`, and the
+three ways it reads `false` are common enough that "just install it" is the wrong
+instruction to leave someone with: **an Incognito window** (extensions off by default —
+installed and yet invisible, the confusing one), **a company policy**, and **not yet
+reloaded** (content scripts inject at page load).
+
+So the dialog carries **both store links**, names those cases in words, and offers **Check
+again**. `checkBpacExtension()` deliberately does not reset the cached module — it is a
+pure DOM read, and the button sits on the failure path where the module has *already*
+loaded. It also **cannot return `true` for a just-installed extension**, which is why
+`stillMissing` tells the operator to reload first; without that sentence the button looks
+broken on the one path where a reload genuinely was the fix.
+
+#### `public/` cannot be `import`ed in dev, and `vite-ignore` does not help
+
+The first implementation was `import(/* @vite-ignore */ "/vendor/bpac.js")`. **It works in
+the production build and fails in dev** — the bundle is correct and every gate green while
+the only machine that runs the feature cannot load it:
+
+```
+GET /vendor/bpac.js?import   →   500
+> This file is in /public … should not be imported from source code.
+```
+
+**`@vite-ignore` is not the fix.** It stops Vite resolving the URL at **build** time and
+says nothing about the **dev server**, which sees the bare path and transforms it anyway —
+the build protected, the dev server not, which is exactly the split that leaves a green
+pipeline over a broken feature.
+
+**The fix keeps the path away from Vite entirely: `fetch` the file, then `import` it as a
+blob.** `fetch` of a `public/` file behaves identically in dev and prod, and a blob URL is
+opaque to every bundler. Cost: one extra request for 28 KB, once, lazily.
+
+Verified against the running dev server, both requests on the same port:
+
+| request | result |
+|---|---|
+| `GET /vendor/bpac.js` | **200, 28847 bytes**, SHA-256 **identical** to the SDK file |
+| `GET /vendor/bpac.js?import` | **500** — the old route, and why it never worked |
+
+#### The vendor file is not committed, and `tsc` still has to pass without it
+
+`public/vendor/bpac.js` is Brother's, copied from the installed SDK at
+`C:\Program Files (x86)\Brother bPAC3 SDK\Samples\JavaScript\bpac.js`. Not on npm, and
+their licence does not permit redistribution — `.gitignore` keeps it out.
+
+- **`src/vendor/bpac.d.ts` is hand-written and deliberately narrow** — only the calls the
+  service makes, so a typo is a compile error rather than a runtime
+  `undefined is not a function` on a cashier's machine. The file stays a static asset:
+  `bpac_send` appears zero times in `dist/assets/*.js`, which is the check that it did not
+  get bundled.
+- **A `.d.ts` can declare a value binding, and that breaks the build.** `BPAC_NOT_CONNECTED`
+  was first declared `export const` there. **`tsc -b` sat there green** and `vite build`
+  failed with `UNLOADABLE_DEPENDENCY`, because nothing emits a module for the bundler to
+  resolve. Constants live in the service; the `.d.ts` holds types only. **The type gate
+  passing is not the build passing.**
+
+#### Reading the SDK settled four things a wrapper library had wrong
+
+`bpac.js` was read directly, with `JS_NamePlate.html` beside it:
+
+| | wrapper said | the SDK does |
+|---|---|---|
+| filename | `bpac-v3.4.js` | **`bpac.js`** — no version-pinned file exists |
+| extension check | never mentioned | **`IsExtensionInstalled()`**, the module's own pre-flight |
+| text assignment | `SetText` | **`obj.Text = value`** — `IDocument.SetText` writes to a *different* object, leaving the intended field blank |
+| the print trio | awaited | **they genuinely return promises**; the sample leaves them un-awaited, which is a silent failure, so the service awaits and checks each |
+
+#### The SDK rejects with a string, and once with nothing at all
+
+**Every call ends with `f.detail.connect == !1 ? i(t) : …`** where `t` is the bare string
+`"Can't connect to b-PAC"`. A missing extension or dead local agent therefore arrives as a
+**rejected string, not an `Error`**, and the usual handler renders it `"undefined"` on
+exactly the machines whose problem most needs saying clearly. Hence `describe()`.
+
+**`GetObject` is worse: it rejects with `undefined`** when a name is missing, because the
+source calls reject with no argument — the failure a P-touch Editor rename produces. So it
+is a `try`/`catch` and **not** a null check.
+
+**`asTyped()` wraps the whole task in both paths**, not just around `Open`. The first
+version mapped the string only there, and the mock caught what that let through:
+
+```
+GetImageData    reject STRING -> BpacUnavailableError  "the b-PAC Client is not running on this machine."
+GetBarcodeIndex reject STRING -> BpacUnavailableError  (same)
+StartPrint      reject STRING -> BpacUnavailableError  (same)
+```
+
+**`GetImageData` is the one call that rejects instead of resolving `false`** — the source
+rejects unless both `ret` and `connect` are true — which is why the preview path catches
+rather than testing a return value.
+
+Verified in Node against a mock of the module — the call sequence, every failure
+classified, and two simultaneous clicks not overwriting each other:
+
+```
+A. extension not installed    -> BpacUnavailableError
+B. client dead, rejects STRING-> BpacUnavailableError
+C. GetObject rejects undefined -> BpacPrintError naming Text9, and Close still ran
+D. GetBarcodeIndex -> undefined -> BpacPrintError        "is not a barcode in the template"
+E. printer offline             -> BpacPrinterOfflineError  carrying Brother's "Out of paper"
+F. success -> Open(url) GetPrinter SetPrinter("Brother PT-P900W", 0)
+              GetBarcodeIndex("asset-code") SetBarcodeData(7, "2601101020")
+              GetObject x3  StartPrint PrintOut EndPrint Close
+              text -> template: [["Text7","2601101020"],["Text8","PGT - IT"],["Text9","PBNBIS-BAH"]]
+              printer chosen: PT-P900W out of [QL-820NWB, PT-P900W]
+G. two clicks at once -> StartPrint("Asset AAA-1") then StartPrint("Asset BBB-2"), in order
+```
+
+and against the **real** `public/vendor/bpac.js` with a minimal DOM — `IsExtensionInstalled`
+reading `false`/`true`/`false` across the three class states, and all ten methods the
+service calls present on `IDocument`.
+
+**Each failure gets its own sentence in the UI, because the admin's next action differs in
+every case** — install the extension, start the b-PAC Client, plug the printer in, or check
+the media — and one "could not print" sends them looking in the wrong place. Brother's own
+`ErrorString` is shown verbatim beside it, because it names the real condition where a
+sentence written here could only guess.
+
+### The label preview is rendered by b-PAC, because the app's own drawing can lie
+
+`AssetLabelModal.tsx`, the **Print label** row action, and `renderAssetLabelPreview()` in
+`bpacService.ts`.
+
+**There are two drawings in this module and they are not interchangeable.**
+`AssetLabel.tsx` draws the label from `labelSpec.ts`, and it exists **only as the fallback
+for a machine with no b-PAC**. **It is the app's *interpretation* of the template.** If
+someone edits the `.lbx` in P-touch Editor — moves a field, resizes the barcode, changes a
+font — that drawing keeps showing the old layout while the printer renders the new one.
+**A preview that can disagree with the output is worse than none, because it looks
+authoritative**, so the dialog says which of the two is on screen.
+
+So the real preview is `Doc.GetImageData(4, 0, 300)`, which is **b-PAC rendering its own
+template**: what comes back is what comes out of the printer. It is Brother's own preview
+feature — `JS_NamePlate.html` renders it into `<img src>` in four lines.
+
+#### Preview and print are one menu item, not two
+
+The row menu carried **Preview label** and **Silent print label** as separate entries, and
+the first version of this feature had a **Print asset label** and a **Download P-touch data
+file** as well. All four are now **one `Print label`** that opens a dialog holding the
+picture and the button together.
+
+**Two reasons, and the second is the one that decides it.** A preview and a print are
+different views of the same question — *what will this label say* — so asking twice is
+worse than asking once. And a separate print entry made it possible to print a label whose
+preview nobody had looked at; putting the picture on screen first is the point. A label is
+four fields on 36 × 16 mm, so showing it costs almost nothing.
+
+The print state and its four failure classifications moved **into the dialog** with it,
+which is why `assets.silentPrint.*` is gone from `common.json` and `assets.labelModal.*`
+replaced it — one screen, one block of messages.
+
+**It selects no printer and checks no status, deliberately.** A preview has to work while
+the printer is off and out of paper, which is exactly when someone is checking a layout;
+Brother's own sample names no printer either. Verified against the mock:
+
+```
+Open(url) GetBarcodeIndex SetBarcodeData GetObject x3 GetImageData(4, 0, 300) Close()
+no StartPrint, no PrintOut, no SetPrinter
+```
+
+**The physical size is stated beside the image** — `36.12 × 16.02 mm (1.42" × 0.63")` —
+because that is the question the screen exists to answer and an image at any zoom cannot.
+The `aspect-ratio` on the `<img>` comes from the same two constants, or the picture would
+be subtly stretched and nobody could tell.
+
+**`populateTemplate` is shared by the print path and the preview path, on purpose.** They
+write the same four objects, and a preview that populated them differently from the
+printer would be a preview of something the printer never produces.
+
+**When b-PAC cannot render, the fallback is the app's own drawing, labelled as exactly
+that** — better than an empty dialog, worse than the real thing, so it says which one it
+is. **The remedy differs by cause, and that is the part worth knowing.** A
+`BpacUnavailableError` means the extension or the local agent is missing, so the two store
+links belong under it. **A template error gets Brother's own message verbatim and no store
+link**, because nothing in a browser can repair a `.lbx` and sending an operator to a
+Chrome Web Store listing for a broken template sends them somewhere useless. `RenderState`
+carries `remedy` for exactly this distinction.
+
+**The fallback's magnification is derived, not typed.** `SLOT_MM = 90` is the slot, and
+the scale is `SLOT_MM / LABEL_BOX_WIDTH_MM`, so the label fills it exactly. The first
+version applied `scale(2.53)` to the **outer** box, which is already the magnified size —
+the slot became 860 px inside a 672 px dialog and the label spilled out of it. **A zoom
+applied to the container rather than the content scales the layout too**, which is the
+whole of that bug.
+
+#### `GetImageData` is the one call that rejects instead of resolving `false`
+
+Every other method resolves a boolean, which is what makes `if (!await …)` the error
+report. `GetImageData` **rejects unless both `ret` and `connect` are true**, and it
+rejects with the module's bare string. The mock caught what that means:
+
+```
+GetImageData reject STRING  ->  undefined | undefined
+```
+
+— a preview dialog rendering `undefined.message`, which is precisely the failure
+`describe()` exists to prevent, caused by mapping that string only around `Open()` and
+leaving every later call free to leak it. **`asTyped()` now wraps the whole task** in both
+the print and the preview path, and the same three call sites all classify:
+
+```
+GetImageData    reject STRING -> BpacUnavailableError  "the b-PAC Client is not running on this machine."
+GetBarcodeIndex reject STRING -> BpacUnavailableError  (same)
+StartPrint      reject STRING -> BpacUnavailableError  (same)
+```
+
+The preview's own state is stamped with the asset id and derived during render, for the
+same reason the QR is: clearing it in the effect is a `set-state-in-effect` error, and it
+would flash the **previous asset's label** for a frame — on a screen whose entire job is
+"is this the right label?" it is the one thing that must never happen.
+
+### Four printing routes existed, and b-PAC is the only one left
+
+The row menu once carried four label actions. Two printing routes are gone entirely, and
+the other two are now **one menu item** — see the section above for why. The reason the two
+went away is worth recording so nobody re-adds them.
+
+| route | status | why |
+|---|---|---|
+| `window.print()` with `@page { size }` | **gone** | six attempts, all failing the same way — see below |
+| P-touch Template data file (`ptouchTemplate.ts`) | **gone** | a real route that worked, but it needed P-touch Transfer Manager on every machine to send a three-line file, and b-PAC does the same job from the browser the user is already in |
+| b-PAC silent printing | **kept** | the only one of the three whose output size is the printer's decision |
+| b-PAC-rendered preview | **kept**, beside the print | the only preview that cannot disagree with the output |
+
+**The browser route is the one to remember, because it is genuinely not fixable rather than
+merely unfixed.** Once a specific printer is selected in the dialog, **the driver's paper
+list wins over `@page`**, so the page size is not the application's to declare. The four
+things tried, in order: a fixed `w-[36mm]` (driver reported ~100 mm, so the label arrived
+at a third of the roll's width and fed six labels' worth of tape per print);
+`width: 100%` + `aspect-ratio` (a percentage resolves against a chain this stylesheet had
+just collapsed with `height: auto`); `position: fixed` with `left: 0; right: 0` (the width
+became the page width, but `aspect-ratio` did not survive paged-media layout and the height
+collapsed); and finally plain absolute millimetres, which was correct — and still printed
+onto a 90 mm page for a 16 mm label, because **nothing in a web page can shorten the page.**
+The admin's own report settled the diagnosis: paper size and the driver's media width were
+both already `1.4"`; only Margins was wrong, and Chrome's ~10 mm default margins are most
+of a 36 mm page.
+
+**Do not re-add either.** If a label ever has to print without b-PAC, the honest options
+are P-touch Transfer Manager with a hand-made data file, or a small local agent — not
+`window.print()`.
+
+**Do not split the one menu item back into two.** A separate *Preview label* and a separate
+*Print label* ask the same question twice and make it possible to print a label nobody
+looked at. The picture costs almost nothing to render and belongs in front of the button.
 
 ### What is verified, and what is not
 
-Verified: `tsc`, `eslint` (0 errors, 5 pre-existing warnings), Prettier, a
-production build, and the QR's grid geometry and round-trip measured in Node.
+Verified: `tsc`, `eslint` (0 errors, 5 pre-existing warnings), Prettier, a production
+build, the QR's grid geometry and round-trip measured in Node, **every label dimension read
+out of `label.xml` rather than estimated**, the b-PAC call sequence and its error
+classification against a mock, `IsExtensionInstalled` and all ten `IDocument` methods
+against the **real** `public/vendor/bpac.js`, and `GET /vendor/bpac.js` serving those bytes
+from a running dev server.
 
-**Not verified: that the page actually comes out 36 × 15 mm.** Headless Chrome on
-this machine forwards to the running browser session and produces no PDF, so the
-named-page mechanism is reasoned about and standards-supported rather than measured
-here — which is a weaker claim than the A4 figure recorded above, and should be
-treated as such. **Test-print one label before printing fifty.** If it is wrong the
-two things to check are the named-page support and the driver's own paper setting,
-in that order, because the driver overrides `@page` whenever it is configured for a
-specific stock.
+**Not verified: that the label comes off the roll at the size the template says.** Headless
+Chrome on this machine forwards to the running browser session and produces no PDF, so no
+print output can be measured here. What is confirmed is the input — the geometry, the
+payloads and the template bindings — and **test-print one label before printing fifty.**
 
 ## Asset settings manages the reference data
 

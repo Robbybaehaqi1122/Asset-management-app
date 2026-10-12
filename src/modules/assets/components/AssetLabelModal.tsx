@@ -1,29 +1,79 @@
 import { useEffect, useState } from "react";
-import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import Button from "@/components/ui/button/Button";
-import { CloseIcon, PrinterIcon } from "@/icons";
-import type { Asset } from "@/modules/assets/services/assetService";
+import { Modal } from "@/components/ui/modal";
+import AssetLabel from "@/modules/assets/components/AssetLabel";
 import {
+  LABEL_BOX_HEIGHT_MM,
+  LABEL_BOX_WIDTH_MM,
   LABEL_HEIGHT_MM,
   LABEL_WIDTH_MM,
-  buildLabelContent,
 } from "@/modules/assets/document/labelSpec";
-import { renderQrDataUrl } from "@/modules/assets/document/qrImage";
+import type { Asset } from "@/modules/assets/services/assetService";
+import {
+  BPAC_EXTENSION_LINKS,
+  BpacPrinterNotFoundError,
+  BpacPrinterOfflineError,
+  BpacUnavailableError,
+  checkBpacExtension,
+  printAssetLabelSilent,
+  renderAssetLabelPreview,
+} from "@/modules/assets/services/bpacService";
 
 /**
- * The printable asset label: one 36 × 15 mm label for one asset, on Brother PT-P900W
- * stock.
+ * How wide the fallback is drawn on screen: 90 mm, about 340 px.
  *
- * **The print path is the handover document's, deliberately.** Same three decisions,
- * each for the reason its handover counterpart records: a portal onto `document.body`
- * (not `Modal`, which renders no `role="dialog"` for the stylesheet to hook), a body
- * class that the print rules key on, and `window.print()` with no PDF library. A label
- * is 36 mm wide; adding 300 kB of PDF writer to produce it would be absurd.
+ * It is a **slot, not a zoom setting** — the label inside is at true size with the scale
+ * derived from it, so the two cannot drift apart. Any width here works; legibility is the
+ * only thing it decides, which is why it is the only arbitrary number in the file.
+ */
+const SLOT_MM = 90;
+
+/** The outcome of the last print attempt, and nothing else. */
+type PrintOutcome =
+  | { kind: "idle" | "printing" | "sent" }
+  | {
+      kind: "unavailable" | "noPrinter" | "offline" | "failed";
+      detail: string | null;
+    };
+
+/**
+ * Why there is no b-PAC picture — which decides what the operator is told to do.
  *
- * The one genuinely new thing is the **page size**, and it is handled by a named
- * `@page` rather than a second `@page` rule — see `index.css` for why a plain second
- * rule would make every A4 page in the app 36 mm wide.
+ * Both branches carry the same keys as `undefined` so the read sites below narrow with
+ * `in` rather than needing a cast, and so a variant cannot gain a field the other lacks.
+ */
+type RenderState =
+  | { assetId: string; image: string; reason?: undefined; remedy?: undefined }
+  | {
+      assetId: string;
+      image?: undefined;
+      reason: string;
+      remedy?: "extension";
+    };
+
+/**
+ * One label action: preview it, then print it.
+ *
+ * ## Why preview and print share a dialog
+ *
+ * The row menu used to carry **Preview label** and **Silent print label** as two separate
+ * items, which asked the same question twice and made it possible to print a label whose
+ * preview nobody had looked at. A label is four fields on 36 × 16 mm, so showing it costs
+ * almost nothing — and **showing it before the button is the point**: what is being
+ * printed is on screen, not behind a decision.
+ *
+ * ## The image is drawn by Brother's engine, and that is the whole difference
+ *
+ * It comes from `Doc.GetImageData`, which asks b-PAC to render **the template the printer
+ * will actually use**. `AssetLabel` draws the same geometry from `labelSpec.ts`, and it is
+ * only ever a fallback: it is the app's *interpretation* of the template, so if someone
+ * edits the `.lbx` in P-touch Editor it keeps showing the old layout while the printer
+ * renders the new one. **A preview that can disagree with the output is worse than none,
+ * because it looks authoritative** — so when the fallback is on screen it says so.
+ *
+ * The physical size is stated beside it because that is the question this screen answers,
+ * and an image at any zoom cannot.
  */
 export default function AssetLabelModal({
   asset,
@@ -34,209 +84,266 @@ export default function AssetLabelModal({
   isOpen: boolean;
   onClose: () => void;
 }) {
-  const { t } = useTranslation("common", { keyPrefix: "assets.label" });
+  const { t } = useTranslation("common", { keyPrefix: "assets.labelModal" });
+
   /**
-   * The generated symbol, **stamped with the asset code it was generated for.**
+   * The rendered image, **stamped with the asset it was rendered for.**
    *
-   * The stamp is what lets the placeholder appear without a synchronous `setState`.
-   * The obvious shape — `useEffect` that sets `setQr(null)` and then generates — is
-   * a `set-state-in-effect` error and would be one here: clearing the old symbol is a
-   * synchronous write in the effect body, so switching rows renders the previous
-   * asset's barcode for a frame before the clear lands. Comparing a stamp against the
-   * current code derives the same "not ready" state during render instead, so a new
-   * asset shows a placeholder on the very first frame and there is no extra pass.
+   * The stamp is what lets a new asset show its fallback on the very first frame without a
+   * synchronous `setState` in the effect. Clearing it in the effect is a
+   * `set-state-in-effect` error, and it would flash the **previous asset's label** for a
+   * frame — on a screen whose entire job is "is this the right label?" that is the one
+   * thing that must never happen.
    */
-  const [qr, setQr] = useState<{ code: string; url: string } | null>(null);
-  const [qrFailure, setQrFailure] = useState<{ code: string } | null>(null);
+  const [rendered, setRendered] = useState<RenderState | null>(null);
 
-  const content = buildLabelContent(asset);
+  const [print, setPrint] = useState<PrintOutcome>({ kind: "idle" });
+  const [recheck, setRecheck] = useState<
+    "idle" | "checking" | "missing" | "ready"
+  >("idle");
 
   /**
-   * The QR is generated on mount rather than during render.
+   * Render the label once per open.
    *
-   * `qrcode` is asynchronous because it walks the payload through encoding tables and
-   * Reed-Solomon blocks, and doing that in the render body would mean either a
-   * synchronous encoder call per render or a partially built symbol on screen. The
-   * `cancelled` flag is the standard cleanup guard: without it a slow generation for
-   * one asset resolves after the admin has already opened another and overwrites its
-   * symbol with the previous asset's code — which is the worst possible failure for a
-   * label, since it would put the wrong identifier on the physical asset. The `code`
-   * stamp on the result is the second half of the same guard: it is checked during
-   * render, so a stale resolution is discarded rather than displayed.
+   * **Nothing is reset here on purpose.** The parent mounts this only while an asset id
+   * exists, so every open is a fresh mount and `print` and `recheck` are already at their
+   * initial values — writing them again would be a synchronous `setState` in the effect
+   * body for nothing.
    */
   useEffect(() => {
+    if (!isOpen) return;
+
     let cancelled = false;
 
-    renderQrDataUrl(content.assetCode)
-      .then((url) => {
-        if (!cancelled) setQr({ code: content.assetCode, url });
+    renderAssetLabelPreview(asset)
+      .then((image) => {
+        if (!cancelled) setRendered({ assetId: asset.id, image });
       })
-      .catch(() => {
-        if (!cancelled) setQrFailure({ code: content.assetCode });
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setRendered({
+          assetId: asset.id,
+          reason: error instanceof Error ? error.message : String(error),
+          // Only b-PAC being unreachable has an install to offer. A template error is
+          // Brother's own wording and nothing in a browser can fix it, so pointing at a
+          // store listing there would send the operator somewhere useless.
+          remedy:
+            error instanceof BpacUnavailableError
+              ? ("extension" as const)
+              : undefined,
+        });
       });
 
     return () => {
       cancelled = true;
     };
-  }, [content.assetCode]);
-
-  const qrDataUrl = qr?.code === content.assetCode ? qr.url : null;
-  const qrError = qrFailure?.code === content.assetCode;
-
-  /**
-   * The class is added on mount, not on the Print button's click, for the same reason
-   * the handover document does it: it only takes effect inside `@media print`, so the
-   * preview is unaffected, and having it already in place means the browser's own
-   * Ctrl+P prints the label rather than the page behind it.
-   *
-   * It is removed on unmount and never left behind — a class stranded on `<body>`
-   * would make the *next* print anywhere in the app produce a 36 mm page.
-   */
-  useEffect(() => {
-    document.body.classList.add("asset-label-printing");
-    return () => document.body.classList.remove("asset-label-printing");
-  }, []);
+  }, [asset, isOpen]);
 
   if (!isOpen) return null;
 
-  const handlePrint = () => {
-    window.print();
+  const current: RenderState | null =
+    rendered?.assetId === asset.id ? rendered : null;
+  const image = current && "image" in current ? current.image : null;
+  const reason = current && "reason" in current ? current.reason : null;
+  const needsExtension = current?.remedy === "extension";
+
+  /**
+   * Print, and classify every failure.
+   *
+   * **The four kinds are separate because the operator's next action differs in every
+   * one** — install the extension, plug the printer in, check the media — and a single
+   * "could not print" sends them looking in the wrong place. Brother's own `ErrorString`
+   * rides along verbatim, because it names the real condition where a sentence written
+   * here could only guess.
+   */
+  const handlePrint = async () => {
+    setPrint({ kind: "printing" });
+    try {
+      await printAssetLabelSilent(asset);
+      setPrint({ kind: "sent" });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+
+      if (error instanceof BpacUnavailableError) {
+        setPrint({ kind: "unavailable", detail });
+      } else if (error instanceof BpacPrinterNotFoundError) {
+        setPrint({ kind: "noPrinter", detail });
+      } else if (error instanceof BpacPrinterOfflineError) {
+        setPrint({ kind: "offline", detail });
+      } else {
+        setPrint({ kind: "failed", detail });
+      }
+    }
   };
 
-  return createPortal(
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label={t("title")}
-      className="asset-label-print-root fixed inset-0 z-99999 flex items-center justify-center bg-gray-400/50 p-4"
-    >
-      <div className="asset-label-print-panel w-full max-w-lg rounded-xl bg-white shadow-theme-lg dark:bg-gray-dark">
-        <div className="flex items-center justify-between gap-4 border-b border-gray-200 px-5 py-4 dark:border-gray-800 print:hidden">
-          <div className="min-w-0">
-            <h2 className="text-base font-semibold text-gray-900 dark:text-white">
-              {t("title")}
-            </h2>
-            <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-              {t("subtitle", {
-                width: LABEL_WIDTH_MM,
-                height: LABEL_HEIGHT_MM,
-              })}
-            </p>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <Button
-              onClick={handlePrint}
-              disabled={!qrDataUrl}
-              startIcon={<PrinterIcon className="size-4" />}
-            >
-              {t("print")}
-            </Button>
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label={t("close")}
-              className="rounded-lg p-1.5 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-white/5"
-            >
-              <CloseIcon className="size-5" />
-            </button>
-          </div>
+  const handleRecheckExtension = async () => {
+    setRecheck("checking");
+    setRecheck((await checkBpacExtension()) ? "ready" : "missing");
+  };
+
+  const busy = print.kind === "printing";
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} className="max-w-lg">
+      <div className="p-6">
+        <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+          {t("title")}
+        </h3>
+
+        {/* The size stated beside the title, because it is the question this screen
+            exists to answer and an image at any zoom cannot. */}
+        <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
+          {t("size", {
+            width: LABEL_WIDTH_MM,
+            height: LABEL_HEIGHT_MM,
+            inches: (LABEL_WIDTH_MM / 25.4).toFixed(2),
+            inchesH: (LABEL_HEIGHT_MM / 25.4).toFixed(2),
+          })}
+        </p>
+
+        <div className="mt-4 flex items-center justify-center rounded-lg bg-gray-100 p-5 dark:bg-gray-800">
+          {image ? (
+            <img
+              src={image}
+              alt={t("alt", { code: asset.asset_code })}
+              className="max-w-full"
+              style={{ aspectRatio: `${LABEL_WIDTH_MM} / ${LABEL_HEIGHT_MM}` }}
+            />
+          ) : (
+            <FallbackLabel asset={asset} />
+          )}
         </div>
 
-        <div className="asset-label-print-sheet flex max-h-[70vh] flex-col items-center justify-center gap-4 overflow-auto bg-gray-100 p-6 dark:bg-gray-900">
-          {/* The magnified preview.
-
-              The label itself is exactly 36 × 15 mm and that box must survive into
-              print, so the magnification is a `transform` on a wrapper rather than a
-              size on the label — `transform` paints larger without changing the box,
-              and the print rules set it back to `none`. The wrapper reserves the
-              magnified size so the sheet scrolls correctly on screen. */}
-          <div
-            className="asset-label-scale h-[37.5mm] w-[90mm] shrink-0 overflow-hidden rounded-sm outline-2 outline-gray-400 outline-dashed dark:outline-gray-600"
-            style={{ transform: "scale(2.5)", transformOrigin: "top left" }}
-          >
-            <Label asset={asset} qrDataUrl={qrDataUrl} qrError={qrError} />
+        {/* Why the picture above is not the printer's, and what would make it so. */}
+        {reason && (
+          <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 p-3 text-start text-xs text-gray-600 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-400">
+            <p className="font-medium">
+              {needsExtension ? t("fallbackTitle") : t("templateErrorTitle")}
+            </p>
+            <p className="mt-1 break-words">{reason}</p>
+            {needsExtension ? (
+              <>
+                <p className="mt-1">{t("fallbackBody")}</p>
+                <ul className="mt-2 flex list-disc flex-col gap-1 ps-4">
+                  <li>
+                    <StoreLink href={BPAC_EXTENSION_LINKS.chrome}>
+                      {t("chromeStore")}
+                    </StoreLink>
+                  </li>
+                  <li>
+                    <StoreLink href={BPAC_EXTENSION_LINKS.edge}>
+                      {t("edgeStore")}
+                    </StoreLink>
+                  </li>
+                </ul>
+              </>
+            ) : (
+              <p className="mt-1">{t("templateErrorBody")}</p>
+            )}
           </div>
+        )}
 
-          <p className="max-w-md text-center text-xs text-gray-500 dark:text-gray-400 print:hidden">
-            {qrError ? t("qrFailed") : t("hint")}
-          </p>
-
-          {/* The print dialog is outside the app's control, and the one setting that
-              silently ruins a label is "Headers and footers" — Chrome's own default
-              margins are taller than a 15 mm label, so it scales the whole thing down
-              to fit and the label prints a fraction of its size. This panel is the
-              only place the admin is told about it. */}
-          <div className="w-full max-w-md rounded-lg border border-warning-300 bg-warning-50 p-3 text-start text-xs text-gray-700 dark:border-warning-700 dark:bg-warning-950 dark:text-gray-300 print:hidden">
-            <p className="font-semibold">{t("dialogTitle")}</p>
-            <ul className="mt-1.5 flex list-disc flex-col gap-1 ps-4">
-              <li>{t("hintHeaders")}</li>
-              <li>{t("hintMargins")}</li>
-              <li>{t("hintScale")}</li>
-              <li>{t("hintPaper")}</li>
-            </ul>
+        {/* The print result sits under the image, where the eye already is. */}
+        {print.kind !== "idle" && print.kind !== "printing" && (
+          <div className="mt-3 text-start text-xs">
+            <p
+              className={
+                print.kind === "sent"
+                  ? "font-medium text-success-600 dark:text-success-400"
+                  : "font-medium text-error-600 dark:text-error-500"
+              }
+            >
+              {t(`print.${print.kind}`)}
+            </p>
+            {"detail" in print && print.detail && (
+              <p className="mt-1 rounded-lg bg-gray-50 p-2 break-words text-gray-600 dark:bg-gray-900 dark:text-gray-400">
+                {print.detail}
+              </p>
+            )}
           </div>
+        )}
+
+        {/* The extension's absence is the one failure the operator has to go and fix
+            somewhere else, so the re-check belongs here rather than in a manual. */}
+        {print.kind === "unavailable" && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-start text-xs text-gray-500 dark:text-gray-400">
+            <span>{t("extensionHint")}</span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleRecheckExtension}
+              disabled={recheck === "checking"}
+            >
+              {recheck === "checking" ? t("checking") : t("checkAgain")}
+            </Button>
+            {recheck === "missing" && <span>{t("stillMissing")}</span>}
+            {recheck === "ready" && (
+              <span className="font-medium text-success-600 dark:text-success-400">
+                {t("nowReady")}
+              </span>
+            )}
+          </div>
+        )}
+
+        <div className="mt-6 flex items-center justify-between gap-3">
+          <Button variant="outline" onClick={onClose} disabled={busy}>
+            {t("close")}
+          </Button>
+          <Button onClick={handlePrint} disabled={busy}>
+            {busy ? t("printing") : t("printLabel")}
+          </Button>
         </div>
       </div>
-    </div>,
-    document.body,
+    </Modal>
+  );
+}
+
+/** An external link to a store listing, with the rel the house style requires. */
+function StoreLink({ href, children }: { href: string; children: string }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="font-medium text-brand-600 underline dark:text-brand-400"
+    >
+      {children}
+    </a>
   );
 }
 
 /**
- * The label itself, at true size.
+ * The app's own drawing, magnified to a readable size.
  *
- * **Every dimension here is millimetres and every one of them is load-bearing.** The
- * stock is 36 × 15 mm; the QR takes 11.5 mm of the height, the padding 1.2 mm each
- * edge, and the 1 mm gap leaves the text column 20.9 mm. Changing the font size without
- * re-checking `DESCRIPTION_MAX_CHARS` in `labelSpec.ts` is how the third line stops
- * fitting — the two numbers are stated in the same place for that reason.
+ * **The scale is on the inner box, not on this one.** The outer box is the slot in the
+ * layout — 90 × 40.5 mm, which is the label at 2.53× — and the inner box is the label at
+ * true size with the transform on it. Applying the scale to the outer box was the first
+ * version, and it overflowed the dialog by 520 px: the outer box is *already* the magnified
+ * size, so scaling it magnified the slot as well as the label.
+ *
+ * The two numbers are `LABEL_WIDTH_MM` and this box's width, so they have to move together
+ * if the label geometry ever does — which is why the box is written in millimetres rather
+ * than in pixels.
  */
-function Label({
-  asset,
-  qrDataUrl,
-  qrError,
-}: {
-  asset: Asset;
-  qrDataUrl: string | null;
-  qrError: boolean;
-}) {
-  const { t } = useTranslation("common", { keyPrefix: "assets.label" });
-  const content = buildLabelContent(asset);
-
+function FallbackLabel({ asset }: { asset: Asset }) {
   return (
-    <div className="asset-label flex h-[15mm] w-[36mm] items-center gap-[1mm] bg-white p-[1.2mm] text-black">
-      <div className="flex min-w-0 flex-1 flex-col justify-center gap-[0.5mm]">
-        <span className="truncate text-[7pt] leading-none font-bold">
-          {content.assetCode}
-        </span>
-        <span className="truncate text-[5pt] leading-none">
-          {content.companyAndUnit}
-        </span>
-        <span className="truncate text-[5pt] leading-none">
-          {content.description}
-        </span>
-      </div>
-
-      {/* An `<img>` holding an SVG data URL, never a `<canvas>` and never inlined
-          markup — see `qrImage.ts` for both, and for why the symbol is resolution
-          independent.
-
-          The dimensions are explicit rather than left to the image's intrinsic size
-          because a QR whose box the layout engine derives from its bitmap will not
-          land on the label's 11.5 mm grid, and a label printed half a millimetre out
-          is a label that has to be trimmed by hand. */}
-      <div className="flex h-[11.5mm] w-[11.5mm] shrink-0 items-center justify-center">
-        {qrDataUrl ? (
-          <img
-            src={qrDataUrl}
-            alt={t("qrAlt", { code: content.assetCode })}
-            className="h-[11.5mm] w-[11.5mm]"
-          />
-        ) : (
-          <span className="text-center text-[4pt] leading-tight text-gray-400">
-            {qrError ? "!" : "…"}
-          </span>
-        )}
+    <div
+      className="shrink-0 overflow-hidden bg-white"
+      style={{
+        // 90 mm is the slot; 40.5 mm is 90 mm at the label's own 35.56:16 ratio.
+        width: `${SLOT_MM}mm`,
+        height: `${(SLOT_MM * LABEL_BOX_HEIGHT_MM) / LABEL_BOX_WIDTH_MM}mm`,
+      }}
+    >
+      <div
+        style={{
+          width: `${LABEL_BOX_WIDTH_MM}mm`,
+          height: `${LABEL_BOX_HEIGHT_MM}mm`,
+          transform: `scale(${SLOT_MM / LABEL_BOX_WIDTH_MM})`,
+          transformOrigin: "top left",
+        }}
+      >
+        <AssetLabel asset={asset} />
       </div>
     </div>
   );

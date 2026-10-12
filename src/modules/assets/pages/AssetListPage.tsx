@@ -795,10 +795,10 @@ function RowActions({
             {t("changeStatus")}
           </DropdownItem>
 
-          {/* Printing a label does not change the asset, so it sits above the
-              destructive item and is not styled as one. It lives in this menu rather
-              than on the row itself because a label is a whole document, not a field
-              — the same reason Print and Detail sit behind the handover list's row. */}
+          {/* One label action. It opens a dialog that renders the label and carries
+              the print button, rather than a separate preview item and a separate
+              print item — a label is four fields, so showing it costs almost nothing
+              and putting it on screen first is the point. */}
           <DropdownItem onClick={onPrintLabel} baseClassName={itemClass}>
             <QrCodeIcon className="size-4 shrink-0" />
             {t("printLabel")}
@@ -864,6 +864,7 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
    * the time the modal closes.
    */
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  /** Which row's label is being previewed, or null. Read back out of `assets` below. */
   /** Which row's label is being previewed, or null. Read back out of `assets` below. */
   const [labelAssetId, setLabelAssetId] = useState<string | null>(null);
 
@@ -1047,13 +1048,7 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
   );
 
   /**
-   * Filtering in the browser, on purpose. `getAssets` is a plain ordered read
-   * and the inventory is a few hundred rows; a query per keystroke would be
-   * slower and would need the filter state to survive a reload. This is the same
-   * approach the user list takes.
-   */
-  /**
-   * The asset the label modal shows.
+   * The asset the label dialog shows.
    *
    * **Read out of `assets` by id rather than captured from the click**, so the preview
    * is always built from the current list row. If it were held as a snapshot, a
@@ -1065,6 +1060,12 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
     [assets, labelAssetId],
   );
 
+  /**
+   * Filtering in the browser, on purpose. `getAssets` is a plain ordered read
+   * and the inventory is a few hundred rows; a query per keystroke would be
+   * slower and would need the filter state to survive a reload. This is the same
+   * approach the user list takes.
+   */
   const visible = useMemo(() => {
     const needle = search.trim().toLowerCase();
 
@@ -1116,11 +1117,11 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
   };
 
   /**
-   * Open the label preview for one row.
+   * Open the label dialog for one row — preview and print button together.
    *
    * **The id is stored rather than the asset**, for the reason `editingId` and
    * `editingStatus` are: the modal reads the asset back out of the current `assets`
-   * state by id, so a `reload()` in flight cannot leave the preview showing whichever
+   * state by id, so a `reload()` in flight cannot leave the dialog showing whichever
    * row happened to be in memory when the click landed.
    */
   const handleOpenLabel = (row: Asset) => {
@@ -1579,9 +1580,8 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
       </div>
 
       {/* ------------------------------------------------------- asset label */}
-      {/* Mounted only while an id exists, so the label's own data work cannot start
-          for a row the admin never opened. It portals onto <body> and keys its print
-          rules off `asset-label-print-root` — see `AssetLabelModal`. */}
+      {/* Mounted only while an id exists, so the dialog's own render of the
+          template cannot start for a row the admin never opened. */}
       {labelAsset !== null && (
         <AssetLabelModal
           asset={labelAsset}
