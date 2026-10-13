@@ -8,6 +8,7 @@ import {
   ChevronDownIcon,
   GroupIcon,
   HorizontaLDots,
+  SliderHorizontalIcon,
 } from "../icons";
 import { useIsAdmin } from "@/hooks/useIsAdmin";
 import { cn } from "../utils";
@@ -102,6 +103,27 @@ const navItems: NavItem[] = [
         path: "/asset-settings",
         adminOnly: true,
       },
+    ],
+  },
+  {
+    icon: <SliderHorizontalIcon fontSize={24} />,
+    name: "System Setting",
+    key: "systemSetting",
+    // `adminOnly` on the **group**, like User Management: everything filed under
+    // System Setting is configuration for the installation rather than data anybody
+    // needs to read, so the whole group disappearing for a staff member is correct —
+    // and it means the next sub-item inherits the restriction without repeating it.
+    adminOnly: true,
+    // A submenu of one, which is deliberate rather than premature. The group is what
+    // gives a *second* setting somewhere to live that nobody has to decide on in
+    // advance, and it makes `/system-setting` a real route instead of a description.
+    //
+    // Kept separate from **Asset Settings** on purpose: that one owns the reference
+    // data behind the asset form's pickers, and this one owns how the installation
+    // behaves. Merging them would put "who may change a category" and "how the printer
+    // is configured" in one list.
+    subItems: [
+      { name: "Print Setting", key: "printSetting", path: "/system-setting" },
     ],
   },
   {

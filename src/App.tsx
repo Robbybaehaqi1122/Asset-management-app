@@ -9,6 +9,7 @@ import CompanyListPage from "./modules/companies/pages/CompanyListPage";
 import HandoverListPage from "./modules/handover/pages/HandoverListPage";
 import DepartmentListPage from "./modules/departments/pages/DepartmentListPage";
 import PositionListPage from "./modules/positions/pages/PositionListPage";
+import SystemSettingPage from "./modules/system-settings/pages/SystemSettingPage";
 import UserListPage from "./modules/users/pages/UserListPage";
 import SignIn from "./pages/AuthPages/SignIn";
 import Calendar from "./pages/Calendar";
@@ -95,6 +96,11 @@ export default function App() {
                   `locations` sudah jadi referensi, dan `assets.category_id` /
                   `assets.location_id` sudah menunjuk ke sana. */}
               <Route path="/asset-settings" element={<AssetSettingsPage />} />
+              {/* Konfigurasi untuk instalasi ini, bukan data inventaris. Berdiri
+                  sendiri dari `/asset-settings` yang sudah memiliki referensi
+                  untuk picker form aset — keduanya soal dua hal berbeda, jadi
+                  tidak digabung. */}
+              <Route path="/system-setting" element={<SystemSettingPage />} />
               <Route path="/blank" element={<Blank />} />
             </Route>
           </Route>

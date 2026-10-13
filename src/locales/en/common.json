@@ -14,7 +14,9 @@
       "handover": "Asset Handover",
       "assetSettings": "Asset Settings",
       "position": "Position",
-      "company": "Company"
+      "company": "Company",
+      "systemSetting": "System Setting",
+      "printSetting": "Print Setting"
     }
   },
   "header": {
@@ -692,6 +694,7 @@
       "print.unavailable": "Silent printing needs the Brother b-PAC browser extension, and it was not detected.",
       "print.noPrinter": "No Brother label printer was found.",
       "print.offline": "The printer is not ready.",
+      "print.noTemplate": "No print template is active yet.",
       "print.failed": "The label could not be printed.",
       "templateErrorTitle": "b-PAC could not render the label template.",
       "templateErrorBody": "Brother's own message is above. Nothing in a browser can repair a template, so check the .lbx against the four object names in bpacService.",
@@ -930,6 +933,47 @@
       "save": "The company could not be saved. Please try again.",
       "delete": "The company could not be deleted. Please try again.",
       "inUse": "This company is still the employer of {count} person/people on the handover roster. Move them to another company first."
+    }
+  },
+  "systemSetting": {
+    "pageTitle": "System Setting",
+    "pageDescription": "Configuration for this installation",
+    "checkingAccess": "Checking your access…",
+    "noAccess": "This page is only available to administrators.",
+    "printSetting": {
+      "title": "Print Setting",
+      "loading": "Reading the print templates…",
+      "loadFailed": "The print templates could not be loaded.",
+      "retry": "Try again",
+      "activeHeading": "Template in use",
+      "noneActive": "No template is active, so printing has nothing to open. Upload one below and activate it.",
+      "sheetLabel": "Label size",
+      "sizeLabel": "size",
+      "sheetSaved": "The label size was saved.",
+      "readingFile": "Reading the template’s sheets…",
+      "sheetNotFillable": "Sheet “{sheet}” has no {missing}. Labels would print with those fields blank — choose a different size, or re-export the template with those objects in P-touch Editor.",
+      "uploadHeading": "Add a template",
+      "uploadBody": "Export the template from P-touch Editor with File ▸ Export ▸ Template (.lbx), then choose it here. It is checked here in your browser before anything is uploaded.",
+      "fileLabel": "Template file",
+      "nameLabel": "Name",
+      "namePlaceholder": "36 × 15 mm, office roll",
+      "upload": "Upload",
+      "uploading": "Checking the file…",
+      "uploaded": "“{name}” was uploaded.",
+      "listHeading": "Stored templates",
+      "inUse": "in use",
+      "fileDefault": "the file’s own default",
+      "activate": "Use",
+      "activated": "“{name}” is now the template in use.",
+      "delete": "Delete",
+      "deleted": "“{name}” was deleted.",
+      "confirmDelete": "Delete “{name}”?",
+      "confirmDeleteBody": "The stored file is removed too, so this cannot be undone from here.",
+      "confirmDeleteButton": "Delete it",
+      "cancel": "Cancel",
+      "notFillable": "Sheet “{sheet}” has no {missing}, so labels would print with those fields blank.",
+      "nothingWritten": "The change was refused, so nothing was saved. Reload and try again.",
+      "unexpected": "Something went wrong. Reload and try again."
     }
   }
 }

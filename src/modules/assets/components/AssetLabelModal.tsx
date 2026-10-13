@@ -14,6 +14,7 @@ import {
   BPAC_EXTENSION_LINKS,
   BpacPrinterNotFoundError,
   BpacPrinterOfflineError,
+  BpacTemplateNotChosenError,
   BpacUnavailableError,
   checkBpacExtension,
   printAssetLabelSilent,
@@ -33,7 +34,7 @@ const SLOT_MM = 90;
 type PrintOutcome =
   | { kind: "idle" | "printing" | "sent" }
   | {
-      kind: "unavailable" | "noPrinter" | "offline" | "failed";
+      kind: "unavailable" | "noPrinter" | "offline" | "noTemplate" | "failed";
       detail: string | null;
     };
 
@@ -164,7 +165,12 @@ export default function AssetLabelModal({
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
 
-      if (error instanceof BpacUnavailableError) {
+      if (error instanceof BpacTemplateNotChosenError) {
+        // Its own kind, because the fix is not a printer, not an extension and not the
+        // media: an administrator has to choose a template under System Setting. Folding
+        // it into "could not print" would send the operator after the wrong thing.
+        setPrint({ kind: "noTemplate", detail });
+      } else if (error instanceof BpacUnavailableError) {
         setPrint({ kind: "unavailable", detail });
       } else if (error instanceof BpacPrinterNotFoundError) {
         setPrint({ kind: "noPrinter", detail });

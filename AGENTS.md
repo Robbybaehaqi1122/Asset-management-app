@@ -188,7 +188,7 @@ src/
 │   └── calendar/              the calendar feature: Calendar CalendarEventModal
 │                              CalendarEventItem CalendarViewSelect icons types
 │   └── modules/               self-contained features: users/, departments/, assets/,
-│                              asset-settings/, handover/, companies/
+│                              asset-settings/, handover/, companies/, system-settings/
 │       ├── users/             the user-management feature: pages/ services/
 │       │                      see User management
 │       ├── departments/       the department feature: list + create, feeds the pickers
@@ -199,8 +199,10 @@ src/
 │       │                      see The asset inventory
 │       ├── handover/          the handover feature: pages/ services/
 │       │                      see Asset handover is the loans table, finally
-│       └── companies/         the company-name list: pages/ services/
-│                              see Company is a list, and nothing points at it
+│       ├── companies/         the company-name list: pages/ services/
+│       │                      see Company is a list, and nothing points at it
+│       └── system-settings/   installation-wide configuration: pages/
+│                              see System Setting is a group of one
 ├── layout/                    AppLayout AppSidebar AppHeader Backdrop
 ├── context/                   AuthContext ThemeContext SidebarContext LanguageContext
 ├── hooks/                     useModal useClickOutside useIsAdmin
@@ -287,11 +289,14 @@ vercel.json                    SPA rewrite only — no framework, no buildComman
 | `20260927002600_companies.sql` | the `companies` list, its unique index and its four policies; see Company is a list, and nothing points at it |
 | `20260927002700_handover_user_company_nik.sql` | `handover_users.company_id` and `.nik_eid`, plus the `companies_guard_delete` the previous migration owed; see The recipient is not an account |
 | `20260927002800_accessory_serial.sql` | `assignments_accessories.serial_number`; see A handover records what went with the device |
+| `20260927002900_print_templates.sql` | `print_templates`, the `print-templates` bucket and its four policies; see Print templates are read from the file, never copied |
 
-**All twenty-eight are applied to the remote**, confirmed by reading
-`supabase_migrations.schema_migrations` after the `02800` push, which lists **28**
-rows. The remote carries **13 tables** and **45 indexes** in `public`, measured
-after that push; `02700` added no table and one index; `02600` added the thirteenth table and two indexes (the case-folded
+**All twenty-nine are applied to the remote**, confirmed by reading
+`supabase_migrations.schema_migrations` after the `02900` push, which lists **29**
+rows. The remote carries **14 tables** and **48 indexes** in `public`, measured after that
+push with `db query --linked`; `02900` added the fourteenth table and three indexes — the
+primary key, `print_templates_one_active` and `print_templates_name_idx` — with it, plus
+the `print-templates` bucket and its four storage policies. Before that, `02700` added no table and one index; `02600` added the thirteenth table and two indexes (the case-folded
 name index and the primary key) with it; `02400` added the twelfth table and two indexes (the FK and the
 primary key) with it, and `02500` added none because it only drops a function. Before
 that, `02000` added three indexes, `02100` none, `02200` added
@@ -308,7 +313,40 @@ migration will produce the same reading until it is pushed.**
 Read the ledger rather than trusting the CLI's wording, because this file
 previously claimed `00900` was still unpushed when it had already been applied.
 
-Note that `db push` printed `Remote database is up to date.` immediately after
+Note that **A `db push` that succeeds is not the same as PostgREST knowing about the new table.**
+PostgREST caches the schema and reloads it through the `pgrst_ddl_watch` **event
+trigger**. The trigger is present on this project — check it with `pg_event_trigger`, not
+`pg_trigger`, since an event trigger is not a row in `pg_trigger` and asking the wrong
+catalogue returns nothing and invites a confident wrong conclusion. But the notification
+only reaches a PostgREST that is listening at the time, so a push can complete in full
+while PostgREST keeps serving the old schema.
+
+The symptom is a `404` from the application for a table that exists, has its policies, and
+passes every SQL assertion. Measured after the `02900` push:
+
+```
+-- with the anon key, before any cache reload
+GET /rest/v1/print_templates?select=id  ->  404        <- the reported failure
+-- and, once the cache had reloaded on its own
+GET /rest/v1/print_templates?select=id  ->  42501 permission denied
+GET /rest/v1/companies?select=id        ->  42501 permission denied   <- identical
+```
+
+`42501` is the **healthy** answer for an anon key: the relation resolved and the grant was
+refused, which is what `revoke all ... from anon` is for. A new table and an
+established one must be indistinguishable.
+
+So send the notification yourself, after every push:
+
+```sql
+notify pgrst, 'reload schema';
+```
+
+It is free, idempotent, and removes the wait. Verify with the anon key rather than with
+the browser: `404` means the cache is stale, `42501` means the table is exposed and
+merely not granted to `anon`, and anything else means a real problem.
+
+`db push` also printed `Remote database is up to date.` immediately after
 applying 004, with no "Applying migration" line. That message is not a reliable
 signal in either direction — confirm a push landed by reading
 `supabase_migrations.schema_migrations`, not by trusting the CLI's wording.
@@ -1374,6 +1412,180 @@ filter state to survive a reload.
   cells had no padding at all so the text sat flush against the card border — so
   treat the first click-through as the real test.
 
+## System Setting is a group of one
+
+`src/modules/system-settings/pages/SystemSettingPage.tsx`, at `/system-setting`. The
+sidebar entry is a **group** with one sub-item, **Print Setting**, and the page under it
+is empty by request.
+
+**The submenu of one is the point, not a placeholder.** The group is what gives a *second*
+setting somewhere to live that nobody has to decide on in advance, and it makes
+`/system-setting` a real route rather than a description of one. Adding the second
+sub-item later is a one-line change to `subItems` with no new route, no new folder and no
+navigation decision to revisit.
+
+**It is deliberately not merged into `/asset-settings`,** and the two names being one word
+apart is the trap. Asset Settings owns the **reference data** behind the asset form's
+pickers — categories, locations, the handover roster. System Setting owns **how this
+installation behaves**. Merging them would file "who may rename a category" next to "how
+the printer is configured" in one list, which is the same one-list-two-things mistake the
+schema keeps refusing. If a setting ever *is* reference data, it goes in `/asset-settings`.
+
+**`adminOnly` sits on the group, not the sub-item** — the same reason User Management puts
+it there. Everything filed under System Setting is configuration, so the group disappearing
+for a staff member is correct, and the next sub-item inherits the restriction without
+repeating it. (Asset Settings is the opposite case: its group mixes an inventory readable
+by everyone with an admin-only editor, so the flag has to be on the sub-item.)
+
+**The empty state says why it is empty.** "Nothing is configured here yet" rather than a
+blank panel, because **a blank screen with no explanation is indistinguishable from a
+broken one** — and this module is being added ahead of its content. The wording is the
+deliverable as much as the layout is.
+
+**`useIsAdmin()` fails closed, so the page waits on `isProfileLoading` before refusing.**
+Between the session resolving and the profile row arriving, the hook returns `false`.
+That is right for a *write* — which is why it fails closed — and wrong for a screen whose
+whole job is to say "you cannot be here", because it would tell an admin they are not one
+for a frame. Same guard as `/users` and `/asset-settings`.
+
+**The panel is its own component** with a `services/` layer beside it, and the route is a
+shell — the access check and the frame live here, everything with state does not. A page
+that owns a panel, its service and an upload is a page nobody can read.
+
+## Print templates are read from the file, never copied
+
+`20260927002900_print_templates.sql`, `printTemplateService.ts`,
+`PrintSettingPanel.tsx`, and `lbxReader.ts`. The panel lives at
+`/system-setting ▸ Print Setting`; `bpacService` opens whatever it says is active.
+
+### A `.lbx` is a ZIP whose payload is DEFLATE, and that decides the reader
+
+Measured against `asset-36x15.lbx`:
+
+```
+label.xml   method=8 (DEFLATE)  raw=19998B  compressed=2091B
+"Text7" in the raw bytes       : not found
+"label.xml" in the raw bytes   : found      <- the central directory is not compressed
+```
+
+**So validating an upload cannot be a substring search.** `lbxReader` parses the ZIP far
+enough to locate `label.xml`, then inflates it with `DecompressionStream("deflate-raw")` —
+a native browser API, not a dependency. Both compression methods are handled, because
+method 0 (stored) is legal and a template written by another tool may use it; verified
+against a fixture built as STORED.
+
+**Why not a zip library:** ~60 lines of well-defined parsing against a new dependency and
+a new licence in the bundle. And a browser without `DecompressionStream` cannot print at
+all anyway — b-PAC's transport *is* a Chromium extension.
+
+### The file's shape was read, not guessed, and two guesses were wrong
+
+| | guessed | actual |
+|---|---|---|
+| a sheet is | `<style:page-layout>` | `<style:sheet name="36x15">` — there is no `page-layout` in the file at all |
+| an object is named by | `draw:name="Text7"` | `objectName="Text7"` — no `draw:name` appears anywhere |
+
+**Both failures were silent**: a regex that matches nothing raises nothing, and the shape
+it was written for is plausible. What caught it was `readLbx` refusing a template with
+**no sheet** — which is why that refusal exists rather than returning an empty list.
+
+Objects are **per sheet**, so the "can this be filled" check is per sheet and never per file:
+
+```
+Sheet 2   18.06 x 17.92 mm   Frame17, Symbol21        missing: asset-code Text7 Text8 Text9
+36x13     36.12 x 13.19 mm   asset-code, Text7…       missing: (none)
+36x15     36.12 x 16.02 mm   asset-code, Text7…       missing: (none)
+```
+
+`Sheet 2` is Brother's own file and has none of the four objects the print path writes.
+Choosing it as the label size prints four blank fields with no error anywhere — which is
+what the validation exists to catch, and the Print panel says it on the option itself.
+
+### The template's own `currentSheet` is not the sheet anyone wants
+
+```xml
+<pt:body currentSheet="36x13">
+```
+
+**b-PAC opens `asset-36x15.lbx` on the 13 mm roll**, so a machine loaded with 15 mm stock
+prints 2 mm short on every label and nothing reports it. That is the whole reason
+`print_templates.sheet` exists and the whole reason `bpacService` calls `SetCurrentSheet`
+after `Open`. `SetCurrentSheet` needs an open document, so the order is fixed: open, then
+select.
+
+**A sheet name the template does not have is refused rather than ignored**, because a
+silent no-op would leave the document on whatever the file declared — the exact failure
+the call exists to prevent.
+
+### Sizes are read from the file, so they cannot go stale
+
+**No `width_mm`/`height_mm` columns.** They would be a second source of truth for a fact
+the `.lbx` owns, and could disagree with the file the moment somebody re-exported a
+template without re-uploading it. The dropdown downloads the 2.7 KB file and inflates it
+— the same fetch b-PAC makes when it opens the template.
+
+### The bucket is public, and that is deliberate
+
+**`Doc.Open(url)` is fetched by the b-PAC extension, which attaches no `Authorization`
+header** — it is not this application's session and has nowhere to get one. A private
+bucket would therefore make the template unreadable at print time, which is the one thing
+this feature exists to do.
+
+What a `.lbx` contains is **layout**: paper sizes, object positions, fonts, a barcode
+type. No asset code, no name, no credential — the data is written in at print time and
+never stored in the file. Public read discloses the shape of a blank label, which is not
+a secret. **Write stays admin-only**, as three bucket policies.
+
+### Four findings that each cost a mistake
+
+1. **`comment on bucket` is not valid Postgres.** `storage.buckets` is a table, and a
+   comment there would describe every bucket on the project. The note belongs in a `--`
+   comment above the `insert`.
+2. **`storage.protect_delete()` refuses `delete from storage.objects` outright.** A
+   leftover object can only go through the Storage API — which is what
+   `deletePrintTemplate` uses, and the reason it removes the object before the row rather
+   than leaving either behind.
+3. **`prefixes: [""]` deletes nothing and answers `200 []`.** An empty prefix matches no
+   object. `prefixes: [<exact name>]` works, verified: four objects listed, deleted by
+   exact name, and the list came back empty. This is the form `.remove([path])` sends.
+4. **A bare `POST` returns `201` with an empty body** unless `Prefer: return=representation`
+   is sent. The service uses `.insert().select()`, which makes supabase-js add that header
+   itself, so this only bites a raw probe — which is exactly what bit the test here.
+
+### Verified on the local stack, not inferred
+
+Eleven assertions over HTTP with a hand-signed JWT — a SQL suite proves a policy, but only
+this proves the path the app takes, including that the bucket name is right:
+
+```
+OK  bucket reachable by an admin
+OK  real .lbx uploaded                                     HTTP 200
+OK  row inserted                                           HTTP 201
+OK  public read works, and the bytes match                 HTTP 200, 2706 B
+OK  second row inserted                                    HTTP 201
+OK  a second active is refused by the index                HTTP 409, 23505
+OK  staff can read the list                                2 rows
+OK  staff PATCH changes nothing and raises nothing         HTTP 204 — zero rows, no error
+OK  staff insert is refused outright                       HTTP 403
+OK  the sheet can be changed                               sheet=36x13
+OK  rows and objects both gone                             0 rows, object not found
+```
+
+Plus nine SQL assertions, including that **`anon` holds no privileges on the table at all**
+— with the explicit `revoke` it gets `permission denied`, not an empty result. Without
+that revoke it would hold all seven privileges and every query would come back empty,
+which reads exactly like correct.
+
+**The staff PATCH is the fifth time in this codebase** a row-level `using` filter has
+turned out to be a filter rather than a rejection. See the Don'ts.
+
+### Cross-module import, deliberately
+
+`bpacService.ts` (in `assets`) imports from `system-settings`. **The other direction is
+the one that would be wrong**: the reader lives in `assets/document/` beside
+`labelSpec.ts`, because it is Brother-template knowledge and `assets` is the module that
+prints. `system-settings` consumes it.
+
 ## The asset label is measured out of Brother's own label file, not guessed
 
 `src/modules/assets/document/labelSpec.ts` holds every dimension,
@@ -1869,6 +2081,30 @@ the content type before the status. See the three guards in `loadViaBlob()`.
 nothing — Tailwind reads only literal class names — and the element then applies
 `absolute` with no offset, so it stacks on whatever is beside it. Inline `style` for
 anything that comes from data; `className` for what is written in the source.
+
+- Don't store a label's size in `print_templates`. The `.lbx` states it in points, and
+  `lbxReader` reads it. A `width_mm`/`height_mm` pair is a second source of truth for a
+  fact the file owns, and disagrees with it the moment somebody re-exports a template
+  without re-uploading.
+- Don't make the `print-templates` bucket private. `Doc.Open` is fetched by the b-PAC
+  extension with no `Authorization` header, so a private bucket makes the template
+  unreadable at print time — the one thing the feature exists to do. The file holds
+  layout only.
+- Don't guess the shape of a `.lbx`. `<style:page-layout>` and `draw:name` are both wrong
+  and both match nothing silently; the real elements are `<style:sheet>` and
+  `objectName`. Read the file, as `labelSpec.ts` did for the paper and the fonts.
+- Don't validate an upload with a substring search. `label.xml` is DEFLATE-compressed, so
+  `Text7` is not in the raw bytes — the check has to inflate it.
+- Don't `delete from storage.objects`. `storage.protect_delete()` refuses it, and
+  `prefixes: [""]` on the Storage API deletes nothing while answering `200 []`. Use exact
+  object names, which is what `.remove([path])` sends.
+- Don't leave `bpacService` falling back to the committed `asset-36x15.lbx` when no
+  template is active. That file declares `currentSheet="36x13"`, so the fallback prints
+  2 mm short on a 15 mm roll with nothing reporting it. `BpacTemplateNotChosenError` says
+  so instead.
+- Don't `SetCurrentSheet` before `Open`. The document has to be open before it has sheets,
+  and a name the template does not have is a silent no-op that leaves the wrong one
+  selected.
 
 ### What is verified, and what is not
 
@@ -4711,10 +4947,24 @@ not go looking for them unprompted.
 - Don't answer "it's not showing" with a theory about the code before reading the rows
   behind it. The roster here was three rows of `NULL`, which is why the block was
   absent — and the code was doing exactly what it had been told to do.
+- Don't diagnose a 404 on a just-pushed table as a missing migration. `db push` can
+  succeed fully while PostgREST's schema cache predates the table. Probe it with the anon
+  key: `404` means a stale cache, `42501` means the relation resolved and only the grant
+  was refused — which is what `revoke all ... from anon` should produce. Then run
+  `notify pgrst, 'reload schema';`.
+- Don't look for `pgrst_ddl_watch` in `pg_trigger`. It is an **event** trigger; the
+  catalogue that holds it is `pg_event_trigger`. Asking the wrong one returns nothing and
+  reads as "the reload mechanism is missing".
+- Don't trust `db push`'s output as proof the application can see the result. It reports
+  on the migration, never on PostgREST's cache, and the two can disagree for minutes.
+
 - Don't expect a staff `update` on a table to raise. `handover_users_update_admin` is a
   row filter, so the statement matches nothing and PostgREST reports success. This has
-  been written wrong in this repo's own test three times, and `assignments_accessories`
-  made it a fourth: its `PATCH` returns `200` with `[]`.
+  been written wrong in this repo's own test three times, and it has now been measured
+  five times over: `assignments_accessories` returned `200` with `[]`, and a staff
+  `PATCH` on `print_templates` returns **`204` with no body at all** — not even an empty
+  array. A probe that asserts "200 with `[]`" is asserting a shape the SDK chooses, not a
+  boundary; count the rows changed.
 - Don't offer delete-and-re-add as the only way to fix a typo. An accessory that could
   be added and removed but never **corrected** made the ordinary mistake — forgetting the
   serial while adding a bag — unrecoverable without retyping the name and risking a

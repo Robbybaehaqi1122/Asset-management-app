@@ -1,4 +1,11 @@
-import { buildLabelContent, type LabelSource } from "../document/labelSpec";
+import {
+  buildLabelContent,
+  type LabelSource,
+} from "@/modules/assets/document/labelSpec";
+import {
+  getActivePrintTemplate,
+  templateUrl,
+} from "@/modules/system-settings/services/printTemplateService";
 import type { BpacDocument, BpacModule } from "@/vendor/bpac";
 
 /**
@@ -68,7 +75,29 @@ const VENDOR_MODULE_URL = "/vendor/bpac.js";
  * onto every cashier's PC" step, and it must be **same-origin** because the extension
  * performs the fetch.
  */
-const TEMPLATE_URL = "/label/asset-36x15.lbx";
+/**
+ * Which `.lbx` to print against, and which sheet of it.
+ *
+ * **Read from `print_templates` rather than hard-coded, and resolved per job.** The
+ * panel at `/system-setting` is what decides, so the two cannot disagree — and it is read
+ * fresh inside the serialised queue rather than cached at module load, so an admin who
+ * changes the size does not have to reload the page.
+ *
+ * **With no active template this refuses rather than falling back.** The obvious fallback
+ * is the committed `public/label/asset-36x15.lbx`, and it is wrong: that file declares
+ * `<pt:body currentSheet="36x13">`, so b-PAC would open it on the 13 mm roll while the
+ * machine is loaded with 15 mm stock — a silent, wrong-sized label on every print.
+ */
+async function resolveTemplate(): Promise<{
+  url: string;
+  sheet: string | null;
+}> {
+  const row = await getActivePrintTemplate();
+  if (!row) {
+    throw new BpacTemplateNotChosenError();
+  }
+  return { url: templateUrl(row.filePath), sheet: row.sheet };
+}
 
 /** Where the admin's chosen printer is remembered between sessions. */
 const PRINTER_STORAGE_KEY = "bpac.printerName";
@@ -145,6 +174,24 @@ export class BpacPrinterOfflineError extends Error {
 }
 
 /** Anything the SDK refused: a `false` result, carried verbatim. */
+/**
+ * No template has been activated, so there is nothing to open.
+ *
+ * **A refusal rather than a fallback**, and the reason is specific rather than
+ * principled: the obvious fallback — the committed `public/label/asset-36x15.lbx` — opens
+ * on whatever its own `currentSheet` says, and that file says **36x13**. On a machine
+ * loaded with 15 mm stock every label would print 2 mm short, with nothing to report it.
+ * An operator who has not chosen a template gets told so.
+ */
+export class BpacTemplateNotChosenError extends Error {
+  constructor() {
+    super(
+      "No print template is active. Choose one under System Setting ▸ Print Setting.",
+    );
+    this.name = "BpacTemplateNotChosenError";
+  }
+}
+
 export class BpacPrintError extends Error {
   constructor(stage: string, detail: string) {
     super(`${stage}: ${detail}`);
@@ -567,14 +614,21 @@ async function previewThrough(
   doc: BpacDocument,
   asset: LabelSource,
 ): Promise<string> {
-  const opened = await doc.Open(new URL(TEMPLATE_URL, location.origin).href);
+  const template = await resolveTemplate();
+  const opened = await doc.Open(template.url);
 
   if (!opened) {
     throw new BpacPrintError(
       "template",
-      `b-PAC could not open ${TEMPLATE_URL}. The file is served by this app, so a failure here usually means the b-PAC Client or its browser extension is not running.`,
+      `b-PAC could not open ${template.url}. A failure here usually means the b-PAC Client or its browser extension is not running.`,
     );
   }
+
+  // The sheet is chosen **after** Open, because a document has to be open before its
+  // sheets exist. This is the whole reason the size is a setting: `asset-36x15.lbx`
+  // carries three sheets and declares 36x13 as its own current one, so without this a
+  // 15 mm machine prints at 13 mm and nothing reports it.
+  await selectSheet(doc, template.sheet);
 
   try {
     await populateTemplate(doc, asset);
@@ -585,6 +639,34 @@ async function previewThrough(
     // that stops responding for the rest of the session.
     await doc.Close().catch(() => undefined);
   }
+}
+
+/**
+ * Choose the sheet to print on, and refuse a name the template does not have.
+ *
+ * **A wrong sheet name is refused rather than ignored.** `SetCurrentSheet` takes a name
+ * the file states; passing one it does not have would leave the document on whatever the
+ * file's own `currentSheet` is, which is the exact failure this call exists to prevent —
+ * so a silent no-op here would undo the setting.
+ *
+ * `null` means "whatever the file declares", which is only ever right when the operator
+ * has not chosen, and the Print panel says so next to the dropdown.
+ */
+async function selectSheet(
+  doc: BpacDocument,
+  sheet: string | null,
+): Promise<void> {
+  if (sheet === null) return;
+
+  const sheets = await doc.GetSheetNames();
+  if (!Array.isArray(sheets) || !sheets.includes(sheet)) {
+    throw new BpacPrintError(
+      "sheet",
+      `"${sheet}" is not a sheet in this template. It has: ${Array.isArray(sheets) ? sheets.join(", ") : "none"}.`,
+    );
+  }
+
+  await doc.SetCurrentSheet(sheet);
 }
 
 /** Brother's image format for `GetImageData`, from their own sample. */
@@ -643,14 +725,21 @@ async function printThrough(
   doc: BpacDocument,
   asset: LabelSource,
 ): Promise<void> {
-  const opened = await doc.Open(new URL(TEMPLATE_URL, location.origin).href);
+  const template = await resolveTemplate();
+  const opened = await doc.Open(template.url);
 
   if (!opened) {
     throw new BpacPrintError(
       "template",
-      `b-PAC could not open ${TEMPLATE_URL}. The file is served by this app, so a failure here usually means the b-PAC Client or its browser extension is not running.`,
+      `b-PAC could not open ${template.url}. A failure here usually means the b-PAC Client or its browser extension is not running.`,
     );
   }
+
+  // The sheet is chosen **after** Open, because a document has to be open before its
+  // sheets exist. This is the whole reason the size is a setting: `asset-36x15.lbx`
+  // carries three sheets and declares 36x13 as its own current one, so without this a
+  // 15 mm machine prints at 13 mm and nothing reports it.
+  await selectSheet(doc, template.sheet);
 
   try {
     const printer = await resolvePrinter(doc);

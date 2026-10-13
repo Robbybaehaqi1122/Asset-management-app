@@ -107,6 +107,19 @@ export interface BpacDocument {
   GetPrinter(): Promise<BpacPrinter | null>;
 
   /**
+   * The sheet names this document declares, in file order.
+   *
+   * **Verified against `asset-36x15.lbx`**, which carries three: `Sheet 2`
+   * (18.06 x 17.92 mm), `36x13` (36.12 x 13.19 mm) and `36x15` (36.12 x 16.02 mm).
+   * A template may hold sheets with nothing this application can write to, which is why
+   * the service checks the name is present before selecting it rather than assuming.
+   */
+  GetSheetNames(): Promise<string[]>;
+  /** Which sheet is active now. The file picks one, and it is not always the wanted one. */
+  GetCurrentSheet(): Promise<string>;
+  SetCurrentSheet(name: string): Promise<boolean>;
+
+  /**
    * **Rejects with `undefined` when the name is not in the template.** Not a falsy
    * resolve — a rejection with no payload. Callers have to treat "threw" as "missing"
    * and cannot read anything from the error.
