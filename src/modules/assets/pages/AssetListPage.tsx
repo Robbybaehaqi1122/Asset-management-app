@@ -655,6 +655,7 @@ function RowActions({
   onChangeStatus,
   onPrintLabel,
   onDelete,
+  canDelete,
 }: {
   row: Asset;
   isOpen: boolean;
@@ -664,6 +665,15 @@ function RowActions({
   onChangeStatus: () => void;
   onPrintLabel: () => void;
   onDelete: () => void;
+  /**
+   * Delete stays admin-only while add and edit are not.
+   *
+   * **This is a different shape from the sidebar's `adminOnly`, and it has to be.** The
+   * row menu is one control holding three actions, and two of them now belong to staff.
+   * A flag on the sub-item would take the whole menu with it; a flag on the item hides one
+   * destructive row and leaves the rest.
+   */
+  canDelete: boolean;
 }) {
   const { t } = useTranslation("common", { keyPrefix: "assets.rowActions" });
 
@@ -804,14 +814,16 @@ function RowActions({
             {t("printLabel")}
           </DropdownItem>
 
-          <DropdownItem
-            onClick={onDelete}
-            baseClassName={itemClass}
-            className={dangerClass}
-          >
-            <TrashBinIcon className="size-4 shrink-0" />
-            {t("delete")}
-          </DropdownItem>
+          {canDelete && (
+            <DropdownItem
+              onClick={onDelete}
+              baseClassName={itemClass}
+              className={dangerClass}
+            >
+              <TrashBinIcon className="size-4 shrink-0" />
+              {t("delete")}
+            </DropdownItem>
+          )}
         </div>
       )}
     </div>
@@ -1337,15 +1349,21 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
             </p>
           </div>
 
-          {isAdmin && (
-            <Button
-              variant="outline"
-              onClick={handleOpenCreate}
-              startIcon={<PlusIcon className="size-4" />}
-            >
-              {t("addAsset")}
-            </Button>
-          )}
+          {/*
+            No `isAdmin` gate any more. `03100` opened `assets` insert and update to a
+            staff member in their own department, and `01700` already scoped the read the
+            same way — so hiding the button from staff would hide a capability the database
+            grants and that the button's own form is already scoped for: the category
+            pickers are filtered to this route's unit, so a staff member cannot create an
+            HSSE asset from here even if they wanted to.
+          */}
+          <Button
+            variant="outline"
+            onClick={handleOpenCreate}
+            startIcon={<PlusIcon className="size-4" />}
+          >
+            {t("addAsset")}
+          </Button>
         </div>
 
         {/* Filters. Staff see these too, because stock is not admin-only. */}
@@ -1457,7 +1475,7 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
                 <col className="w-[160px]" />
                 <col className="w-[110px]" />
                 <col className="w-[120px]" />
-                {isAdmin && <col className="w-[64px]" />}
+                <col className="w-[64px]" />
               </colgroup>
               <TableHeader>
                 <TableRow className="border-b border-gray-200 dark:border-gray-800">
@@ -1497,14 +1515,12 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
                   >
                     {t("table.condition")}
                   </TableCell>
-                  {isAdmin && (
-                    <TableCell
-                      isHeader
-                      className="px-6 py-3 text-end text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
-                    >
-                      {t("table.actions")}
-                    </TableCell>
-                  )}
+                  <TableCell
+                    isHeader
+                    className="px-6 py-3 text-end text-xs font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400"
+                  >
+                    {t("table.actions")}
+                  </TableCell>
                 </TableRow>
               </TableHeader>
 
@@ -1551,20 +1567,19 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
                         {t(`condition.${row.condition}`)}
                       </Badge>
                     </TableCell>
-                    {isAdmin && (
-                      <TableCell className="px-6 py-3">
-                        <RowActions
-                          row={row}
-                          isOpen={openMenuId === row.id}
-                          onToggle={() => handleToggleMenu(row.id)}
-                          onClose={() => setOpenMenuId(null)}
-                          onEdit={() => handleOpenEdit(row)}
-                          onChangeStatus={() => handleOpenStatus(row)}
-                          onPrintLabel={() => handleOpenLabel(row)}
-                          onDelete={() => handleOpenDelete(row)}
-                        />
-                      </TableCell>
-                    )}
+                    <TableCell className="px-6 py-3">
+                      <RowActions
+                        row={row}
+                        isOpen={openMenuId === row.id}
+                        onToggle={() => handleToggleMenu(row.id)}
+                        onClose={() => setOpenMenuId(null)}
+                        onEdit={() => handleOpenEdit(row)}
+                        onChangeStatus={() => handleOpenStatus(row)}
+                        onPrintLabel={() => handleOpenLabel(row)}
+                        onDelete={() => handleOpenDelete(row)}
+                        canDelete={isAdmin}
+                      />
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>

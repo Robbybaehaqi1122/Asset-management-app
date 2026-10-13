@@ -714,6 +714,7 @@
     "pageDescription": "Hand assets over to people and record what comes back.",
     "subtitle": "Every handover an asset goes out on, and whether it has come back.",
     "loading": "Loading handovers…",
+    "noRosterLink": "Your account is not linked to a person in the handover roster yet, so any handovers issued to you are not visible here. Ask an administrator to link your account under System Setting ▸ Asset Settings ▸ User Handover.",
     "empty": "No {unit} asset has been handed over yet.",
     "noMatches": "No handover matches these filters.",
     "dismiss": "Dismiss",

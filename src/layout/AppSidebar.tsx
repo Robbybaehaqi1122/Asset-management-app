@@ -10,6 +10,7 @@ import {
   HorizontaLDots,
   SliderHorizontalIcon,
 } from "../icons";
+import { useAuth } from "@/context/AuthContext";
 import { useIsAdmin } from "@/hooks/useIsAdmin";
 import { cn } from "../utils";
 
@@ -29,6 +30,20 @@ type NavSubItem = {
    * arrived — and, like it, not an access control.
    */
   adminOnly?: boolean;
+  /**
+   * The unit this screen is for, matched against the reader's own department.
+   *
+   * **This is a menu filter, not an access control, and the database has been enforcing
+   * the real boundary since `01700`:** `assets_select_authenticated` is
+   * `is_admin() or department = current_asset_unit()`. An IT staff member's Asset HSSE
+   * list was always empty — the row in the menu offering it was the visible half of a
+   * boundary the query layer had been applying.
+   *
+   * **`null` matches everyone.** A sub-item without a unit is not department-scoped, and
+   * treating a missing value as "matches nobody" would hide User Management and every
+   * other unsuffixed entry.
+   */
+  unit?: string | null;
 };
 
 type MenuGroup = "main" | "others";
@@ -82,8 +97,16 @@ const navItems: NavItem[] = [
       // two have almost nothing in common: an HSSE item is inspected and expires,
       // an IT item is specced and networked, and the form shows a different
       // fieldset for each.
-      { name: "Asset IT", key: "assetIt", path: "/assets" },
-      { name: "Asset HSSE", key: "assetHsse", path: "/assets-hsse" },
+      // One row per unit, each carrying its unit so the menu can hide the other's. The
+      // strings are the ones `assets_sync_department` copies off the category, so a
+      // reader's department matches them exactly.
+      { name: "Asset IT", key: "assetIt", path: "/assets", unit: "IT" },
+      {
+        name: "Asset HSSE",
+        key: "assetHsse",
+        path: "/assets-hsse",
+        unit: "HSSE",
+      },
       // One row, not one per unit — the reverse of the two rows above, and
       // deliberately so. Handover records nothing that varies by unit: it is one
       // list of who is holding what, so splitting it bought a second page rather
@@ -165,6 +188,18 @@ const AppSidebar: React.FC = () => {
   const { t } = useTranslation();
   const location = useLocation();
   const isAdmin = useIsAdmin();
+  const { profile } = useAuth();
+
+  /**
+   * The reader's own unit, from the department on their profile row.
+   *
+   * **Trimmed, and compared as-is otherwise.** The unit strings in `navItems` are the
+   * pinned `IT`/`HSSE` pair, which is also what `getCategoryUnits()` returns for those
+   * two, so the comparison is between identical strings. A member of a department that
+   * has no asset route sees neither asset row, which is honest: there is nothing for them
+   * to open.
+   */
+  const readerUnit = profile?.department?.name.trim() ?? null;
   const [subMenuHeight, setSubMenuHeight] = useState<Record<string, number>>(
     {},
   );
@@ -193,7 +228,11 @@ const AppSidebar: React.FC = () => {
             ? {
                 ...nav,
                 subItems: nav.subItems.filter(
-                  (sub) => !sub.adminOnly || isAdmin,
+                  (sub) =>
+                    (!sub.adminOnly || isAdmin) &&
+                    // Admins are shown every unit; everyone else only their own.
+                    // `null` means "not department-scoped", so it always survives.
+                    (sub.unit == null || isAdmin || sub.unit === readerUnit),
                 ),
               }
             : nav,
@@ -204,7 +243,7 @@ const AppSidebar: React.FC = () => {
         // the latter also threw away the admin-only groups for an admin, which
         // is how User Management went missing.
         .filter((nav) => !nav.subItems || nav.subItems.length > 0),
-    [isAdmin],
+    [isAdmin, readerUnit],
   );
 
   // Auto-close sidebar on mobile after route change

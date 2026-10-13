@@ -134,6 +134,27 @@ export default function HandoverListPage() {
    */
   const [unit, setUnit] = useState<AssetUnit>(DEFAULT_UNIT);
 
+  /**
+   * The reader's own unit, or null for an admin and for anyone whose department is not
+   * one of the routed pair.
+   */
+  const readerUnit: AssetUnit | null = useMemo(() => {
+    const name = profile?.department?.name.trim();
+    return ASSET_DEPARTMENTS.find((value) => value === name) ?? null;
+  }, [profile?.department?.name]);
+
+  /**
+   * The unit actually queried and rendered.
+   *
+   * **Derived rather than pushed into state.** A staff member whose department is HSSE
+   * opens with `unit` still at its `IT` default, and `Select` reads `defaultValue` once —
+   * so writing the correction into state would mean an effect that sets it after the
+   * profile arrives, and a first render that queries IT on the way. Deriving means there
+   * is no wrong first frame, no effect, and the admin's own choice is untouched: for them
+   * `readerUnit` is null and `unit` passes straight through.
+   */
+  const activeUnit: AssetUnit = readerUnit ?? unit;
+
   const [handovers, setHandovers] = useState<Handover[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -200,7 +221,7 @@ export default function HandoverListPage() {
     // flight, which would otherwise set rows for a screen that is no longer shown.
     let cancelled = false;
 
-    void getHandovers(unit).then(
+    void getHandovers(activeUnit).then(
       (rows) => {
         if (cancelled) return;
         setHandovers(rows);
@@ -218,7 +239,7 @@ export default function HandoverListPage() {
     return () => {
       cancelled = true;
     };
-  }, [reloadToken, unit]);
+  }, [reloadToken, activeUnit]);
 
   /**
    * Loaded separately from the list, and a failure is silent on purpose.
@@ -255,10 +276,11 @@ export default function HandoverListPage() {
    * stopped being true in `02000`. `getAllUsers` read `profiles`, which RLS
    * refuses for a staff member, so the people list had to be gated and could only
    * be fetched by an admin. `getHandoverUserOptions` reads `handover_users`,
-   * which every signed-in user may read, so it is loaded the same lazy way for a
-   * different reason: the Issue button is still admin-only, so nobody else opens
-   * this modal, and two requests on every visit of a screen they cannot use is a
-   * cost with no return.
+   * which every signed-in user may read, so it is loaded the same lazy way.
+   *
+   * **Loaded for staff too since `03100`, because they can now issue.** The earlier
+   * reason — "the Issue button is admin-only, so nobody else opens this modal" — stopped
+   * being true, and a comment that states a stale reason is worse than none.
    */
   const handleOpenIssue = async () => {
     setSaveError(null);
@@ -366,7 +388,28 @@ export default function HandoverListPage() {
    * is the third fact that disambiguates two people with the same name, and there
    * is no room for it in a single-line option.
    */
-  const selectedPerson = people.find((row) => row.id === issueForm.userId);
+  /**
+   * Who may be handed an asset: **anyone on the roster.**
+   *
+   * `03400` lifted the self-only restriction `03100` had added, so a staff member may issue
+   * an asset **in their own department** to any roster row. The picker offers the whole list
+   * rather than filtering it, and the two halves of that boundary are not the same:
+   *
+   * * the **recipient** is unrestricted — `handover_users` exists precisely for people who
+   *   never sign in here, so a contractor or a technician has to be choosable;
+   * * the **asset** is still scoped to the caller's department, by
+   *   `assignments_insert_own_unit_or_admin` and by the picker above, which already reads
+   *   `getHandoverTargets(unit)`.
+   *
+   * The narrower filter this replaced matched a restriction the database has since dropped,
+   * and a picker filtered to "options the save would refuse" is the worst of both: the
+   * screen offers something and the save says no.
+   */
+  const issuablePeople = people;
+
+  const selectedPerson = issuablePeople.find(
+    (row) => row.id === issueForm.userId,
+  );
 
   /**
    * The signed-in account, which becomes `assignments.assigned_by`.
@@ -740,7 +783,24 @@ export default function HandoverListPage() {
    * `departments` table, which is a different question from "which assets are on
    * loan".
    */
-  const unitOptions = ASSET_DEPARTMENTS.map((value) => ({
+  /**
+   * Which units this reader may filter by: **their own, unless they are an admin.**
+   *
+   * The same shape as the sidebar's `NavSubItem.unit` — a staff member is shown one unit
+   * and an admin is shown all of them — and the same reasoning: the handover rows are
+   * scoped by `assets.department`, and `01700` already refuses a staff member another
+   * department's assets, so offering HSSE in this filter could only ever produce an empty
+   * table. Offering it is not a security hole; it is a control that cannot do anything.
+   *
+   * **The initial value follows**, or the dropdown would show "IT" while state said HSSE
+   * for a staff member who belongs to HSSE. `Select` reads `defaultValue` once, so the
+   * fallback is applied to state as well as to the options.
+   */
+  const visibleUnits = isAdmin
+    ? [...ASSET_DEPARTMENTS]
+    : ASSET_DEPARTMENTS.filter((value) => value === readerUnit);
+
+  const unitOptions = visibleUnits.map((value) => ({
     value,
     label: t(`units.${value}`),
   }));
@@ -791,17 +851,20 @@ export default function HandoverListPage() {
             </p>
           </div>
 
-          {/* Admin only, and hidden rather than disabled: a staff member has no
-              use for it and `assignments_insert_admin` refuses it. */}
-          {isAdmin && (
-            <Button
-              variant="outline"
-              onClick={() => void handleOpenIssue()}
-              startIcon={<PlusIcon className="size-4" />}
-            >
-              {t("issue")}
-            </Button>
-          )}
+          {/*
+            No admin gate. `03100` added `assignments_insert_own_or_admin`, so a staff
+            member can now issue an asset **to themselves**, and the picker below is
+            filtered to that one option so the screen offers exactly what the database
+            permits. Handover to a colleague stays admin-only, which is why the picker is
+            narrowed rather than simply opened up.
+          */}
+          <Button
+            variant="outline"
+            onClick={() => void handleOpenIssue()}
+            startIcon={<PlusIcon className="size-4" />}
+          >
+            {t("issue")}
+          </Button>
         </div>
 
         <div className="flex flex-col gap-3 border-b border-gray-200 p-6 sm:flex-row sm:items-end dark:border-gray-800">
@@ -828,7 +891,7 @@ export default function HandoverListPage() {
               id="handover-unit"
               className="mt-1"
               options={unitOptions}
-              defaultValue={unit}
+              defaultValue={activeUnit}
               onChange={(value) => setUnit(value as AssetUnit)}
             />
           </div>
@@ -860,9 +923,20 @@ export default function HandoverListPage() {
           // in this department" are different answers — and switching the unit is
           // the fastest way to find out which one the admin is looking at.
           <p className="p-6 text-sm text-gray-500 dark:text-gray-400">
-            {handovers.length === 0
-              ? t("empty", { unit: t(`units.${unit}`) })
-              : t("noMatches")}
+            {/*
+              Three different empties, and the one that matters most is the third.
+
+              `assignments_select_own_or_admin` joins through `handover_users.profile_id`,
+              so **a staff account with no roster entry linked sees nothing at all** — and
+              "no IT asset has been handed over yet" is then a lie, because they may well
+              hold some. That was reported as a broken list; it is a missing link, and
+              saying so sends the reader to the screen that fixes it.
+            */}
+            {!isAdmin && ownUserIds.size === 0
+              ? t("noRosterLink")
+              : handovers.length === 0
+                ? t("empty", { unit: t(`units.${activeUnit}`) })
+                : t("noMatches")}
           </p>
         ) : (
           <div className="overflow-x-auto">
@@ -1093,7 +1167,7 @@ export default function HandoverListPage() {
                 className="mt-1"
                 options={[
                   { value: "", label: t("fields.personPlaceholder") },
-                  ...people.map((row) => ({
+                  ...issuablePeople.map((row) => ({
                     value: row.id,
                     label: row.label,
                   })),
@@ -1242,7 +1316,9 @@ export default function HandoverListPage() {
                 reports itself instead. */}
             <Button
               onClick={() => void handleIssue()}
-              disabled={isSaving || targets.length === 0 || people.length === 0}
+              disabled={
+                isSaving || targets.length === 0 || issuablePeople.length === 0
+              }
             >
               {isSaving ? t("saving") : t("issue")}
             </Button>

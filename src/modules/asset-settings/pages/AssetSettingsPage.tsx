@@ -132,11 +132,10 @@ type LocationForm = {
 /**
  * One roster entry's editable fields.
  *
- * `department` holds the department **name**, not its id, and that is deliberate:
- * `getHandoverUsers` reads the row with `department:departments(name)` because the
- * name is what the table and the picker show, so carrying the name through the
- * form means an edit round-trips without a second lookup to render it. The id is
- * resolved back on save.
+ * `departmentId` holds the department's **id**, not its name. The name is what the
+ * table shows and comes from the aliased embed on `HandoverUserRow`; the id is what the
+ * `Select` gives back and what the column is written with. Holding the name here instead
+ * was the bug this replaced — see the field's own comment.
  *
  * `profileId` is the exception — an id, because that is what the row already holds
  * and `profile_id` is never displayed as a name. An empty `<Select>` is `""` and
@@ -145,25 +144,30 @@ type LocationForm = {
  */
 type HandoverUserForm = {
   name: string;
-  /**
-   * A `positions` **id**, unlike `department` beside it which holds a name.
-   *
-   * The asymmetry is deliberate and it follows from what each row is read with.
-   * `HandoverUserRow` carries both `positionId` (a uuid, for comparison) and
-   * `position` (the resolved name, for display), so the form can round-trip the
-   * id without a second lookup — while the department picker resolves a name
-   * back to an id on save because the roster row is only read with the department's
-   * *name*.
-   *
-   * Either would work. Storing the id is fewer moving parts.
-   */
+  /** A `positions` **id**, for the same reason `departmentId` below is an id. */
   positionId: string;
-  department: string;
+  /**
+   * A `departments` **id**, or `""` for somebody whose department is not set.
+   *
+   * **The id, not the name — and that was a real bug.** This field held the department's
+   * *name*, on the reasoning that `getHandoverUsers` reads `department:departments(name)`
+   * so a name round-trips without a second lookup. But the `Select` it came from matches on
+   * `value`, so `onChange` handed back a **uuid**, which the `Map<name, id>` used at save
+   * could not find: `department_id` went out as `null`. The write is legal, so it reported
+   * success and the department silently vanished — and in the other direction the dropdown
+   * rendered **blank** on open, because a name matched no option.
+   *
+   * `HandoverUserRow` carries both `departmentId` and `departmentName` for exactly this
+   * reason, as it already did for positions and companies. The note that used to say
+   * "either would work, storing the id is fewer moving parts" was correct, and it was
+   * read and not applied.
+   */
+  departmentId: string;
   /**
    * A `companies` id, or `""` for somebody with no employer on the list.
    *
-   * Stored as the id rather than the name, like `positionId` above and unlike
-   * `department` beside it: the row is read with an aliased embed so the *name* is
+   * Stored as the id rather than the name, like `positionId` and `departmentId`
+   * above: the row is read with an aliased embed so the *name* is
    * available to show, and a form carrying the name would need a second lookup to
    * resolve it back on save.
    */
@@ -191,7 +195,7 @@ const EMPTY_LOCATION: LocationForm = {
 const EMPTY_HANDOVER_USER: HandoverUserForm = {
   name: "",
   positionId: "",
-  department: "",
+  departmentId: "",
   companyId: "",
   nikEid: "",
   profileId: "",
@@ -647,7 +651,7 @@ export default function AssetSettingsPage() {
     setHandoverUserForm({
       name: row.name,
       positionId: row.positionId,
-      department: row.departmentName ?? "",
+      departmentId: row.departmentId ?? "",
       companyId: row.companyId ?? "",
       nikEid: row.nikEid ?? "",
       profileId: row.profileId ?? "",
@@ -665,11 +669,6 @@ export default function AssetSettingsPage() {
    * list of who works here — so the ids come from `departmentOptions` below rather
    * than being derived from a list shaped for a different question.
    */
-  const departmentIdByName = useMemo(
-    () => new Map(departmentChoices.map((row) => [row.label, row.value])),
-    [departmentChoices],
-  );
-
   const handleSaveHandoverUser = async () => {
     const name = handoverUserForm.name.trim();
     // Both are `not null` in the database — `name` by a blank check on the column,
@@ -693,8 +692,7 @@ export default function AssetSettingsPage() {
       const input = {
         name,
         positionId: handoverUserForm.positionId,
-        departmentId:
-          departmentIdByName.get(handoverUserForm.department) ?? null,
+        departmentId: handoverUserForm.departmentId || null,
         companyId: handoverUserForm.companyId || null,
         nikEid: handoverUserForm.nikEid,
         notes: handoverUserForm.notes,
@@ -1637,17 +1635,17 @@ export default function AssetSettingsPage() {
               <Select
                 key={`handover-user-department-${
                   editingHandoverUserId ?? "new"
-                }-${handoverUserForm.department}`}
+                }-${handoverUserForm.departmentId}`}
                 id="setting-handover-user-department"
                 options={[
                   { value: "", label: t("noDepartment") },
                   ...departmentChoices,
                 ]}
-                defaultValue={handoverUserForm.department}
+                defaultValue={handoverUserForm.departmentId}
                 onChange={(value) =>
                   setHandoverUserForm((prev) => ({
                     ...prev,
-                    department: value,
+                    departmentId: value,
                   }))
                 }
               />

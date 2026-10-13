@@ -160,6 +160,21 @@ export type HandoverUserRow = {
   positionId: string;
   /** The person's department, or null once that department is deleted. */
   departmentName: string | null;
+  /**
+   * The referenced `departments` row, for the form to write back.
+   *
+   * **Carried beside the name rather than resolved from it**, and this was a bug once: the
+   * form used to hold the department's *name* and resolve it to an id through a
+   * `Map<name, id>` at save time, while the `Select` it came from matches on `value` — so
+   * `onChange` handed back a uuid that the map, keyed by name, could not find. The write
+   * was legal and empty, so it reported success and the department silently became null.
+   * The same mismatch in reverse left the dropdown rendering **blank** on open for a row
+   * that did have a department.
+   *
+   * `positionId` and `companyId` below already work this way. The name is kept for
+   * display; the id is what the form holds.
+   */
+  departmentId: string | null;
   /** The company that employs them, or null for a contractor or visitor. */
   companyName: string | null;
   /** The referenced `companies` row, for the form to write back. */
@@ -708,6 +723,7 @@ export async function getHandoverUsers(): Promise<HandoverUserRow[]> {
     position: embeddedName(row.position) ?? "\u2014",
     positionId: str(row.position_id) ?? "",
     departmentName: embeddedName(row.department),
+    departmentId: str(row.department_id),
     companyName: embeddedName(row.company),
     companyId: str(row.company_id),
     nikEid: str(row.nik_eid),

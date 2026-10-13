@@ -291,15 +291,22 @@ vercel.json                    SPA rewrite only — no framework, no buildComman
 | `20260927002800_accessory_serial.sql` | `assignments_accessories.serial_number`; see A handover records what went with the device |
 | `20260927002900_print_templates.sql` | `print_templates`, the `print-templates` bucket and its four policies; see Print templates are read from the file, never copied |
 | `20260927003000_print_templates_department.sql` | `print_templates.department`, and the one-active index becomes one-active-**per-department**; see A label belongs to a department |
+| `20260927003100_staff_asset_writes.sql` | staff may add and edit assets in their own department, and issue a handover to themselves; see A staff member works the inventory |
+| `20260927003200_staff_sees_department_handovers.sql` | staff **see** their whole department's handovers; see Visibility widened, authority did not |
+| `20260927003300_drop_superseded_assignments_select.sql` | drops the policy `03200` superseded; see the same section |
+| `20260927003400_staff_may_issue_to_anyone.sql` | staff may issue an asset in their own department **to any roster person**; see The recipient is unrestricted, the asset is not |
 
-**All thirty are applied to the remote**, confirmed by reading
-`supabase_migrations.schema_migrations` after the `03000` push, which lists **30**
+**All thirty-four are applied to the remote**, confirmed by reading
+`supabase_migrations.schema_migrations` after the `03400` push, which lists **34**
 rows. The remote carries **14 tables** and **48 indexes** in `public`, measured after that
 push with `db query --linked`; `02900` added the fourteenth table and three indexes — the
 primary key, `print_templates_one_active` and `print_templates_name_idx` — with it, plus
 the `print-templates` bucket and its four storage policies; `03000` then added
 `print_templates_department_idx` and replaced `print_templates_one_active` with
-`print_templates_one_active_per_department`, so the count is unchanged by one. Before that, `02700` added no table and one index; `02600` added the thirteenth table and two indexes (the case-folded
+`print_templates_one_active_per_department`, so the count is unchanged by one; `03100`
+added **no table and no index** — three policies and nothing else; `03200` added one
+more policy and `03300` dropped one, so the count is unchanged again; `03400` replaced
+one policy with another, so it is unchanged once more. Before that, `02700` added no table and one index; `02600` added the thirteenth table and two indexes (the case-folded
 name index and the primary key) with it; `02400` added the twelfth table and two indexes (the FK and the
 primary key) with it, and `02500` added none because it only drops a function. Before
 that, `02000` added three indexes, `02100` none, `02200` added
@@ -1520,7 +1527,257 @@ select.
 silent no-op would leave the document on whatever the file declared — the exact failure
 the call exists to prevent.
 
-### A label belongs to a department
+## A staff member works the inventory, and three screens stay admin-only
+
+### A staff account with no roster entry sees no handovers at all, and must not be told "none exist"
+
+Found by logging in as a staff member who had been issued handovers by an admin and seeing
+an empty page. **The policy was correct; the data was not.** Read from the remote:
+
+```
+email                       role   dept   linked  roster row
+ahmad.sodikin@pgt.id        admin  IT     no      (no roster row)
+muhammad.ghiffar@pgt.id     admin  IT     yes     Pranoto
+muhammad.ghiffar@pgt.id     admin  IT     yes     Johan Andreas
+robby.baehaqi@pgt.id        staff  IT     no      (no roster row)
+```
+
+`assignments_select_own_or_admin` joins through `handover_users.profile_id`:
+
+```sql
+or exists (select 1 from handover_users h
+           where h.id = assignments.user_id
+             and h.profile_id = (select auth.uid()))
+```
+
+**With no roster entry linked to the account that `exists` is false for every row**, so the
+staff member sees nothing — the exact failure `02000` documented for emptying a
+`profile_id`, reached here by never having set one. Nothing raises, anywhere.
+
+**And the empty state was lying about it.** `t("empty")` says *"No IT asset has been handed
+over yet"*, which is false: they may hold several, and the screen had no way to say so.
+There are now **three** empties, not two — unlinked, none-in-this-unit, and filtered-out —
+because collapsing "you cannot see your handovers" into "you have none" sends the reader to
+the wrong screen entirely. The unlinked case names the screen that fixes it.
+
+**The fix is data, not code:** link the account under **Asset Settings ▸ User Handover**.
+
+### The unit filter is the reader's own, unless they are an admin
+
+Same shape as the sidebar's `NavSubItem.unit`, and for the same reason: `01700` already
+refuses a staff member another department's assets, so offering HSSE in this filter could
+only ever produce an empty table. It is not a security hole — it is a control that cannot
+do anything.
+
+**The queried unit is derived, not written into state.** A staff member whose department is
+HSSE mounts with `unit` still at its `IT` default, and `Select` reads `defaultValue` once,
+so correcting it in state would need an effect and would render one wrong frame first.
+`const activeUnit = readerUnit ?? unit` has no effect, no wrong first frame, and leaves an
+admin's own choice untouched — for them `readerUnit` is null and `unit` passes through.
+
+### Visibility widened, authority did not
+
+`20260927003200_staff_sees_department_handovers.sql`. The owner asked for "staff IT must
+see all handovers in IT", and that is a **read** change only. Three things are deliberately
+left exactly as they were:
+
+| | before | after |
+|---|---|---|
+| see handovers in their own department | only the ones addressed to them | **all of them** |
+| return a handover | only their own | **only their own** |
+| issue a handover | to themselves | **to themselves** |
+| delete a handover | admin | **admin** |
+
+**Returning a colleague's loan is the line worth drawing.** Closing one is a statement that
+a colleague physically gave the item back, so `assignments_update_own_or_admin` is untouched
+and the Return button is still decided by `getOwnHandoverUserIds()`. A staff member can now
+*read* that a laptop went out and has not come back — which is what the register is for —
+without being able to close someone else's loan.
+
+**The third `or` arm is not decoration.** The obvious two are "is admin" and "the asset is
+in my department". The third — "this handover is addressed to a roster row linked to my
+account" — is kept from the old policy on purpose, because of **a transfer**. Someone is
+issued a laptop in IT, moves to Finance, and the department arm stops matching: without the
+third arm they would silently stop seeing an asset they are still physically holding. No
+error, and no empty state that says anything unusual. The item just vanishes.
+
+**The unit comparison is written out even though `assets_select_authenticated` would filter
+the subquery anyway.** It reads as what it means without requiring the reader to know how
+RLS composes inside a subquery, and **if `01700` is ever widened to `using (true)` — which
+is what "the inventory is readable by everyone" would look like — this policy stays correct on
+its own.** It leans on the other policy as a second line of defence, not the only one.
+
+Seven assertions on the local stack:
+
+```
+1  IT staff sees all three IT handovers, not just their own   3
+2  HSSE staff sees their own three and none of IT             3
+3  RETURN a colleague's loan — refused                        0 returned
+4  RETURN their own loan — allowed                           1 returned
+5  ISSUE to a colleague — refused                            42501
+6  DELETE — refused, counted                                 6 before, 6 remaining
+7  an admin still sees everything                            6
+```
+
+#### The recipient is unrestricted, the asset is not
+
+`20260927003400_staff_may_issue_to_anyone.sql`. **This reverses a decision two migrations
+old, and the reversal is written down rather than edited in quietly.** `03100` required a
+staff member's handover to name the roster row linked to their own account. The owner chose
+self-service, then found the picker showing nothing at all and asked for the full list.
+
+| | after `03100` | after `03400` |
+|---|---|---|
+| issue an asset **in your own department** | to yourself | **to anyone on the roster** |
+| issue an asset in another department | refused | **refused** |
+| return a handover | your own only | **your own only** |
+| delete a handover | admin | **admin** |
+
+**The recipient is unrestricted on purpose.** `handover_users` exists precisely because the
+person receiving an asset is often not an account — a contractor, a visitor, a technician
+who never signs in here. Restricting recipients to the caller's own department would make
+that table unusable from staff and would refuse the ordinary case of lending a laptop to
+someone who belongs to no department at all.
+
+**The asset's department is the boundary that survives**, and it is enforced twice: by
+`getHandoverTargets(unit)` filtering the Issue form's picker, and by the policy's own
+`exists`. A staff member can hand out their own department's stock to whoever; they cannot
+touch another department's.
+
+**The consequence, stated plainly: any staff member can now assign their department's
+equipment to any person on the roster.** That is what was asked for. Returning it stays with
+the holder, so the person who issued a loan cannot also close it.
+
+#### Why it looked like a policy problem and was a data problem first
+
+The picker was empty and the obvious reading is "the filter is wrong". It was not — **the
+staff account had no row in `handover_users` at all**, so `ownUserIds` was empty and the
+self-only filter removed every option, including the one that account would have been.
+
+That gap is still open and still matters, because three things join through `profile_id`:
+the **Return** button, the **"addressed to me"** arm of
+`assignments_select_own_department_or_admin`, and the name printed as the holder on a signed
+document. **A staff member who is never added to the roster can issue and never return.**
+
+Seven assertions on the local stack:
+
+```
+1  issue to a colleague                                  allowed
+2  issue to someone who never signs in                   allowed
+3  issue to themselves                                   allowed
+4  issue another department's asset, to anyone            42501
+5  return a colleague's loan as the issuer                0 returned
+6  delete                                               3 remaining
+7  an admin issues across departments                    allowed
+
+### `03300` exists because `03200` left the old policy behind
+
+`03200` added the new policy and left `assignments_select_own_or_admin` in place.
+**Behaviourally that was fine** — permissive policies are OR'd, so the wider one won — but
+`01700` already sets the precedent, and two SELECT policies on one table makes a reader work
+out which wins when the answer is "both, and it does not matter".
+
+Both expressions were read off `pg_policies.qual` before dropping anything:
+
+```
+old:  is_admin() OR exists (handover_users h where h.id = user_id and h.profile_id = auth.uid())
+new:  is_admin()
+   OR exists (assets a          where a.id = asset_id and a.department = current_asset_unit())
+   OR exists (handover_users h  where h.id = user_id and h.profile_id = auth.uid())
+```
+
+**The old expression is the new one's third arm, verbatim**, so it is a strict subset and
+dropping it cannot change which rows any caller sees. A separate file rather than an edit,
+because `03200` is already in the ledger.
+
+### A staff member works the inventory, and three screens stay admin-only
+
+`20260927003100_staff_asset_writes.sql`. Staff can **add** an asset, **edit** one, and
+**issue a handover to themselves**. They still cannot reach User Management, System
+Setting or Asset Settings, and **delete is still admin-only** — for assets and for
+handovers. Both of those were asked about and confirmed.
+
+### The read boundary was already there; only the menu was wrong
+
+`01700` has scoped asset reads since it landed:
+
+```sql
+create policy assets_select_authenticated on public.assets for select to authenticated
+  using (public.is_admin() or assets.department = public.current_asset_unit());
+```
+
+So an IT staff member's Asset HSSE list **was already empty**. What was wrong was the row in
+the sidebar offering it — the visible half of a boundary the query layer had been
+applying. `NavSubItem` now carries a `unit`, and the sidebar hides the other unit's row.
+**`null` matches everyone**, because a sub-item with no unit is not department-scoped and
+treating a missing value as "matches nobody" would have hidden User Management.
+
+### Writes are added beside `assets_write_admin`, not by replacing it
+
+`assets_write_admin` is a single `for all` policy on `is_admin()`, and it was refusing
+staff on insert, update **and** delete. `03100` adds `assets_insert_own_unit_or_admin` and
+`assets_update_own_unit_or_admin` beside it and leaves it alone. Postgres **ORs** multiple
+permissive policies for the same command, and `is_admin()` is a subset of the new
+expression, so DELETE keeps its admin-only rule without being restated.
+
+**`assets.department` is what makes the check meaningful, and the client never writes
+it.** `assets_sync_department` copies it off the category and overwrites whatever was
+sent, so `with check` judges the category the row actually landed in. Verified: inserting
+with `department = 'IT'` and an HSSE category is refused, because the trigger moved the
+department first and the check then saw it.
+
+### A staff handover is to themselves, and from their own department
+
+`assignments_insert_own_or_admin` has **two** conditions, and the second was not asked for:
+
+1. the recipient is the roster row linked to the caller's own account —
+   `exists (select 1 from handover_users where id = user_id and profile_id = auth.uid())`.
+   That explicit `exists` rather than an equality is the `02000` lesson: `assignments.user_id`
+   points at `handover_users`, not `auth.users`, so comparing them directly is false for
+   every row and raises nothing.
+2. **the asset is in the caller's own department**, or a staff member could hand an HSSE
+   asset to themselves by naming its uuid. The test is an `exists` over `assets` with no
+   explicit unit comparison — **the subquery runs as the caller, so
+   `assets_select_authenticated` already filters it.** A policy can lean on another
+   policy's row filter rather than repeating its expression.
+
+The picker is narrowed to that one option rather than opened up, because a screen that
+offers fifteen recipients the database refuses is worse than one that offers one.
+
+### Fourteen assertions on the local stack
+
+```
+1  staff adds an IT asset                              INSERT 0 1, department = IT
+2  an asset in another unit                            42501
+3  department smuggled via another unit's category     42501
+4  an HSSE asset visible / renamed by IT staff          0 / 0
+5  asset deleted by staff                              DELETE 0, row still there
+6  roster: one row linked to the account, one not      linked = t / f
+7  issue to themselves, own unit                       INSERT 0 1
+8  both refusal fixtures otherwise insertable          fixture_valid = 3
+9  issue to a colleague                                42501
+10 issue another department's asset to themselves       42501
+11 the one legitimate insert lands                     IT-0001 -> Staff Person
+12 returning their own handover                        1 returned
+13 handover deleted by staff                           0 deleted
+14 admin unrestricted: colleague + delete an HSSE row   kept
+```
+
+### Two traps this suite walked into, both recorded in the file
+
+- **A row-level `using` filter on UPDATE or DELETE raises nothing.** A
+  `do $$ delete … raise exception $$` block cannot detect a refused write. **Sixth
+  occurrence in this codebase.** Count the rows.
+- **The probe cannot see what it probes for.** A `select … where asset_code = 'HSSE-0003'`
+  written by a staff member is itself filtered by `assets_select_authenticated`, so it
+  returns nothing, inserts nothing, and raises nothing — indistinguishable from "the policy
+  allowed it". The ids are captured **as postgres** and passed through session settings
+  (`current_setting`), because psql does not interpolate `:'var'` inside `do $$`.
+- And the standing one: **`block_assignment_unless_available` is a BEFORE trigger**, so it
+  fires before the RLS `with check`. Testing a policy with an already-issued asset returns
+  the trigger's message. Each case gets its own available fixture.
+
+## A label belongs to a department
 
 `20260927003000_print_templates_department.sql`. **An IT laptop and an HSSE fire
 extinguisher are not the same label**: different codes, different descriptions, and —
@@ -2141,6 +2398,51 @@ the content type before the status. See the three guards in `loadViaBlob()`.
 nothing — Tailwind reads only literal class names — and the element then applies
 `absolute` with no offset, so it stacks on whatever is beside it. Inline `style` for
 anything that comes from data; `className` for what is written in the source.
+
+- Don't filter a recipient picker to the options a policy used to allow. `03400` lifted
+  the restriction and the picker still narrowed to it, so the screen offered nothing while
+  the database would have accepted anything.
+- Don't assume a roster entry exists for a staff member. The account may have no
+  `handover_users` row at all, which leaves the Return button, the "addressed to me" arm and
+  the holder's printed name all unable to match them.
+- Don't tighten the recipient to the caller's own department when lifting a self-service
+  restriction. `handover_users` is for people who never sign in, so a department filter
+  would refuse the ordinary contractor case.
+
+- Don't widen a read policy and assume the write policies follow. `03200` let a staff
+  member see their whole department's handovers and left returning, issuing and deleting
+  exactly as restrictive. Visibility widening and authority widening are separate changes
+  with separate risks.
+- Don't drop the "addressed to me" arm when the unit arm appears to cover it. It does not,
+  after a transfer: a colleague's department changes, the unit arm stops matching, and
+  without it the asset they still hold silently disappears from their view.
+- Don't leave a superseded policy beside its replacement. Postgres ORs them, so behaviour
+  is unaffected and the mistake is invisible in testing — but `01700` and `03300` exist for
+  it, and a reader has to work out which policy wins when the answer is "it does not matter".
+
+- Don't tell a staff member "no asset has been handed over" when their account has no
+  roster row. `assignments_select_own_or_admin` joins through
+  `handover_users.profile_id`, so an unlinked account sees nothing and the empty state
+  becomes a false statement. Say the account is unlinked, and name the screen.
+- Don't correct a reader's unit by writing it into state. `Select` reads `defaultValue`
+  once and the profile arrives after mount, so a state correction is an effect plus one
+  wrong first render. Derive the unit instead.
+- Don't offer a staff member a unit filter listing units they cannot read. `01700` already
+  refuses the rows, so the extra option can only ever produce an empty table.
+
+- Don't hide an asset unit's menu row by writing a role check inline. `NavSubItem.unit`
+  carries the unit and the sidebar compares it with the reader's own department; an admin
+  sees every unit. The database has refused cross-unit reads since `01700`, so this is the
+  menu catching up with a boundary that already existed.
+- Don't offer a staff member the whole recipient roster on the Issue form.
+  `assignments_insert_own_or_admin` refuses everything but their own linked row, so a
+  fifteen-option picker would offer fifteen things the save then rejects.
+- Don't restate the unit test inside an `assignments` policy's `with check`. An `exists`
+  over `assets` is already filtered by `assets_select_authenticated`, so the subquery
+  cannot see another department's row and the check falls out for free.
+- Don't replace `assets_write_admin` when opening assets to staff. Postgres ORs permissive
+  policies, and the old `for all` policy is what keeps DELETE admin-only. Adding insert and
+  update policies beside it leaves delete's rule intact without restating it.
 
 - Don't key a print template globally. `print_templates.department` exists because an IT
   laptop and an HSSE extinguisher are different labels on different paper, and one global
@@ -4421,6 +4723,57 @@ Do not re-add a first-user grant to make onboarding easier. If self-service
 onboarding is genuinely needed, gate it on an allowlisted address — a hardcoded
 email in a migration is a smaller mistake than an unclaimed admin grant.
 
+### A `Select` that stores a name and saves an id loses the value silently
+
+Found by adding a department to a roster entry, pressing save, and being told *"Soehardono
+was updated."* with the column still reading **No department**. Read from the remote:
+
+```
+name           department_id  company_id  profile_id
+Johan Andreas  null           null        linked
+Pranoto        null           null        linked
+Soehardono     null           SET         no account
+```
+
+**`company_id` saved and `department_id` did not** — same form, same submit, one request.
+That asymmetry is the whole diagnosis: every other id field on that form works, so the
+database is refusing nothing.
+
+The shape was:
+
+```ts
+departmentChoices = departments.map((row) => ({ value: row.id, label: row.name }))
+                                                   // ^ id                  // ^ name
+// onChange -> setHandoverUserForm({ department: value })   // value is a uuid
+// on save  -> departmentIdByName.get(handoverUserForm.department)
+//             departmentIdByName = new Map(departmentChoices.map(r => [r.label, r.value]))
+//                                                                             ^^^ keyed by NAME
+//             ?? null                                   // Map.get(uuid) -> undefined -> null
+```
+
+`Select` matches on `value`, so it hands back a **uuid**; the map was keyed by **name**;
+`?? null` turned the miss into a legal empty write. **Nothing raises, and the row came back
+so `.maybeSingle()` was satisfied** — a guard built to catch a *refused* write cannot catch
+a *successful* write of the wrong value. This is the sibling of the standing rule about
+counting rows: `.select()` proves the statement matched, not that it wrote what you meant.
+
+**It failed in the other direction too, invisibly.** Opening an edit seeded the field with
+`row.departmentName`, and a name matches no option, so the dropdown rendered **blank** for
+any row that *did* have a department. That half was hidden because every row's department was
+null — the two bugs had erased each other's evidence, so neither was reproducible from the
+data until both were read out of the code.
+
+**The fix is to hold the id**, which is what `positionId` and `companyId` beside it already
+did. `HandoverUserRow` gained `departmentId` beside `departmentName`; the name stays for the
+table to display. **`department_id` was already in the select list** — only the row type and
+the mapper were missing it, so the query was right and the shape around it was wrong.
+
+**Audited for the rest of the class.** Four `Select`s in that module and one in the handover
+print form build options as `{ value: row.id, label: row.name }`; all of them hold an id in
+form state and write it to a `*_id` column. **`department` was the only one that did not.**
+The two `new Map(...)` lookups elsewhere (`assetService`, `handoverService`) are both
+`id → name` for display, which is the safe direction.
+
 ## Company is a list, and nothing points at it
 
 `20260927002600` adds `public.companies`: `id`, `name`, `description`, and the
@@ -5004,10 +5357,19 @@ not go looking for them unprompted.
   `pg_indexes` under the right name on the right expression — an index named `_key`
   with no `unique` reads as protection in the schema and is not. See Company is a
   list.
-- Don't seed a `Select` from a name. `Select` matches on `value`, which is the uuid, so
-  a name matches no option and the control renders blank — which reads as "no value"
-  rather than "the wrong kind of value". Carry the id beside the name, as
-  `HandoverHolder` does with `companyId`.
+- Don't seed a `Select` from a name, and don't **save** one by name either. `Select` matches
+  on `value`, which is the uuid, so `onChange` hands back an **id**. The roster's department
+  field held the *name* and resolved it through a `Map<name, id>` at save time, so the uuid
+  missed, `department_id` went out as `null`, and **the write succeeded while reporting
+  success and storing nothing** — "Soehardono was updated." with the column still empty. The
+  same mismatch in reverse rendered the dropdown **blank** on open for a row that did have a
+  department. `HandoverUserRow` now carries `departmentId` beside `departmentName`, as it
+  already did for `positionId` and `companyId`. **Hold the id in the form; resolve the name
+  for display only.** See A `Select` that stores a name and saves an id below.
+- Don't argue for a name in a form field without checking who produces the value. The type's
+  own comment read "*either would work, storing the id is fewer moving parts*" — correct,
+  written, and then not applied. A comment that reaches the right conclusion does not stop
+  the code reaching the wrong one.
 - Don't leave a `Select` on a value it should follow. It reads `defaultValue` once and
   holds it internally, so a control driven by shared state has to be keyed on that
   state or it silently keeps what it mounted with.
