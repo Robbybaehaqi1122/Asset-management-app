@@ -10,6 +10,10 @@ import {
   type LbxSheet,
 } from "@/modules/assets/document/lbxReader";
 import {
+  DEFAULT_DEPARTMENT,
+  getCategoryUnits,
+} from "@/modules/asset-settings/services/settingService";
+import {
   NoRowsWrittenError,
   TemplateNotFillableError,
   activatePrintTemplate,
@@ -58,6 +62,22 @@ export default function PrintSettingPanel({
     keyPrefix: "systemSetting.printSetting",
   });
 
+  /**
+   * The unit this panel is editing, and **every list below is scoped to it.**
+   *
+   * **A template is per unit, because a label is.** IT sits on a 36 x 15 mm roll and the
+   * HSSE register is a document of its own; one global template would print an IT layout
+   * for a fire extinguisher. The print path is keyed the same way, on
+   * `assets.department`.
+   *
+   * **The options come from `getCategoryUnits()` — the same list the asset form's category
+   * pickers use.** That is what keeps the spelling identical to the unit
+   * `assets_sync_department` copies onto each asset, and it is why there is no FK on
+   * `print_templates.department`: `categories.department` is free text too.
+   */
+  const [department, setDepartment] = useState(DEFAULT_DEPARTMENT);
+  const [units, setUnits] = useState<string[]>([]);
+
   const [templates, setTemplates] = useState<PrintTemplate[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -83,11 +103,30 @@ export default function PrintSettingPanel({
   const [reloadToken, setReloadToken] = useState(0);
 
   useEffect(() => {
+    let cancelled = false;
+    void getCategoryUnits()
+      .then((rows) => {
+        if (!cancelled) setUnits(rows);
+      })
+      .catch(() => {
+        // A failure here leaves the dropdown to its default, which is the unit the seed
+        // belongs to — so the panel still works for that unit. Silent on purpose: nothing
+        // the operator did caused it, and the list is reachable again by reloading.
+        if (!cancelled) setUnits([DEFAULT_DEPARTMENT]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     // `cancelled` covers a sign-out landing while the read is in flight, which would
-    // otherwise set state for a panel that is no longer shown.
+    // otherwise set state for a panel that is no longer shown. The effect also depends on
+    // `department`, so switching units reloads rather than showing the previous unit's
+    // templates under the new unit's name.
     let cancelled = false;
 
-    void listPrintTemplates()
+    void listPrintTemplates(department)
       .then(
         (rows) => {
           if (cancelled) return;
@@ -108,7 +147,7 @@ export default function PrintSettingPanel({
     return () => {
       cancelled = true;
     };
-  }, [reloadToken]);
+  }, [reloadToken, department]);
 
   /**
    * The parsed file, **stamped with the `file_path` it came from.**
@@ -181,8 +220,8 @@ export default function PrintSettingPanel({
   ) => {
     setIsUploading(true);
     await run(
-      () => uploadPrintTemplate(file, name, sheet),
-      t("uploaded", { name }),
+      () => uploadPrintTemplate(file, name, department, sheet),
+      t("uploaded", { name, department }),
     );
     setIsUploading(false);
   };
@@ -212,6 +251,35 @@ export default function PrintSettingPanel({
 
   return (
     <div className="space-y-8">
+      {/*
+        The unit selector sits above everything, because it scopes everything. It is a
+        `Select` rather than a tab strip: the panels below are the same shape for every
+        unit, and a tab would imply there is something else to switch to.
+
+        Keyed on the current value — `Select` reads `defaultValue` once, so a dropdown
+        driven by shared state has to be keyed on it or it keeps what it mounted with.
+      */}
+      <section>
+        <label
+          htmlFor="print-template-department"
+          className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300"
+        >
+          {t("departmentLabel")}
+        </label>
+        <div className="max-w-xs">
+          <Select
+            key={department}
+            id="print-template-department"
+            defaultValue={department}
+            options={units.map((unit) => ({ value: unit, label: unit }))}
+            onChange={setDepartment}
+          />
+        </div>
+        <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
+          {t("departmentBody")}
+        </p>
+      </section>
+
       {/* ------------------------------------------------- the active template */}
       <section>
         <h3 className="text-base font-semibold text-gray-900 dark:text-white">
@@ -220,7 +288,7 @@ export default function PrintSettingPanel({
 
         {!active ? (
           <p className="mt-2 rounded-2xl border border-gray-200 bg-gray-50 p-4 text-sm text-gray-600 dark:border-gray-800 dark:bg-white/5 dark:text-gray-400">
-            {t("noneActive")}
+            {t("noneActive", { department })}
           </p>
         ) : (
           <div className="mt-3 rounded-2xl border border-gray-200 p-4 dark:border-gray-800">
@@ -327,7 +395,7 @@ export default function PrintSettingPanel({
                       size="sm"
                       onClick={() =>
                         run(
-                          () => activatePrintTemplate(row.id),
+                          () => activatePrintTemplate(row.id, department),
                           t("activated", { name: row.name }),
                         )
                       }

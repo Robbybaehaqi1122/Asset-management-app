@@ -290,13 +290,16 @@ vercel.json                    SPA rewrite only — no framework, no buildComman
 | `20260927002700_handover_user_company_nik.sql` | `handover_users.company_id` and `.nik_eid`, plus the `companies_guard_delete` the previous migration owed; see The recipient is not an account |
 | `20260927002800_accessory_serial.sql` | `assignments_accessories.serial_number`; see A handover records what went with the device |
 | `20260927002900_print_templates.sql` | `print_templates`, the `print-templates` bucket and its four policies; see Print templates are read from the file, never copied |
+| `20260927003000_print_templates_department.sql` | `print_templates.department`, and the one-active index becomes one-active-**per-department**; see A label belongs to a department |
 
-**All twenty-nine are applied to the remote**, confirmed by reading
-`supabase_migrations.schema_migrations` after the `02900` push, which lists **29**
+**All thirty are applied to the remote**, confirmed by reading
+`supabase_migrations.schema_migrations` after the `03000` push, which lists **30**
 rows. The remote carries **14 tables** and **48 indexes** in `public`, measured after that
 push with `db query --linked`; `02900` added the fourteenth table and three indexes — the
 primary key, `print_templates_one_active` and `print_templates_name_idx` — with it, plus
-the `print-templates` bucket and its four storage policies. Before that, `02700` added no table and one index; `02600` added the thirteenth table and two indexes (the case-folded
+the `print-templates` bucket and its four storage policies; `03000` then added
+`print_templates_department_idx` and replaced `print_templates_one_active` with
+`print_templates_one_active_per_department`, so the count is unchanged by one. Before that, `02700` added no table and one index; `02600` added the thirteenth table and two indexes (the case-folded
 name index and the primary key) with it; `02400` added the twelfth table and two indexes (the FK and the
 primary key) with it, and `02500` added none because it only drops a function. Before
 that, `02000` added three indexes, `02100` none, `02200` added
@@ -1517,6 +1520,63 @@ select.
 silent no-op would leave the document on whatever the file declared — the exact failure
 the call exists to prevent.
 
+### A label belongs to a department
+
+`20260927003000_print_templates_department.sql`. **An IT laptop and an HSSE fire
+extinguisher are not the same label**: different codes, different descriptions, and —
+the part that actually forces this — **different paper**. One global template would print
+an IT layout for an extinguisher, and the repair for that would be to edit the template
+whenever a unit's labels needed something else.
+
+So the template is chosen by **`assets.department`**, which is the one thing the print
+path already has without asking anyone: `assets_sync_department` copies the unit off the
+asset's category, so a client cannot file an HSSE item under IT, and **no join and no
+extra query are needed** to know which unit a label is for.
+
+**The panel's department list is `getCategoryUnits()` — the same list the asset form's
+category pickers use.** That is what keeps the spelling identical to the unit the trigger
+copies onto each asset, and it is why there is no foreign key: `categories.department` is
+free text too, and adding one here would mean changing that column first.
+
+**The lookup is `ilike`, not `eq`.** The unit on the print path is whatever the category
+holds, verbatim, while the panel stores a trimmed value. An exact match would miss a
+legacy row whose category says `"  finance "`, and the symptom would be "this unit has no
+template" on a unit that plainly has one. There are a handful of rows, so the scan costs
+nothing.
+
+**The active index is normalised over `upper(btrim(department))`,** the same reasoning
+`02300` used for `assets_asset_code_ci_key`: "IT" and "it" are one unit, and two
+spellings must not both be able to be live. Verified — inserting an active `"  it  "` row
+while `"IT"` was active is refused with `23505`.
+
+Verified end to end over HTTP on the local stack:
+
+```
+OK  IT and HSSE templates both inserted active
+OK  IT resolves to its own template
+OK  HSSE resolves to its own template
+OK  'it' finds the 'IT' template
+OK  an unconfigured unit returns nothing rather than another unit's
+OK  activating HSSE's leaves IT's active row alone
+OK  a second active in one unit is refused    409 23505; IT keeps ["IT 36x15"]
+OK  staff read every unit                     HSSE, IT, IT
+```
+
+#### A unique-index violation raises; an RLS row filter does not
+
+Both end with nothing written, and the difference is whether anyone is told:
+
+| | PostgREST answers | the service sees |
+|---|---|---|
+| RLS row filter on `UPDATE` | **204, no body** | `[]` from `.select()`, so `NoRowsWrittenError` |
+| unique-index violation on `UPDATE` | **409 with `23505`** naming the index | a thrown error |
+
+**`204` is ambiguous on its own** — it is returned whether or not a row changed, which is
+why every write in this codebase uses `.select()`. A probe that asserts "204 means the
+write was refused" asserts the wrong thing: in this very feature a *successful* promotion
+also answered 204, and the check that was supposed to catch a duplicate silently proved
+nothing because IT had no active row to collide with.
+
 ### Sizes are read from the file, so they cannot go stale
 
 **No `width_mm`/`height_mm` columns.** They would be a second source of truth for a fact
@@ -2081,6 +2141,17 @@ the content type before the status. See the three guards in `loadViaBlob()`.
 nothing — Tailwind reads only literal class names — and the element then applies
 `absolute` with no offset, so it stacks on whatever is beside it. Inline `style` for
 anything that comes from data; `className` for what is written in the source.
+
+- Don't key a print template globally. `print_templates.department` exists because an IT
+  laptop and an HSSE extinguisher are different labels on different paper, and one global
+  template would print an IT layout for the extinguisher.
+- Don't look up a template with `.eq("department", …)`. The unit on the print path is
+  `assets.department`, copied verbatim off the category, while the panel stores a trimmed
+  value; `ilike` is what makes them meet.
+- Don't read a `204` from a `PATCH` as "nothing was written". PostgREST returns it whether
+  or not a row changed. Ask for the representation, or use `.select()`, and count rows.
+- Don't put a `Select` or any `div`-rooted component inside a `<p>`, and don't forget the
+  department dropdown is keyed on its value — `Select` reads `defaultValue` once.
 
 - Don't store a label's size in `print_templates`. The `.lbx` states it in points, and
   `lbxReader` reads it. A `width_mm`/`height_mm` pair is a second source of truth for a

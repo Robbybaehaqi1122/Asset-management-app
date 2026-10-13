@@ -76,25 +76,32 @@ const VENDOR_MODULE_URL = "/vendor/bpac.js";
  * performs the fetch.
  */
 /**
- * Which `.lbx` to print against, and which sheet of it.
+ * Which `.lbx` to print against, and which sheet of it, **for one unit.**
  *
  * **Read from `print_templates` rather than hard-coded, and resolved per job.** The
  * panel at `/system-setting` is what decides, so the two cannot disagree — and it is read
  * fresh inside the serialised queue rather than cached at module load, so an admin who
  * changes the size does not have to reload the page.
  *
- * **With no active template this refuses rather than falling back.** The obvious fallback
- * is the committed `public/label/asset-36x15.lbx`, and it is wrong: that file declares
- * `<pt:body currentSheet="36x13">`, so b-PAC would open it on the 13 mm roll while the
- * machine is loaded with 15 mm stock — a silent, wrong-sized label on every print.
+ * **Scoped to the asset's unit**, so IT and HSSE print from their own templates. The unit
+ * is `assets.department`, which `assets_sync_department` copies off the asset's category —
+ * so a client cannot file an HSSE item under IT, and this needs no join and no second
+ * query to know which unit it is printing for.
+ *
+ * **With no active template for that unit this refuses rather than falling back.** The
+ * obvious fallback is the committed `public/label/asset-36x15.lbx`, and it is wrong twice
+ * over: that file declares `<pt:body currentSheet="36x13">`, so b-PAC would open it on the
+ * 13 mm roll while the machine is loaded with 15 mm stock, **and** it would print an IT
+ * layout for an HSSE item. An operator who has not chosen a template for that unit is told
+ * which unit is missing one.
  */
-async function resolveTemplate(): Promise<{
+async function resolveTemplate(unit: string): Promise<{
   url: string;
   sheet: string | null;
 }> {
-  const row = await getActivePrintTemplate();
+  const row = await getActivePrintTemplate(unit);
   if (!row) {
-    throw new BpacTemplateNotChosenError();
+    throw new BpacTemplateNotChosenError(unit);
   }
   return { url: templateUrl(row.filePath), sheet: row.sheet };
 }
@@ -184,11 +191,15 @@ export class BpacPrinterOfflineError extends Error {
  * An operator who has not chosen a template gets told so.
  */
 export class BpacTemplateNotChosenError extends Error {
-  constructor() {
+  /** The unit that has no active template, so the message can name it. */
+  readonly unit: string;
+
+  constructor(unit: string) {
     super(
-      "No print template is active. Choose one under System Setting ▸ Print Setting.",
+      `No print template is active for ${unit}. Choose one under System Setting ▸ Print Setting for that department.`,
     );
     this.name = "BpacTemplateNotChosenError";
+    this.unit = unit;
   }
 }
 
@@ -614,7 +625,7 @@ async function previewThrough(
   doc: BpacDocument,
   asset: LabelSource,
 ): Promise<string> {
-  const template = await resolveTemplate();
+  const template = await resolveTemplate(asset.department);
   const opened = await doc.Open(template.url);
 
   if (!opened) {
@@ -725,7 +736,7 @@ async function printThrough(
   doc: BpacDocument,
   asset: LabelSource,
 ): Promise<void> {
-  const template = await resolveTemplate();
+  const template = await resolveTemplate(asset.department);
   const opened = await doc.Open(template.url);
 
   if (!opened) {

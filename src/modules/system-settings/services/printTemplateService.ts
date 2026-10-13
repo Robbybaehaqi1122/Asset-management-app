@@ -61,6 +61,15 @@ export class TemplateNotFillableError extends Error {
 export type PrintTemplate = {
   id: string;
   name: string;
+  /**
+   * The owning unit.
+   *
+   * **Free text, matching `categories.department`,** which is also free text — so there
+   * is no foreign key and none could be added without changing that column first. The
+   * panel offers `getCategoryUnits()`, the same list the asset form's pickers use, so
+   * **choosing from that dropdown is what keeps the two spellings identical.**
+   */
+  department: string;
   filePath: string;
   /** Which sheet of the `.lbx` to print on; null means "the file's own default". */
   sheet: string | null;
@@ -76,7 +85,8 @@ export type PrintTemplate = {
  * PostgREST refuses the *statement*, not one field — which is the `locations.name`
  * failure recorded throughout this codebase.
  */
-const COLUMNS = "id, name, file_path, sheet, is_active, created_at, updated_at";
+const COLUMNS =
+  "id, name, department, file_path, sheet, is_active, created_at, updated_at";
 
 /** What an upload produced: the row, plus what the file turned out to contain. */
 export type UploadResult = {
@@ -106,22 +116,39 @@ export function templateUrl(filePath: string): string {
  * an admin and a staff member — the print path needs to know the active one, and gating
  * the read would make the Print button fail for staff for no reason.
  */
-export async function listPrintTemplates(): Promise<PrintTemplate[]> {
+export async function listPrintTemplates(
+  department: string,
+): Promise<PrintTemplate[]> {
   const { data, error } = await supabase
     .from("print_templates")
     .select(COLUMNS)
+    .ilike("department", department)
     .order("name");
 
   if (error) throw error;
   return (data ?? []).map(mapTemplate);
 }
 
-/** The template printing uses, or null when none has been activated yet. */
-export async function getActivePrintTemplate(): Promise<PrintTemplate | null> {
+/**
+ * The template a given unit prints with, or null when none is activated.
+ *
+ * **`ilike`, not `eq`.** The unit on the print path is `assets.department`, which
+ * `assets_sync_department` copies off the asset's category **verbatim** — so it carries
+ * whatever casing and spacing that category holds. The panel stores the trimmed value it
+ * was given, and `print_templates_one_active_per_department` is indexed over
+ * `upper(btrim(department))` so two spellings cannot both be active. An exact `eq` would
+ * still miss a legacy row whose category says `  finance `, and the symptom would be
+ * "this unit has no template" on a unit that plainly has one. There are a handful of rows,
+ * so the scan `ilike` implies costs nothing.
+ */
+export async function getActivePrintTemplate(
+  department: string,
+): Promise<PrintTemplate | null> {
   const { data, error } = await supabase
     .from("print_templates")
     .select(COLUMNS)
     .eq("is_active", true)
+    .ilike("department", department)
     .maybeSingle();
 
   if (error) throw error;
@@ -163,11 +190,19 @@ export async function readStoredTemplate(
 export async function uploadPrintTemplate(
   file: File,
   name: string,
+  department: string,
   sheetName: string | null,
 ): Promise<UploadResult> {
   const trimmed = name.trim();
   if (trimmed === "") {
     throw new LbxFormatError("Give the template a name before saving it.");
+  }
+
+  // Trimmed on write for the same reason the lookup is `ilike`: the value has to compare
+  // equal to whatever `assets.department` carries, and a trailing space would not.
+  const unit = department.trim();
+  if (unit === "") {
+    throw new LbxFormatError("Choose the department this template belongs to.");
   }
 
   const contents = await readLbx(await file.arrayBuffer());
@@ -194,7 +229,12 @@ export async function uploadPrintTemplate(
 
   const { data, error } = await supabase
     .from("print_templates")
-    .insert({ name: trimmed, file_path: filePath, sheet: sheet.name })
+    .insert({
+      name: trimmed,
+      department: unit,
+      file_path: filePath,
+      sheet: sheet.name,
+    })
     .select(COLUMNS)
     .single();
 
@@ -219,11 +259,17 @@ export async function uploadPrintTemplate(
  * zero rows — which is the fourth time in this codebase that a resolved promise has
  * meant nothing happened.
  */
-export async function activatePrintTemplate(id: string): Promise<void> {
+export async function activatePrintTemplate(
+  id: string,
+  department: string,
+): Promise<void> {
+  // **Scoped to the unit.** Clearing every active row would take IT's template away
+  // while activating HSSE's, and the two units are independent by design.
   const cleared = await supabase
     .from("print_templates")
     .update({ is_active: false })
     .eq("is_active", true)
+    .ilike("department", department)
     .select("id");
 
   if (cleared.error) throw cleared.error;
@@ -309,6 +355,7 @@ function mapTemplate(row: Record<string, unknown>): PrintTemplate {
   return {
     id: String(row.id),
     name: String(row.name),
+    department: String(row.department),
     filePath: String(row.file_path),
     sheet:
       row.sheet === null || row.sheet === undefined ? null : String(row.sheet),
