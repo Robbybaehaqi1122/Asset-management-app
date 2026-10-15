@@ -137,6 +137,8 @@ export type Asset = {
   condition: AssetCondition;
 
   category_id: string | null;
+  /** The parent category of the asset's category, for hierarchical filtering. */
+  category_parent_id: string | null;
   location_id: string | null;
   /**
    * Where the asset physically is *now*, as a `current_locations` reference.
@@ -422,7 +424,7 @@ const ASSET_COLUMNS = `
   port_vga, port_hdmi, port_lan, port_wifi, port_usb, port_bluetooth,
   port_rj45, port_sfp, port_console, port_power,
   created_at, updated_at,
-  category:categories!assets_category_id_fkey ( id, name ),
+  category:categories!assets_category_id_fkey ( id, name, parent_id ),
   location:locations!assets_location_id_fkey ( id, area_name, room_name ),
   currentLocation:current_locations!assets_current_location_id_fkey ( id, area_name, room_name ),
   credentials:asset_credentials ( username, password )
@@ -475,6 +477,7 @@ function mapAsset(row: RawAsset): Asset {
     status: row.status as AssetStatus,
     condition: row.condition as AssetCondition,
     category_id: str(row.category_id),
+    category_parent_id: category ? str(category.parent_id) : null,
     location_id: str(row.location_id),
     current_location_id: str(row.current_location_id),
     department: String(row.department ?? "IT"),

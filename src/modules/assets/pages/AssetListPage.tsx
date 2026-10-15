@@ -1082,7 +1082,7 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
     const needle = search.trim().toLowerCase();
 
     return assets.filter((row) => {
-      if (filterCategory && row.category_id !== filterCategory) return false;
+      if (filterCategory && row.category_id !== filterCategory && row.category_parent_id !== filterCategory) return false;
       if (filterLocation && row.location_id !== filterLocation) return false;
       if (filterStatus && row.status !== filterStatus) return false;
       if (needle === "") return true;
