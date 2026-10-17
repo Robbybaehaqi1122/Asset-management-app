@@ -15,6 +15,15 @@ export interface CalendarEventModalProps {
   initialStartDate?: string;
   initialEndDate?: string;
   onSave: (data: EventFormData) => void;
+  /**
+   * Whether this reader may write an event.
+   *
+   * Required rather than defaulted to `true`, so that every caller has to state it and
+   * a new call site cannot silently land on the permissive answer. Calendar events are
+   * `useState` with no table behind them, so this protects nothing — it exists so the
+   * `calendar` row in `user_menu_permissions` does not claim an effect it does not have.
+   */
+  canEdit: boolean;
 }
 
 type EventFormProps = Omit<
@@ -44,6 +53,7 @@ const CalendarEventForm: React.FC<EventFormProps> = ({
   initialEndDate,
   onClose,
   onSave,
+  canEdit,
 }) => {
   const [eventTitle, setEventTitle] = useState(
     () => (selectedEvent?.title as string) || "",
@@ -100,6 +110,7 @@ const CalendarEventForm: React.FC<EventFormProps> = ({
           <input
             id="event-title"
             type="text"
+            readOnly={!canEdit}
             value={eventTitle}
             onChange={(e) => setEventTitle(e.target.value)}
             className="h-11 w-full rounded-lg border border-gray-300 bg-transparent px-4 py-2.5 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:ring-3 focus:ring-brand-500/10 focus:outline-hidden dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800"
@@ -128,6 +139,7 @@ const CalendarEventForm: React.FC<EventFormProps> = ({
                         value={key}
                         id={`modal${key}`}
                         checked={eventLevel === key}
+                        disabled={!canEdit}
                         onChange={() => setEventLevel(key)}
                       />
                       <span className="box me-2 flex h-5 w-5 items-center justify-center rounded-full border border-gray-300 dark:border-gray-700">
@@ -158,6 +170,7 @@ const CalendarEventForm: React.FC<EventFormProps> = ({
             <input
               id="event-start-date"
               type="date"
+              readOnly={!canEdit}
               value={eventStartDate}
               onChange={(e) => setEventStartDate(e.target.value)}
               className="h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none py-2.5 ps-4 pe-11 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:ring-3 focus:ring-brand-500/10 focus:outline-hidden dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800"
@@ -176,6 +189,7 @@ const CalendarEventForm: React.FC<EventFormProps> = ({
             <input
               id="event-end-date"
               type="date"
+              readOnly={!canEdit}
               value={eventEndDate}
               onChange={(e) => setEventEndDate(e.target.value)}
               className="h-11 w-full appearance-none rounded-lg border border-gray-300 bg-transparent bg-none py-2.5 ps-4 pe-11 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:ring-3 focus:ring-brand-500/10 focus:outline-hidden dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800"
@@ -192,15 +206,27 @@ const CalendarEventForm: React.FC<EventFormProps> = ({
         >
           Close
         </button>
-        <button
-          type="submit"
-          className={cn(
-            "flex w-full justify-center rounded-lg bg-brand-500 px-4 py-2.5 text-sm font-medium text-white hover:bg-brand-600 sm:w-auto",
-            selectedEvent ? "btn-update-event" : "btn-add-event",
-          )}
-        >
-          {selectedEvent ? "Update Changes" : "Add Event"}
-        </button>
+        {/*
+          The submit button, gone rather than `disabled` for a reader who may not write.
+
+          **A disabled submit is a control that says "no" without saying why**, and it
+          leaves the form editable-looking beside it — the reader types a title, presses
+          the key that does nothing, and has no way to tell whether the permission or the
+          page is at fault. The three entry points in `Calendar.tsx` already stop this
+          dialog from opening at all, so reaching here means the permission changed while
+          it was open; a plain Close is then the honest button.
+        */}
+        {canEdit && (
+          <button
+            type="submit"
+            className={cn(
+              "flex w-full justify-center rounded-lg bg-brand-500 px-4 py-2.5 text-sm font-medium text-white hover:bg-brand-600 sm:w-auto",
+              selectedEvent ? "btn-update-event" : "btn-add-event",
+            )}
+          >
+            {selectedEvent ? "Update Changes" : "Add Event"}
+          </button>
+        )}
       </div>
     </form>
   );
@@ -213,6 +239,7 @@ const CalendarEventModal: React.FC<CalendarEventModalProps> = ({
   initialStartDate = "",
   initialEndDate = "",
   onSave,
+  canEdit,
 }) => (
   <Modal
     isOpen={isOpen}
@@ -226,6 +253,7 @@ const CalendarEventModal: React.FC<CalendarEventModalProps> = ({
       initialEndDate={initialEndDate}
       onClose={onClose}
       onSave={onSave}
+      canEdit={canEdit}
     />
   </Modal>
 );

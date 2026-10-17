@@ -16,6 +16,7 @@ import { Dropdown } from "@/components/ui/dropdown/Dropdown";
 import { DropdownItem } from "@/components/ui/dropdown/DropdownItem";
 import { useAuth } from "@/context/AuthContext";
 import { useIsAdmin } from "@/hooks/useIsAdmin";
+import { useMenuAccess } from "@/modules/permissions/useMenuAccess";
 import { useModal } from "@/hooks/useModal";
 import { CloseIcon, HorizontaLDots, PencilIcon, PlusIcon } from "@/icons";
 import type {
@@ -126,6 +127,37 @@ export default function HandoverListPage() {
   const { t } = useTranslation("common", { keyPrefix: "handover" });
   const { user, profile } = useAuth();
   const isAdmin = useIsAdmin();
+
+  /**
+   * What this reader may do on `handover` — the one menu key that covers this whole
+   * screen, since there is one route rather than one per unit.
+   *
+   * **Gating the unit filter is not wanted here.** `canView` decides whether this page
+   * renders at all; which unit it queries stays a separate question, already answered by
+   * `readerUnit` below. Narrowing the unit list by permission would produce a dropdown
+   * of one option on a screen whose unit is not what the permission is about.
+   *
+   * `isLoading` from the hook is deliberately unused, for the reason `AssetListPage`
+   * gives: this page's own `isLoading` is already true on first render and outlives the
+   * permission fetch, so the refusal below cannot flash and no second loading flag is
+   * needed.
+   */
+  const { access: menuAccess } = useMenuAccess();
+  const handoverAccess = menuAccess("handover");
+  const canViewHandover = handoverAccess.canView;
+  const canEditHandover = handoverAccess.canEdit;
+
+  /**
+   * Delete stays admin-ANDed, because `assignments_delete_admin` never opened to staff.
+   *
+   * **Same shape as asset delete in `AssetListPage`, and the same reason.** `03400`
+   * widened *who may receive* a handover, not who may remove one: the delete policy is
+   * still admin-only, so a `can_delete` grant on a staff member would be an instruction
+   * the database has already refused. Honouring it would show a menu item that, on
+   * click, deletes nothing — and `deleteHandover` would throw `NoRowsWrittenError` from
+   * the `.select()` that exists precisely to catch that.
+   */
+  const canDeleteHandover = isAdmin && handoverAccess.canDelete;
 
   /**
    * `IT` rather than a value read from the URL, because there is one route and
@@ -589,6 +621,19 @@ export default function HandoverListPage() {
    * once for the page while the batch it shows changes. The test is the **roster id**
    * against `ownUserIds` — never `batch.userId === user?.id`, which went false for
    * every row once `user_id` moved onto `handover_users` in `02000`.
+   *
+   * **Deliberately NOT gated on `canEditHandover`, and this is the one place in the
+   * module where that matters most.** Return is not an edit of the record; it is the
+   * holder closing a loan they are party to, and blocking it strands the asset:
+   * `assignments_sync_asset_status` only moves it back to `available` when
+   * `returned_at` is set, so a return that cannot be recorded leaves the asset
+   * `assigned` forever — invisible to the Issue picker, which reads
+   * `status = 'available'`, with no error anywhere.
+   *
+   * That is the `02100` bug verbatim — "the return that left the asset stranded" —
+   * reached by a UI gate instead of by an invoker-rights trigger. A permission that
+   * hides Return must never exist, so `canEdit` covers Issue and the accessory editor
+   * and stops here.
    */
   const detailCanReturn =
     detailBatch !== null &&
@@ -812,6 +857,36 @@ export default function HandoverListPage() {
     ),
   ];
 
+  /**
+   * Refusing the page itself, not just the sidebar row.
+   *
+   * `/handover` is a URL whatever the menu does, so hiding the link alone would leave
+   * the door open — the same reason `AssetListPage` refuses rather than only filtering
+   * the sidebar. Gated on this page's own `isLoading`, which is already true on first
+   * render and outlives the permission fetch, so neither the table nor this refusal can
+   * flash.
+   *
+   * Worth naming the cost honestly: a staff member whose account has no row linked in
+   * `handover_users` already sees an empty page here by design, and this is a
+   * **different** empty. Without this refusal those two would be indistinguishable from
+   * the outside — one saying "you may not open this", the other "you hold nothing",
+   * which is the false statement `02000` documented.
+   */
+  if (!isLoading && !canViewHandover) {
+    return (
+      <div>
+        <PageMeta
+          title={`${t("pageTitle")} | Asset Management App`}
+          description={t("pageDescription")}
+        />
+        <PageBreadcrumb pageTitle={t("pageTitle")} />
+        <div className="mt-4 rounded-2xl border border-gray-200 bg-white p-6 text-sm text-gray-500 dark:border-gray-800 dark:bg-white/3 dark:text-gray-400">
+          {t("noMenuAccess")}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div>
       <PageMeta
@@ -852,19 +927,26 @@ export default function HandoverListPage() {
           </div>
 
           {/*
-            No admin gate. `03100` added `assignments_insert_own_or_admin`, so a staff
-            member can now issue an asset **to themselves**, and the picker below is
-            filtered to that one option so the screen offers exactly what the database
-            permits. Handover to a colleague stays admin-only, which is why the picker is
-            narrowed rather than simply opened up.
+            No admin gate, and no recipient narrowing either — `03400` lifted the
+            self-only restriction `03100` had added, so a staff member may now issue an
+            asset in their own department to anyone on the roster. The picker is filtered
+            by **unit**, not by recipient: `getHandoverTargets(unit)` is what matches
+            `assignments_insert_own_unit_or_admin`.
+
+            What can hide the button is `canEdit`. An admin who has made handover
+            read-only for a person takes the Issue button from them, which is the one
+            thing this permission table is for.
           */}
-          <Button
-            variant="outline"
-            onClick={() => void handleOpenIssue()}
-            startIcon={<PlusIcon className="size-4" />}
-          >
-            {t("issue")}
-          </Button>
+          {canEditHandover && (
+            <Button
+              variant="outline"
+              onClick={() => void handleOpenIssue()}
+              startIcon={<PlusIcon className="size-4" />}
+              className="shrink-0"
+            >
+              {t("issue")}
+            </Button>
+          )}
         </div>
 
         <div className="flex flex-col gap-3 border-b border-gray-200 p-6 sm:flex-row sm:items-end dark:border-gray-800">
@@ -1090,7 +1172,7 @@ export default function HandoverListPage() {
                     <td className="px-4 py-3 text-end">
                       <HandoverBatchActions
                         batch={batch}
-                        canDelete={isAdmin}
+                        canDelete={canDeleteHandover}
                         isSaving={isSaving}
                         openMenuId={openMenuId}
                         setOpenMenuId={setOpenMenuId}
@@ -1400,11 +1482,20 @@ export default function HandoverListPage() {
                             `row.accessories` rather than a second source is what
                             keeps the screen and the paper agreeing. */}
                         {/* The bag and the charger, with an editor underneath.
-                            Admin-only, and gated on `isAdmin` rather than on a
-                            role check inline — the write policies are the boundary
-                            and this only keeps a control a staff member cannot use
-                            off their screen. */}
-                        {isAdmin && (
+                            Admin-only **and** edit-gated, which are two different
+                            restrictions answering two different questions:
+                            `isAdmin` mirrors
+                            `assignments_accessories_insert_admin` / `_update_admin` /
+                            `_delete_admin`, which never opened to staff at all; and
+                            `canEditHandover` mirrors what the admin asked for on this
+                            menu — a handover whose accessories can still be rewritten is
+                            not a read-only handover.
+
+                            `isAdmin` first, because it is the one the database
+                            enforces. Reading it the other way round would let a
+                            permission appear to grant the editor to a staff member,
+                            which three separate admin-only policies refuse. */}
+                        {isAdmin && canEditHandover && (
                           <AccessoryEditor
                             assetCode={row.asset?.assetCode ?? row.id}
                             names={row.accessories}
@@ -1424,12 +1515,22 @@ export default function HandoverListPage() {
                             isSaving={isSaving}
                           />
                         )}
-                        {!isAdmin && row.accessories.length > 0 && (
-                          <p className="text-xs text-gray-500 dark:text-gray-400">
-                            {t("detail.accessories")}:{" "}
-                            {row.accessories.map((a) => a.name).join(", ")}
-                          </p>
-                        )}
+                        {/*
+                            Read-only accessory list, shown exactly when the editor
+                            above is not. The condition is the **negation of the
+                            editor's**, not `!isAdmin` — otherwise an admin who turned
+                            editing off would be left with no indication of what is on
+                            the list, which is the "rule that hides UI fails silently and
+                            completely" failure this codebase keeps recording.
+                          */}
+                        {!isAdmin || !canEditHandover
+                          ? row.accessories.length > 0 && (
+                              <p className="text-xs text-gray-500 dark:text-gray-400">
+                                {t("detail.accessories")}:{" "}
+                                {row.accessories.map((a) => a.name).join(", ")}
+                              </p>
+                            )
+                          : null}
                         {/* Serial and condition are the two facts an admin checks
                             against a physical device in the hand. The asset's
                             registered location is **not** here: it is a different fact

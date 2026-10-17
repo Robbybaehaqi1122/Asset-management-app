@@ -167,7 +167,7 @@ export default function AssetLabelModal({
 
       if (error instanceof BpacTemplateNotChosenError) {
         // Its own kind, because the fix is not a printer, not an extension and not the
-        // media: an administrator has to choose a template under System Setting. Folding
+        // media: an administrator has to choose a template under System. Folding
         // it into "could not print" would send the operator after the wrong thing.
         setPrint({ kind: "noTemplate", detail });
       } else if (error instanceof BpacUnavailableError) {

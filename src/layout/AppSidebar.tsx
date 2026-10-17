@@ -2,185 +2,23 @@ import { useSidebar } from "@/context/SidebarContext";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useLocation } from "react-router";
-import {
-  BoxCubeIcon,
-  CalenderIcon,
-  ChevronDownIcon,
-  GroupIcon,
-  HorizontaLDots,
-  SliderHorizontalIcon,
-} from "../icons";
+import { ChevronDownIcon, HorizontaLDots } from "../icons";
 import { useAuth } from "@/context/AuthContext";
 import { useIsAdmin } from "@/hooks/useIsAdmin";
+import { useMenuAccess } from "@/modules/permissions/useMenuAccess";
+import type { NavItem } from "./navItems";
+import { visibleNavItems } from "./navItems";
 import { cn } from "../utils";
 
-type NavSubItem = {
-  name: string;
-  key?: string;
-  path: string;
-  target?: string;
-  /**
-   * Hidden from users who are not admins.
-   *
-   * On a sub-item rather than the group, because a group can mix an
-   * open-to-everyone screen with an admin-only one: the asset inventory is
-   * readable by every signed-in user while the reference-data editor is not, and
-   * marking the group would take the inventory away from staff. Same fail-closed
-   * reading as `NavItem.adminOnly` — the entry is absent until the profile has
-   * arrived — and, like it, not an access control.
-   */
-  adminOnly?: boolean;
-  /**
-   * The unit this screen is for, matched against the reader's own department.
-   *
-   * **This is a menu filter, not an access control, and the database has been enforcing
-   * the real boundary since `01700`:** `assets_select_authenticated` is
-   * `is_admin() or department = current_asset_unit()`. An IT staff member's Asset HSSE
-   * list was always empty — the row in the menu offering it was the visible half of a
-   * boundary the query layer had been applying.
-   *
-   * **`null` matches everyone.** A sub-item without a unit is not department-scoped, and
-   * treating a missing value as "matches nobody" would hide User Management and every
-   * other unsuffixed entry.
-   */
-  unit?: string | null;
-};
-
+/**
+ * Which render pass a row belongs to.
+ *
+ * Stays here rather than in `navItems.tsx`: it describes how the sidebar paints the
+ * menu, not what the menu contains, and the command palette has no notion of it.
+ */
 type MenuGroup = "main" | "others";
 
 type OpenSubmenu = { type: MenuGroup; index: number };
-
-type NavItem = {
-  name: string;
-  key?: string;
-  icon: React.ReactNode;
-  path?: string;
-  target?: string;
-  subItems?: NavSubItem[];
-  /** Renders as a non-interactive placeholder instead of a link or submenu. */
-  disabled?: boolean;
-  /**
-   * Hidden entirely from users who are not admins.
-   *
-   * `useIsAdmin()` rather than `profile?.role`, so the fail-closed default
-   * lives in one place: until the profile has arrived the entry is absent,
-   * which is the safe direction for an admin-only screen. Not an access
-   * control — the screen and the RLS policies both refuse a non-admin on
-   * their own.
-   */
-  adminOnly?: boolean;
-};
-
-const navItems: NavItem[] = [
-  {
-    icon: <CalenderIcon fontSize={24} />,
-    name: "Calendar",
-    key: "calendar",
-    path: "/calendar",
-  },
-  {
-    icon: <BoxCubeIcon fontSize={24} />,
-    name: "Asset Management",
-    key: "assetManagement",
-    // A submenu rather than a top-level row for the same reason user management
-    // is one: this marks the group, the screen lives under it. The group with an
-    // open submenu is derived from the active route, so navigating into Asset IT
-    // opens it on its own.
-    //
-    // Asset Settings carries `adminOnly` on the *sub-item* rather than on the
-    // group: the inventory itself is readable by every signed-in user, and hiding
-    // the whole group from staff would take that away. The sub-item is where the
-    // admin-only screen lives, so that is where the flag goes.
-    subItems: [
-      // One row per unit, matching the one route per unit in `App.tsx`. These
-      // are separate lists rather than one list with a unit filter, because the
-      // two have almost nothing in common: an HSSE item is inspected and expires,
-      // an IT item is specced and networked, and the form shows a different
-      // fieldset for each.
-      // One row per unit, each carrying its unit so the menu can hide the other's. The
-      // strings are the ones `assets_sync_department` copies off the category, so a
-      // reader's department matches them exactly.
-      { name: "Asset IT", key: "assetIt", path: "/assets", unit: "IT" },
-      {
-        name: "Asset HSSE",
-        key: "assetHsse",
-        path: "/assets-hsse",
-        unit: "HSSE",
-      },
-      // One row, not one per unit — the reverse of the two rows above, and
-      // deliberately so. Handover records nothing that varies by unit: it is one
-      // list of who is holding what, so splitting it bought a second page rather
-      // than a distinction. The unit became a filter inside the page, the same
-      // shape `/asset-settings` uses for its own unit filter.
-      //
-      // Deliberately *not* `adminOnly`: a staff member can see what they are
-      // holding and return it, which is the whole point of handing something out.
-      // `assignments_select_own_or_admin` gives them their own rows and
-      // `assignments_update_own_or_admin` lets them close one. The Issue button
-      // is admin-gated inside the page instead, because
-      // `assignments_insert_admin` is what refuses it.
-      { name: "Asset Handover", key: "handover", path: "/handover" },
-      {
-        name: "Asset Settings",
-        key: "assetSettings",
-        path: "/asset-settings",
-        adminOnly: true,
-      },
-    ],
-  },
-  {
-    icon: <SliderHorizontalIcon fontSize={24} />,
-    name: "System Setting",
-    key: "systemSetting",
-    // `adminOnly` on the **group**, like User Management: everything filed under
-    // System Setting is configuration for the installation rather than data anybody
-    // needs to read, so the whole group disappearing for a staff member is correct —
-    // and it means the next sub-item inherits the restriction without repeating it.
-    adminOnly: true,
-    // A submenu of one, which is deliberate rather than premature. The group is what
-    // gives a *second* setting somewhere to live that nobody has to decide on in
-    // advance, and it makes `/system-setting` a real route instead of a description.
-    //
-    // Kept separate from **Asset Settings** on purpose: that one owns the reference
-    // data behind the asset form's pickers, and this one owns how the installation
-    // behaves. Merging them would put "who may change a category" and "how the printer
-    // is configured" in one list.
-    subItems: [
-      { name: "Print Setting", key: "printSetting", path: "/system-setting" },
-    ],
-  },
-  {
-    icon: <GroupIcon fontSize={24} />,
-    name: "User Management",
-    key: "userManagement",
-    adminOnly: true,
-    // A submenu rather than separate top-level rows, because these are screens of
-    // one thing: the people, and the reference data they are described by. The one
-    // with an open submenu is derived from the active route, so navigating into any
-    // of them opens this group on its own.
-    //
-    // `adminOnly` is on the **group**, so a new sub-item inherits it without
-    // repeating it — and a group whose every sub-item is admin-only is dropped
-    // entirely rather than rendered as a dead row for a staff member.
-    subItems: [
-      { name: "User List", key: "userList", path: "/users" },
-      { name: "Department", key: "department", path: "/departments" },
-      // Positions feed the `position` dropdown on the handover roster's Add User
-      // tab, so it belongs with the other list that feeds a picker rather than
-      // under Asset Settings.
-      { name: "Position", key: "position", path: "/positions" },
-      // Companies: an admin-maintained list of company names, in the same shape as
-      // the two above. It carries **no** `adminOnly` because the group already has
-      // it, so a new sub-item inherits it without repeating it — that is what the
-      // group-level flag is for.
-      //
-      // Nothing references the table yet, so this entry leads to a list the admin
-      // fills rather than to anything that scopes the register. That is the current
-      // state of the feature, not a placeholder: see `20260927002600`.
-      { name: "Company", key: "company", path: "/companies" },
-    ],
-  },
-];
 
 const AppSidebar: React.FC = () => {
   const { isExpanded, isMobileOpen, isHovered, setIsHovered, setIsMobileOpen } =
@@ -200,6 +38,15 @@ const AppSidebar: React.FC = () => {
    * to open.
    */
   const readerUnit = profile?.department?.name.trim() ?? null;
+  /**
+   * Per-person menu overrides from `user_menu_permissions`.
+   *
+   * Read through the hook rather than inlined here, so this file does not carry its own
+   * copy of the "is admin, then everything" rule — the same rule the pages consult when
+   * they ask whether to render a write button. See `useMenuAccess` for why two
+   * consumers fetching independently is a deliberate trade rather than a missing context.
+   */
+  const { access: menuAccess } = useMenuAccess();
   const [subMenuHeight, setSubMenuHeight] = useState<Record<string, number>>(
     {},
   );
@@ -211,39 +58,26 @@ const AppSidebar: React.FC = () => {
   } | null>(null);
   const subMenuRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
-  // Disembunyikan sekali di sini, bukan saat render, supaya indeks yang dipakai
-  // untuk melacak submenu sama antara turunannya dan pemetaan di bawah. Kalau
-  // di-filter di dalam `map`, indeks item setelahnya bergeser dan state submenu
-  // akan menunjuk item yang salah.
-  //
-  // Sub-item ikut disaring supaya `adminOnly` di level itu berarti sesuatu.
-  // Disaring di sini, bukan saat render submenu, supaya grup dengan satu
-  // sub-item saja untuk staff tidak pernah muncul lalu kosong.
-  const visibleNavItems = useMemo(
+  /**
+   * Filtered once, here, and through the shared predicate.
+   *
+   * **Not during render, and not inline any more.** Filtering inside the `map` would
+   * shift the indices this file's submenu state is keyed by, so the open marker would
+   * point at the wrong row. And the predicate itself lives in `navItems.tsx` because
+   * `CommandPalette` has to reach exactly these destinations — two copies of this rule
+   * would let the palette offer a screen the sidebar refuses to draw.
+   *
+   * `canViewMenu` is passed in rather than read from the hook here, because the hook is
+   * a hook and this module is plain data.
+   */
+  const visibleItems = useMemo(
     () =>
-      navItems
-        .filter((nav) => !nav.adminOnly || isAdmin)
-        .map((nav) =>
-          nav.subItems
-            ? {
-                ...nav,
-                subItems: nav.subItems.filter(
-                  (sub) =>
-                    (!sub.adminOnly || isAdmin) &&
-                    // Admins are shown every unit; everyone else only their own.
-                    // `null` means "not department-scoped", so it always survives.
-                    (sub.unit == null || isAdmin || sub.unit === readerUnit),
-                ),
-              }
-            : nav,
-        )
-        // A group whose every sub-item is admin-only would render as a dead row
-        // for a staff member, which is a worse affordance than hiding it. The
-        // test is "does it still have any sub-items", NOT "is it adminOnly" —
-        // the latter also threw away the admin-only groups for an admin, which
-        // is how User Management went missing.
-        .filter((nav) => !nav.subItems || nav.subItems.length > 0),
-    [isAdmin, readerUnit],
+      visibleNavItems({
+        isAdmin,
+        readerUnit,
+        canViewMenu: (key: string) => menuAccess(key).canView,
+      }),
+    [isAdmin, readerUnit, menuAccess],
   );
 
   // Auto-close sidebar on mobile after route change
@@ -263,9 +97,9 @@ const AppSidebar: React.FC = () => {
   // Submenu yang memuat route aktif terbuka secara default. Diturunkan saat
   // render, bukan disimpan, supaya tidak ada setState di dalam effect.
   let openSubmenu: OpenSubmenu | null = null;
-  for (let index = 0; index < visibleNavItems.length; index += 1) {
+  for (let index = 0; index < visibleItems.length; index += 1) {
     if (
-      visibleNavItems[index].subItems?.some((subItem) => isActive(subItem.path))
+      visibleItems[index].subItems?.some((subItem) => isActive(subItem.path))
     ) {
       openSubmenu = { type: "main", index };
       break;
@@ -507,7 +341,7 @@ const AppSidebar: React.FC = () => {
                   <HorizontaLDots className="size-6" />
                 )}
               </h2>
-              {renderMenuItems(visibleNavItems, "main")}
+              {renderMenuItems(visibleItems, "main")}
             </div>
           </div>
         </nav>

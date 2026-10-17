@@ -31,6 +31,15 @@ export interface Profile {
   department: DepartmentRef | null;
   /** Flattened from the embed, because that is what the table shows. */
   departmentName: string | null;
+  /**
+   * Path inside the `avatars` bucket, or `null` for the fallback image.
+   *
+   * A path and not a URL — see `lib/avatar.ts` for why, which is that the bucket being
+   * public today is a decision that can change and a stored URL cannot survive it.
+   * Declared here because `PROFILE_COLUMNS` carries it and this type is the contract
+   * for what that read returns.
+   */
+  avatar_path: string | null;
   created_at: string;
   /**
    * True while the account still has the password an admin set when creating
@@ -47,7 +56,7 @@ export interface Profile {
  * bisa memilih kolom berbeda dan mengembalikan bentuk yang berbeda.
  */
 export const PROFILE_COLUMNS =
-  "id, email, full_name, role, created_at, must_change_password, " +
+  "id, email, full_name, role, created_at, must_change_password, avatar_path, " +
   "department:departments(id, name)";
 
 /**

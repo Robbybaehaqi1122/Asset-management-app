@@ -1,14 +1,13 @@
 import PublicOnlyRoute from "@/components/auth/PublicOnlyRoute";
 import RequireAuth from "@/components/auth/RequireAuth";
-import { Route, BrowserRouter as Router, Routes } from "react-router";
+import { Navigate, Route, BrowserRouter as Router, Routes } from "react-router";
 import { ScrollToTop } from "./components/common/ScrollToTop";
 import AppLayout from "./layout/AppLayout";
 import AssetSettingsPage from "./modules/asset-settings/pages/AssetSettingsPage";
 import AssetListPage from "./modules/assets/pages/AssetListPage";
-import CompanyListPage from "./modules/companies/pages/CompanyListPage";
 import HandoverListPage from "./modules/handover/pages/HandoverListPage";
-import DepartmentListPage from "./modules/departments/pages/DepartmentListPage";
-import PositionListPage from "./modules/positions/pages/PositionListPage";
+import OrganisationPage from "./modules/organisation/pages/OrganisationPage";
+import PermissionListPage from "./modules/permissions/pages/PermissionListPage";
 import SystemSettingPage from "./modules/system-settings/pages/SystemSettingPage";
 import UserListPage from "./modules/users/pages/UserListPage";
 import SignIn from "./pages/AuthPages/SignIn";
@@ -36,26 +35,62 @@ export default function App() {
                   terlihat, dan menambah route guard kedua hanya akan jadi lapisan
                   UI yang tidak menambah keamanan. */}
               <Route path="/users" element={<UserListPage />} />
-              <Route path="/departments" element={<DepartmentListPage />} />
-              {/* Positions: the job titles the handover roster's position
-                  dropdown offers. `getPositionOptions` reads `positions`, which is
-                  `using (true)` for every signed-in user, so this screen could be
-                  opened by anyone — but writes are admin-only, so it is gated the
-                  way `/users` and `/departments` are: the page refuses to render,
-                  and RLS is the real boundary. */}
-              <Route path="/positions" element={<PositionListPage />} />
-              {/* Companies: an admin-maintained list of company names. It sits
-                  here rather than under Asset Settings because it is a list of
-                  names about organisations, the same kind of thing as Department
-                  and Position, and because **nothing references it yet** — no
-                  asset, department or roster row carries a `company_id`. It is a
-                  list an admin fills, not a scope on anything, and
-                  `20260927002600` records why that is the stopping point rather
-                  than the first half of a larger design.
+              {/* Departments, job titles and employers on one screen, three tabs.
+                  One entry in the menu instead of three, and inside User Management
+                  rather than in a group of its own.
 
-                  Same admin gate as the two beside it: the page refuses to render
-                  for a non-admin, and the three write policies are the boundary. */}
-              <Route path="/companies" element={<CompanyListPage />} />
+                  Reads are `using (true)` on all three tables, so they are not gated
+                  here the way `/users` is — the page refuses to render for a
+                  non-admin and the three write policies are the boundary. */}
+              <Route path="/organisation" element={<OrganisationPage />} />
+              {/* The three pages these were before they became tabs.
+                  `<Navigate replace>` rather than deletion: a bookmark, a shared
+                  link or a habit typed into the address bar still lands somewhere
+                  real, and the browser history entry is replaced instead of stacked
+                  — which is what keeps the back button from trapping the reader on a
+                  redirect that redirects. */}
+              <Route
+                path="/departments"
+                element={<Navigate to="/organisation" replace />}
+              />
+              <Route
+                path="/positions"
+                element={<Navigate to="/organisation" replace />}
+              />
+              {/* Companies: the employer of a person on the handover roster. **Referenced,
+                  and a comment here once said otherwise** — it claimed "nothing
+                  references it yet — no asset, department or roster row carries
+                  a `company_id`", true when written and false from `02700`. That
+                  stale sentence is what made the feature look like dead weight
+                  worth deleting, so the trap is named: `companies` has no
+                  reference from the **asset** register, which is easy to read as
+                  no reference at all.
+
+                  It is referenced twice. `handover_users.company_id` fills a
+                  picker on the roster form, and `HandoverPrintModal` prints the
+                  name in the issuer's signature block and the recipient's parties
+                  block — a field on a document somebody signs. What `02600`
+                  records as the stopping point is that no asset carries a company,
+                  not that nothing does. */}
+              <Route
+                path="/companies"
+                element={<Navigate to="/organisation" replace />}
+              />
+              {/* Per-person menu access, `user_menu_permissions` from migration `03500`.
+
+                  Modul sendiri, bukan tab di `/users`: yang ini menjawab "layar mana
+                  yang boleh dibuka oleh orang ini", sementara `users` menjawab "siapa
+                  orang ini dan apa akunnya". Keduanya berubah sendiri, dan digabung jadi
+                  satu form yang isinya checkbox dan reset password.
+
+                  Tanpa route-level admin guard, sama seperti `/users` di atas: policy
+                  `user_menu_permissions_*_admin` yang menolak, dan halamannya sendiri
+                  yang menolak render lewat `useIsAdmin()`.
+
+                  Catatan penting soal route ini: ia **menyempitkan** menu staff, tidak
+                  pernah memperluas. Admin tetap melewati semua penyaringan, dan batas
+                  unit pada dua baris aset masih di-AND dengan izin ini. */}
+              <Route path="/permissions" element={<PermissionListPage />} />
               {/* `assets_select_authenticated` adalah `using (true)` dan stok
                   bukan milik satu departemen, jadi kedua halaman ini juga untuk
                   staff. Yang admin-only di dalamnya adalah kredensial: RLS

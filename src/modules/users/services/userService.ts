@@ -22,7 +22,7 @@ import { supabase } from "@/lib/supabase";
  * dan penampilannya tetap `row.department?.name`.
  */
 const USER_COLUMNS =
-  "id, email, full_name, role, created_at, must_change_password, " +
+  "id, email, full_name, role, created_at, must_change_password, avatar_path, " +
   "department:departments(id, name)";
 
 /**

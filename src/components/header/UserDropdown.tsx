@@ -1,4 +1,5 @@
 import { useAuth } from "@/context/AuthContext";
+import { avatarUrlFromPath } from "@/lib/avatar";
 import { useLanguage } from "@/context/LanguageContext";
 import { useClickOutside } from "@/hooks/useClickOutside";
 
@@ -36,7 +37,21 @@ export default function UserDropdown() {
   // sebagai cadangan karena itu identitas auth-nya sendiri, bukan metadata.
   const displayName =
     profile?.full_name || user?.email || t("userDropdown.accountSettings");
-  const avatarUrl = user?.user_metadata.avatar_url;
+  /**
+   * The database reference first, `user_metadata` second.
+   *
+   * **The order is the whole point.** `user_metadata.avatar_url` is writable by any
+   * signed-in user through `supabase.auth.updateUser`, and this component read it for its
+   * whole life. If it stayed the primary source then uploading a photo would appear to
+   * do nothing — the metadata value would simply keep winning — and the reader would
+   * conclude the feature was broken rather than that two sources were racing.
+   *
+   * The metadata read stays as a fallback because it is still the only thing an account
+   * created outside this app can have, and because deleting it would change what the
+   * navbar shows for those accounts.
+   */
+  const avatarUrl =
+    avatarUrlFromPath(profile?.avatar_path) ?? user?.user_metadata.avatar_url;
   const email = user?.email ?? "";
 
   /**

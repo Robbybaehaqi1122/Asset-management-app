@@ -30,6 +30,8 @@ import AssetLabelModal from "../components/AssetLabelModal";
 import { useClickOutside } from "@/hooks/useClickOutside";
 import { useIsAdmin } from "@/hooks/useIsAdmin";
 import { useModal } from "@/hooks/useModal";
+import { assetMenuKeyForUnit } from "@/modules/permissions/menuAccess";
+import { useMenuAccess } from "@/modules/permissions/useMenuAccess";
 import {
   CloseIcon,
   MoreDotIcon,
@@ -655,6 +657,7 @@ function RowActions({
   onChangeStatus,
   onPrintLabel,
   onDelete,
+  canEdit,
   canDelete,
 }: {
   row: Asset;
@@ -666,12 +669,18 @@ function RowActions({
   onPrintLabel: () => void;
   onDelete: () => void;
   /**
-   * Delete stays admin-only while add and edit are not.
+   * Create and update, which `03100` already opened to a staff member in their own
+   * department — and which the per-person menu permission can narrow further.
    *
-   * **This is a different shape from the sidebar's `adminOnly`, and it has to be.** The
-   * row menu is one control holding three actions, and two of them now belong to staff.
-   * A flag on the sub-item would take the whole menu with it; a flag on the item hides one
-   * destructive row and leaves the rest.
+   * Gates **two** items, not one. "Change status" is an `update` on `assets`, so it is
+   * an edit; leaving it visible to a read-only reader would offer a form whose save the
+   * permission says they may not make.
+   */
+  canEdit: boolean;
+  /**
+   * Delete, which stayed admin-only in `03100` and so is `isAdmin` ANDed with the
+   * permission by the caller. See the note there — a `can_delete` grant on a staff
+   * account is an instruction `assets_write_admin` has already refused.
    */
   canDelete: boolean;
 }) {
@@ -791,19 +800,23 @@ function RowActions({
           className="fixed z-50 w-48 rounded-xl border border-gray-200 bg-white shadow-theme-lg dark:border-gray-800 dark:bg-gray-dark"
           style={{ top: 0, left: 0 }}
         >
-          <DropdownItem
-            onClick={onEdit}
-            baseClassName={itemClass}
-            className={dangerClass}
-          >
-            <PencilIcon className="size-4 shrink-0" />
-            {t("edit")}
-          </DropdownItem>
+          {canEdit && (
+            <>
+              <DropdownItem
+                onClick={onEdit}
+                baseClassName={itemClass}
+                className={dangerClass}
+              >
+                <PencilIcon className="size-4 shrink-0" />
+                {t("edit")}
+              </DropdownItem>
 
-          <DropdownItem onClick={onChangeStatus} baseClassName={itemClass}>
-            <SliderHorizontalIcon className="size-4 shrink-0" />
-            {t("changeStatus")}
-          </DropdownItem>
+              <DropdownItem onClick={onChangeStatus} baseClassName={itemClass}>
+                <SliderHorizontalIcon className="size-4 shrink-0" />
+                {t("changeStatus")}
+              </DropdownItem>
+            </>
+          )}
 
           {/* One label action. It opens a dialog that renders the label and carries
               the print button, rather than a separate preview item and a separate
@@ -838,6 +851,41 @@ const MENU_ESTIMATED_HEIGHT = 128;
 export default function AssetListPage({ unit }: { unit: AssetUnit }) {
   const { t } = useTranslation("common", { keyPrefix: "assets" });
   const isAdmin = useIsAdmin();
+
+  /**
+   * What this reader may do on **this route's** menu.
+   *
+   * Asked under the unit's own key, so `/assets` and `/assets-hsse` are configured
+   * separately — the two are separate rows for an admin to set and separate screens for
+   * a reader to be given or refused.
+   *
+   * **`isLoading` is deliberately not consulted here.** The page's own `isLoading` is
+   * already `true` on first render and covers the assets query, so gating the refusal
+   * below on *that* means neither the content nor the refusal can flash: the permission
+   * fetch finishes well before the asset query does.
+   */
+  const { access: menuAccess } = useMenuAccess();
+  const assetAccess = menuAccess(assetMenuKeyForUnit(unit));
+  const canViewAssets = assetAccess.canView;
+  const canEditAssets = assetAccess.canEdit;
+
+  /**
+   * Delete is the one action this screen still ANDs with `isAdmin`, and the reason is
+   * that **a permission cannot widen anybody.**
+   *
+   * `03100` opened `assets` insert and update to a staff member in their own department
+   * and left delete admin-only — `assets_write_admin` is still the only policy that
+   * covers DELETE. So a `can_delete` grant on a staff member is an instruction the
+   * database has already refused: honouring it would show a button that, on click,
+   * matches zero rows and writes nothing while `deleteAsset` waits on `.select()` to
+   * tell us.
+   *
+   * The permission can therefore only ever remove the delete action from an admin, which
+   * is exactly the "narrow, never widen" rule the migration states. Reading `canDelete`
+   * alone here would be the same mistake as a form offering `status = 'assigned'` — an
+   * offer the database cannot honour.
+   */
+  const canDeleteAssets = isAdmin && assetAccess.canDelete;
 
   const [assets, setAssets] = useState<Asset[]>([]);
   const [categories, setCategories] = useState<CategoryOption[]>([]);
@@ -1082,7 +1130,12 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
     const needle = search.trim().toLowerCase();
 
     return assets.filter((row) => {
-      if (filterCategory && row.category_id !== filterCategory && row.category_parent_id !== filterCategory) return false;
+      if (
+        filterCategory &&
+        row.category_id !== filterCategory &&
+        row.category_parent_id !== filterCategory
+      )
+        return false;
       if (filterLocation && row.location_id !== filterLocation) return false;
       if (filterStatus && row.status !== filterStatus) return false;
       if (needle === "") return true;
@@ -1310,6 +1363,42 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
     }
   };
 
+  /**
+   * Refusing the page itself, not just the sidebar row.
+   *
+   * **Without this the menu restriction is half a feature.** `AppSidebar` hides the link,
+   * and `/assets` is still a URL: a reader with `can_view = false` on this menu could
+   * type it and land on a full list, because `01700` scopes the read by the reader's own
+   * *unit* and knows nothing about menu permissions. That is the same shape as the
+   * failures AGENTS.md records — a link that disappears while the door it pointed at stays
+   * open.
+   *
+   * Gated on this page's own `isLoading` rather than the permission hook's, for the
+   * reason given where the hook is called: the assets query is already in flight on first
+   * render, so neither the list nor this refusal can flash.
+   *
+   * Same shape as the `!isAdmin` refusal in `UserListPage`, and the same reason it is a
+   * separate early return rather than a conditional wrapped around the markup: a page that
+   * hides its own body halfway down the JSX is a page nobody can read.
+   *
+   * This is still a UI gate. `assets_select_authenticated` is what decides which rows
+   * exist, and migration `03500` changed nothing about it.
+   */
+  if (!isLoading && !canViewAssets) {
+    return (
+      <div>
+        <PageMeta
+          title={`${t(`units.${unit}`)} | Asset Management App`}
+          description={t(`pageDescription.${unit}`)}
+        />
+        <PageBreadcrumb pageTitle={t(`units.${unit}`)} />
+        <div className="mt-4 rounded-2xl border border-gray-200 bg-white p-6 text-sm text-gray-500 dark:border-gray-800 dark:bg-white/3 dark:text-gray-400">
+          {t("noMenuAccess")}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div>
       <PageMeta
@@ -1350,20 +1439,27 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
           </div>
 
           {/*
-            No `isAdmin` gate any more. `03100` opened `assets` insert and update to a
-            staff member in their own department, and `01700` already scoped the read the
-            same way — so hiding the button from staff would hide a capability the database
-            grants and that the button's own form is already scoped for: the category
-            pickers are filtered to this route's unit, so a staff member cannot create an
-            HSSE asset from here even if they wanted to.
+            Not `isAdmin`-gated, and that is `03100` rather than this module: `03100`
+            opened `assets` insert and update to a staff member in their own department,
+            and `01700` already scoped the read the same way — so hiding the button from
+            staff would hide a capability the database grants and that the button's own
+            form is already scoped for, since the category pickers are filtered to this
+            route's unit.
+
+            What can now hide it is the per-person menu permission: an admin who has
+            turned Edit off for this menu takes the button from every reader, staff
+            included, because a narrowed capability is the one thing this table is for.
           */}
-          <Button
-            variant="outline"
-            onClick={handleOpenCreate}
-            startIcon={<PlusIcon className="size-4" />}
-          >
-            {t("addAsset")}
-          </Button>
+          {canEditAssets && (
+            <Button
+              variant="outline"
+              onClick={handleOpenCreate}
+              startIcon={<PlusIcon className="size-4" />}
+              className="shrink-0"
+            >
+              {t("addAsset")}
+            </Button>
+          )}
         </div>
 
         {/* Filters. Staff see these too, because stock is not admin-only. */}
@@ -1577,7 +1673,8 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
                         onChangeStatus={() => handleOpenStatus(row)}
                         onPrintLabel={() => handleOpenLabel(row)}
                         onDelete={() => handleOpenDelete(row)}
-                        canDelete={isAdmin}
+                        canEdit={canEditAssets}
+                        canDelete={canDeleteAssets}
                       />
                     </TableCell>
                   </TableRow>

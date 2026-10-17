@@ -21,6 +21,7 @@ import timeGridPlugin from "@fullcalendar/react/timegrid";
 import React, { useEffect, useRef, useState } from "react";
 import CalendarEventItem from "./CalendarEventItem";
 import CalendarEventModal from "./CalendarEventModal";
+import { useMenuAccess } from "@/modules/permissions/useMenuAccess";
 import CalendarViewSelect from "./CalendarViewSelect";
 import {
   BookmarkIcon,
@@ -56,6 +57,22 @@ const Calendar: React.FC = () => {
   const { language: locale, dir } = useLanguage();
   const isRtlLayout = dir === "rtl";
   const { theme } = useTheme();
+
+  /**
+   * Whether this reader may add or change events.
+   *
+   * **Honest about what this is worth.** Events here are `useState(INITIAL_EVENTS)`
+   * and nothing more — no table, no RLS, no storage, so they reset on every reload and
+   * one reader's events are nobody else's. Gating the writes is therefore **not** a
+   * security boundary and protects nothing; it is here so that a permission row does not
+   * claim an effect it does not have, which is the "a control that cannot do anything"
+   * shape this codebase keeps refusing.
+   *
+   * The genuinely load-bearing part of the `calendar` permission is `canView`, which
+   * `AppSidebar` already honours and which does hide something real.
+   */
+  const { access: menuAccess } = useMenuAccess();
+  const canEditEvents = menuAccess("calendar").canEdit;
 
   const [events, setEvents] = useState<CalendarEvent[]>(INITIAL_EVENTS);
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(
@@ -206,7 +223,11 @@ const Calendar: React.FC = () => {
           direction={isRtlLayout ? "rtl" : "ltr"}
           // Toolbar Header configuration
           headerToolbar={{
-            start: "prev,next addEventButton",
+            // The Add button is named in the token list rather than in `buttons`, so
+            // dropping the token is what removes it. Leaving the button defined under
+            // `buttons` and only hiding its `className` would still leave a focusable,
+            // clickable element behind.
+            start: canEditEvents ? "prev,next addEventButton" : "prev,next",
             center: "title",
             end: "",
           }}
@@ -491,10 +512,14 @@ const Calendar: React.FC = () => {
               }
             });
           }}
-          selectable={true}
+          selectable={canEditEvents}
           events={events}
-          select={handleDateSelect}
-          eventClick={handleEventClick}
+          // Both open the same editor, so both are gated here rather than by a guard
+          // inside each handler: `undefined` is what FullCalendar reads as "not
+          // configured", so a read-only reader cannot reach the form by clicking a day
+          // or an event either way round.
+          select={canEditEvents ? handleDateSelect : undefined}
+          eventClick={canEditEvents ? handleEventClick : undefined}
           eventContent={(eventInfo: EventDisplayInfo) => (
             <CalendarEventItem eventInfo={eventInfo} />
           )}
@@ -514,6 +539,10 @@ const Calendar: React.FC = () => {
         initialStartDate={selectedStartDate}
         initialEndDate={selectedEndDate}
         onSave={handleSaveEvent}
+        // Belt-and-braces against the three entry points above being the only guards:
+        // if the modal is somehow open, a read-only reader must not be handed a save
+        // callback that writes state they are not allowed to write.
+        canEdit={canEditEvents}
       />
     </div>
   );

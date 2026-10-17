@@ -1,6 +1,11 @@
 "use client";
 
 import { ThemeToggleButton } from "@/components/common/ThemeToggleButton";
+import CommandPalette from "@/components/common/CommandPalette";
+import {
+  useCommandPalette,
+  useShortcutLabel,
+} from "@/components/common/useCommandPalette";
 import NotificationDropdown from "@/components/header/NotificationDropdown";
 import UserDropdown from "@/components/header/UserDropdown";
 import { useSidebar } from "@/context/SidebarContext";
@@ -13,6 +18,22 @@ const AppHeader: React.FC = () => {
   const { t } = useTranslation("common", { keyPrefix: "header" });
   const inputRef = useRef<HTMLInputElement>(null);
   const [isApplicationMenuOpen, setApplicationMenuOpen] = useState(false);
+
+  /**
+   * The search box, which was a `<form>` with no `onSubmit` and an input with no state
+   * — and a `⌘K` badge, all three promising a shortcut that did not exist.
+   *
+   * Now it opens the palette, and the badge prints the key **this** platform actually
+   * uses. Both halves matter: an inert search box advertised on every screen teaches
+   * people the app has no search, which is the opposite of what twelve screens need.
+   *
+   * The input stays controlled and empty. The palette owns the query — it has to, since
+   * it is the thing that filters — and mirroring it here would mean a second place to
+   * keep in step. What this input does is open the palette, which is what a user
+   * clicking a search field expects to happen.
+   */
+  const palette = useCommandPalette();
+  const shortcut = useShortcutLabel();
 
   const { isMobileOpen, toggleSidebar, toggleMobileSidebar } = useSidebar();
 
@@ -126,7 +147,15 @@ const AppHeader: React.FC = () => {
           </button>
 
           <div className="hidden xl:block">
-            <form>
+            <form
+              onSubmit={(event) => {
+                // A `<form>` with no `onSubmit` reloads the page on Enter, and this box
+                // used to be exactly that — a dead form that could navigate the whole app
+                // away with one keypress.
+                event.preventDefault();
+                palette.open();
+              }}
+            >
               <div className="relative">
                 <span className="pointer-events-none absolute inset-s-4 top-1/2 -translate-y-1/2">
                   <svg
@@ -148,15 +177,39 @@ const AppHeader: React.FC = () => {
                 <input
                   ref={inputRef}
                   type="text"
+                  readOnly
+                  onFocus={palette.open}
+                  onClick={palette.open}
                   placeholder={t("searchPlaceholder")}
-                  className="dark:bg-dark-900 h-11 w-full rounded-lg border border-gray-200 bg-transparent py-2.5 ps-12 pe-14 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:ring-3 focus:ring-brand-500/10 focus:outline-hidden xl:w-107.5 dark:border-gray-800 dark:bg-white/3 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800"
+                  aria-label={t("searchInputLabel")}
+                  aria-keyshortcuts="Control+K Meta+K"
+                  className="dark:bg-dark-900 h-11 w-full cursor-pointer rounded-lg border border-gray-200 bg-transparent py-2.5 ps-12 pe-14 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:ring-3 focus:ring-brand-500/10 focus:outline-hidden xl:w-107.5 dark:border-gray-800 dark:bg-white/3 dark:text-white/90 dark:placeholder:text-white/30 dark:focus:border-brand-800"
                 />
-                <button className="absolute inset-e-2.5 top-1/2 inline-flex -translate-y-1/2 items-center gap-0.5 rounded-lg border border-gray-200 bg-gray-50 px-1.75 py-[4.5px] text-xs tracking-[-0.2px] text-gray-500 dark:border-gray-800 dark:bg-white/3 dark:text-gray-400">
-                  <span> ⌘ </span>
-                  <span> K </span>
+                <button
+                  type="button"
+                  onClick={palette.open}
+                  aria-hidden="true"
+                  tabIndex={-1}
+                  className="absolute inset-e-2.5 top-1/2 inline-flex -translate-y-1/2 items-center gap-0.5 rounded-lg border border-gray-200 bg-gray-50 px-1.75 py-[4.5px] text-xs tracking-[-0.2px] text-gray-500 dark:border-gray-800 dark:bg-white/3 dark:text-gray-400"
+                >
+                  {/*
+                    The key this machine actually uses, from the same platform test the
+                    global listener runs. It was hardcoded to `⌘K`, which advertised a
+                    chord that does not exist on a Windows keyboard.
+                  */}
+                  <span>{shortcut}</span>
                 </button>
               </div>
             </form>
+
+            {/*
+              Mounted unconditionally rather than on `isOpen`: the palette returns
+              `null` while closed, so mounting it conditionally would unmount and
+              remount the whole subtree on every open — losing focus handling and the
+              restored-focus ref with it. Mounted here, not in `App.tsx`, so the search
+              box and the thing it opens live in the same place.
+            */}
+            <CommandPalette isOpen={palette.isOpen} onClose={palette.close} />
           </div>
         </div>
         <div

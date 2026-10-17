@@ -7,21 +7,34 @@
       "calendar": "Calendar",
       "assetManagement": "Asset Management",
       "userManagement": "User Management",
-      "userList": "User List",
-      "department": "Department",
-      "assetIt": "Asset List (IT)",
-      "assetHsse": "Asset List (HSSE)",
-      "handover": "Asset Handover",
-      "assetSettings": "Asset Settings",
-      "position": "Position",
-      "company": "Company",
-      "systemSetting": "System Setting",
-      "printSetting": "Print Setting"
+      "organisation": "Organisation",
+      "userList": "Users",
+      "department": "Departments",
+      "assetIt": "IT Assets",
+      "assetHsse": "HSSE Assets",
+      "handover": "Handover",
+      "assetSettings": "Reference Data",
+      "position": "Positions",
+      "company": "Companies",
+      "systemSetting": "System",
+      "printSetting": "Print Setting",
+      "permission": "Permissions"
     }
   },
   "header": {
     "searchPlaceholder": "Search or type command...",
+    "searchInputLabel": "Search screens",
     "toggleSidebar": "Toggle Sidebar"
+  },
+  "commandPalette": {
+    "title": "Go to screen",
+    "inputLabel": "Search screens",
+    "resultsLabel": "Screens you can open",
+    "placeholder": "Type a screen name…",
+    "empty": "No screen matches that.",
+    "hintUp": "↑",
+    "hintDown": "↓",
+    "hintEnter": "Enter"
   },
   "userDropdown": {
     "editProfile": "Edit profile",
@@ -103,6 +116,20 @@
     "roles": {
       "admin": "Administrator",
       "staff": "Staff"
+    },
+    "avatar": {
+      "label": "Profile photo",
+      "hint": "PNG, JPEG or WebP, up to 2 MB. Choosing a photo replaces the current one.",
+      "uploading": "Uploading…",
+      "saved": "Your photo was updated.",
+      "errors": {
+        "unsupported_type": "That file type is not supported. Use a PNG, JPEG or WebP image.",
+        "too_large": "That file is larger than 2 MB. Choose a smaller image.",
+        "upload_failed": "The photo could not be uploaded, so nothing was changed.",
+        "link_failed": "The photo uploaded, but saving the reference to your profile failed. Your current photo is unchanged — try again.",
+        "remove_failed": "The previous photo could not be cleared from storage.",
+        "unknown": "Something went wrong while saving your photo."
+      }
     }
   },
   "mustChangePassword": {
@@ -127,15 +154,16 @@
     }
   },
   "departments": {
-    "pageTitle": "Department",
+    "pageTitle": "Departments",
     "pageDescription": "The departments a profile can belong to",
-    "subtitle": "The people screen offers these as a dropdown, so a department added here is available immediately when adding or editing an account.",
+    "subtitle": "The Users screen offers these as a dropdown, so a department added here is available immediately when adding or editing an account.",
     "checkingAccess": "Checking your access…",
     "noAccess": "This page is only available to administrators.",
     "loading": "Loading departments…",
     "empty": "No departments yet. Add one to be able to place people in it.",
     "dismiss": "Dismiss",
     "addDepartment": "Add department",
+    "created": "{name} was added to the department list.",
     "createTitle": "Add department",
     "deleteTitle": "Delete this department?",
     "deleteBody": "{name} will be removed from the list of departments.",
@@ -145,7 +173,8 @@
     "deleting": "Deleting…",
     "deleted": "{name} was deleted.",
     "noMembers": "Empty",
-    "members": "{count} member(s)",
+    "members_one": "{count} member",
+    "members_other": "{count} members",
     "optional": "optional",
     "cancel": "Cancel",
     "saving": "Saving…",
@@ -165,9 +194,9 @@
     }
   },
   "positions": {
-    "pageTitle": "Position",
+    "pageTitle": "Positions",
     "pageDescription": "The job titles a person on the handover roster can hold",
-    "subtitle": "The Add User tab in Asset Settings offers these as a dropdown, so a position added here is available immediately when adding someone to the handover roster.",
+    "subtitle": "The User Handover tab in Reference Data offers these as a dropdown, so a position added here is available immediately when adding someone to the handover roster.",
     "checkingAccess": "Checking your access…",
     "noAccess": "This page is only available to administrators.",
     "loading": "Loading positions…",
@@ -188,7 +217,8 @@
     "deleting": "Deleting…",
     "deleted": "{name} was deleted.",
     "noHolders": "Unused",
-    "holders": "{count} holder(s)",
+    "holders_one": "{count} holder",
+    "holders_other": "{count} holders",
     "cancel": "Cancel",
     "saving": "Saving…",
     "fields": {
@@ -208,9 +238,9 @@
     "optional": "optional"
   },
   "assetSettings": {
-    "pageTitle": "Asset Settings",
-    "pageDescription": "The categories and locations the asset form offers",
-    "subtitle": "The asset screen reads these tables for its dropdowns, so anything added here is available immediately when adding or editing an asset.",
+    "pageTitle": "Reference Data",
+    "pageDescription": "The categories, locations and handover recipients the asset and handover forms offer",
+    "subtitle": "The asset and handover screens read these tables for their dropdowns, so anything added here is available immediately when adding or editing an asset.",
     "checkingAccess": "Checking your access…",
     "noAccess": "This page is only available to administrators.",
     "tabsLabel": "Reference data",
@@ -346,7 +376,7 @@
     }
   },
   "users": {
-    "pageTitle": "User Management",
+    "pageTitle": "Users",
     "pageDescription": "Review the accounts in this workspace, and add or edit them",
     "subtitle": "Adding an account sets a first password here, so tell it to the person directly. They will be asked to choose their own the first time they sign in.",
     "checkingAccess": "Checking your access…",
@@ -471,9 +501,10 @@
       "HSSE": "The HSSE inventory: equipment, its expiry date, and when it was last and is next inspected."
     },
     "subtitle": {
-      "IT": "Stock belongs to everyone, so this list is readable by every signed-in user. Only admins can change it.",
-      "HSSE": "Same read access as Asset IT — stock belongs to everyone. Only admins can change it."
+      "IT": "Stock belongs to everyone, so this list is readable by every signed-in user. Who may add or edit it is set per person under Permissions.",
+      "HSSE": "Same read access as IT Assets — stock belongs to everyone. Who may add or edit it is set per person under Permissions."
     },
+    "noMenuAccess": "You do not have access to this menu. Ask an administrator to grant it under Permissions.",
     "loading": "Loading assets…",
     "empty": "No assets have been recorded yet.",
     "noMatches": "No assets match these filters.",
@@ -558,8 +589,8 @@
       "qrAlt": "Barcode for asset {code}"
     },
     "units": {
-      "IT": "Asset IT",
-      "HSSE": "Asset HSSE"
+      "IT": "IT Assets",
+      "HSSE": "HSSE Assets"
     },
     "inspectionMode": {
       "Manual": "Manual",
@@ -710,8 +741,9 @@
     }
   },
   "handover": {
-    "pageTitle": "Asset Handover",
+    "pageTitle": "Handover",
     "pageDescription": "Hand assets over to people and record what comes back.",
+    "noMenuAccess": "You do not have access to this menu. Ask an administrator to grant it under Permissions.",
     "subtitle": "Every handover an asset goes out on, and whether it has come back.",
     "loading": "Loading handovers…",
     "noRosterLink": "Your account is not linked to a person in the handover roster yet, so any handovers issued to you are not visible here. Ask an administrator to link your account under System Setting ▸ Asset Settings ▸ User Handover.",
@@ -894,9 +926,9 @@
     "fieldDeptPosition": "Dept. / Position"
   },
   "companies": {
-    "pageTitle": "Company",
+    "pageTitle": "Companies",
     "pageDescription": "The company names maintained in this installation",
-    "subtitle": "A list of company names. Nothing in the register is scoped by it yet, so adding a company here does not change any asset — it is a name this installation knows about.",
+    "subtitle": "The employer of a person on the handover roster. It fills a picker when you add or edit someone on the User Handover tab, and the name prints on the handover document — in the issuer's signature block and in the recipient's details. It does not scope the asset register: no asset carries a company.",
     "checkingAccess": "Checking your access…",
     "noAccess": "This page is only available to administrators.",
     "loading": "Loading companies…",
@@ -916,7 +948,8 @@
     "deleting": "Deleting…",
     "deleted": "{name} was deleted.",
     "noMembers": "No roster entry",
-    "members": "{count} on the roster",
+    "members_one": "{count} person on the roster",
+    "members_other": "{count} people on the roster",
     "deleteInUse": "Move the roster entries to another company first",
     "cancel": "Cancel",
     "saving": "Saving…",
@@ -936,8 +969,42 @@
       "inUse": "This company is still the employer of {count} person/people on the handover roster. Move them to another company first."
     }
   },
+  "organisation": {
+    "pageTitle": "Organisation",
+    "pageDescription": "The departments, job titles and employers this installation knows about",
+    "checkingAccess": "Checking your access…",
+    "noAccess": "This page is only available to administrators.",
+    "intro": "These three lists fill the dropdowns on the User Handover tab and on the asset forms. Add a department first — the others are chosen in the context of one.",
+    "tabsLabel": "Organisation lists"
+  },
+  "permissions": {
+    "pageTitle": "Permissions",
+    "pageDescription": "Which menus each staff member may open",
+    "checkingAccess": "Checking your access…",
+    "noAccess": "This page is only available to administrators.",
+    "howItWorks": "A person with no row here keeps the menus they can already open. Ticking a box narrows what they are offered; clearing every box on a menu gives their current access back rather than removing it.",
+    "loading": "Reading the accounts and their menu access…",
+    "loadFailedPermissions": "The menu overrides could not be read. If the table is missing from the database, migration 20260927003500 has not been applied to it yet — apply it with `npx supabase db push`, then run `notify pgrst, 'reload schema';` so PostgREST picks it up.",
+    "loadFailedAccounts": "The accounts could not be read. This page reads `profiles`, which only an administrator can list, so an expired session or a revoked role looks the same as a fault here.",
+    "noStaffAccounts": "There are no staff accounts to configure. Administrators always reach every menu, so they are not listed here.",
+    "personLabel": "Staff account",
+    "choosePerson": "Choose a person",
+    "selectedDepartment": "{name} — {email}",
+    "selectedNoDepartment": "{email} — no department set",
+    "configured": "{count} override(s)",
+    "notConfigured": "No overrides",
+    "columnMenu": "Menu",
+    "columnView": "View",
+    "columnEdit": "Edit",
+    "columnDelete": "Delete",
+    "save": "Save",
+    "saving": "Saving…",
+    "saved": "Saved. The person sees the change the next time a page loads.",
+    "unitMismatch": "Scoped to the {unit} unit, but this person is in {department}. The menu stays hidden for them — the database has refused cross-unit asset reads since migration 01700.",
+    "notAnAccessControl": "This decides which menus are offered, not which rows are readable. The database policies still decide the data: a hidden menu can be typed as a URL, and the request is still refused there."
+  },
   "systemSetting": {
-    "pageTitle": "System Setting",
+    "pageTitle": "System",
     "pageDescription": "Configuration for this installation",
     "checkingAccess": "Checking your access…",
     "noAccess": "This page is only available to administrators.",
