@@ -297,15 +297,22 @@
     "currentLocationDeleted": "{name} was deleted.",
     "addHandoverUser": "Add handover user",
     "editHandoverUserTitle": "Edit handover user",
-    "handoverUsersHint": "People an asset can be handed over to. A handover can go to somebody with no account at all; linking an account only lets that person see and return their own handovers in the app.",
+    "handoverUsersHint": "People an asset can be handed over to. A handover can go to somebody with no account at all; linking an account only lets that person see and return their own handovers in the app. Mark somebody as departed when they leave — they stay on this list, because their past handovers still name them, but no new asset can be issued to them.",
     "handoverUsersEmpty": "No handover user yet. Add the people assets are handed to before issuing a handover.",
     "handoverUserNoAccount": "No account",
     "handoverUserCreated": "{name} was added to the handover list.",
     "handoverUserUpdated": "{name} was updated.",
     "handoverUserDeleted": "{name} was removed from the handover list.",
+    "handoverUserMarkedDeparted": "{name} was marked as departed. They stay on the list for their past handovers, but no new asset can be issued to them.",
+    "handoverUserReinstated": "{name} is active again and can receive assets.",
+    "departedBadge": "Departed",
     "noDepartment": "No department",
     "noCompany": "No company",
     "handoverCount": "{count} handover(s)",
+    "handoverCountOpen": "({count} still out)",
+    "markDepartedLabel": "Mark {name} as departed",
+    "reinstateLabel": "Reinstate {name}",
+    "departBlockedTitle": "{name} still holds {count} asset(s). Transfer or return them before marking this person as departed.",
     "deleteHandoverUserInUse": "This person appears on handover records. Return or reassign those before removing them.",
     "table": {
       "category": "Category",
@@ -372,7 +379,8 @@
       "currentLocationInUse": "This current location still has {count} asset(s) pointing at it. Move them first.",
       "handoverUserNameRequired": "A name is required.",
       "handoverUserPositionRequired": "Choose a position. Add new job titles from the Position list in User Management.",
-      "handoverUserInUse": "This person still appears on {count} handover record(s). Return or reassign them before removing the person."
+      "handoverUserInUse": "This person still appears on {count} handover record(s). Return or reassign them before removing the person.",
+      "handoverUserHoldsAssets": "This person still holds {count} asset(s). Transfer or return them before marking this person as departed."
     }
   },
   "users": {
@@ -517,6 +525,11 @@
     "deleted": "Deleted {name}.",
     "statusChanged": "{name} is now {status}.",
     "showing": "Showing {count} of {total} assets.",
+      "perPage": "Rows per page",
+      "paginationLabel": "Pagination",
+      "previousPage": "Previous page",
+      "nextPage": "Next page",
+      "goToPage": "Go to page {page}",
     "addAsset": "Add asset",
     "createTitle": "Add asset",
     "editTitle": "Edit asset",
@@ -526,7 +539,7 @@
     "statusLabel2": "New status",
     "rowActions": {
       "menuLabel": "Actions for {name}",
-      "edit": "Edit details",
+      "details": "Details",
       "changeStatus": "Change status",
       "printLabel": "Print label",
       "delete": "Delete asset"
@@ -738,6 +751,54 @@
       "checking": "Checking…",
       "stillMissing": "Still not detected.",
       "nowReady": "Detected. You can print now."
+    },
+    "details": {
+      "hint": "Everything known about this asset’s past: every time it went out, and any service recorded against it.",
+      "loading": "Loading history…",
+      "failed": "This asset’s history could not be loaded.",
+      "close": "Close",
+      "none": "Nothing has happened to this asset yet.",
+      "summary": "{handovers} handover(s) recorded, {open} still out",
+      "handoversTitle": "Handover history",
+      "handoversEmpty": "This asset has never been handed over.",
+      "maintenanceTitle": "Maintenance",
+      "maintenanceEmpty": "No repair, upgrade, inspection or calibration has been recorded against this asset.",
+      "stillOut": "Still out",
+      "returned": "Returned",
+      "transferred": "Transferred",
+      "unknownHolder": "Unknown holder",
+      "issuedTo": "Issued",
+      "returnedOn": "Returned",
+      "condition": "Condition at handover",
+      "recordedBy": "Recorded by",
+      "departmentLabel": "Department",
+      "accessoriesLabel": "Went with it",
+      "notesLabel": "Note",
+      "scheduled": "Scheduled",
+      "completed": "Completed",
+      "vendor": "Vendor",
+      "cost": "Cost",
+      "notRecorded": "Not recorded",
+      "editAsset": "Edit asset",
+      "conditionAtHandover": {
+        "new": "New",
+        "good": "Good",
+        "fair": "Fair",
+        "poor": "Poor",
+        "broken": "Broken"
+      },
+      "maintenanceType": {
+        "repair": "Repair",
+        "upgrade": "Upgrade",
+        "inspection": "Inspection",
+        "calibration": "Calibration"
+      },
+      "maintenanceStatus": {
+        "scheduled": "Scheduled",
+        "in_progress": "In progress",
+        "completed": "Completed",
+        "cancelled": "Cancelled"
+      }
     }
   },
   "handover": {
@@ -755,6 +816,7 @@
     "close": "Close",
     "detail": {
       "accessoriesLabel": "Also handed over",
+      "conditionLabel": "Condition",
       "accessories": "Also handed over",
       "accessoryPlaceholder": "Bag, charger, case…",
       "accessorySerialPlaceholder": "Serial (optional)",
@@ -867,10 +929,31 @@
       "returnDenied": "That handover could not be returned. You may only return one you are holding.",
       "open": "This handover is still open, so deleting it would put the asset back into stock while the person still has it. Return it first.",
       "delete": "The handover could not be deleted.",
-      "notAvailableNamed": "Nothing was saved, because {assets} is no longer available to hand over. It may have been handed to somebody else while this form was open. Reload and pick again."
+      "notAvailableNamed": "Nothing was saved, because {assets} is no longer available to hand over. It may have been handed to somebody else while this form was open. Reload and pick again.",
+      "transfer": "The handover could not be transferred.",
+      "transferClosed": "This handover is already closed, so there is nothing left to transfer. Reload and try again.",
+      "transferRecipient": "The person chosen is not on the handover roster, so they cannot receive assets."
     },
     "issuedMany": "{count} handovers issued.",
-    "print": "Print handover sheet"
+    "print": "Print handover sheet",
+    "transferShort": "Transfer",
+    "transferDevice": "Transfer {name} to somebody else",
+    "transferTitle": "Transfer {code}",
+    "transferConfirm": "Transfer",
+    "transferGone": "This device is no longer on this handover. Close this and reload.",
+    "transferAlreadyReturned": "This device has already come back, so there is nothing left to transfer.",
+    "transferDeviceLabel": "Device",
+    "transferFrom": "Currently held by",
+    "transferDeviceHint": "Only this device moves. Anything else that went out with it stays where it is, and the original document is kept as the record of what went out that day.",
+    "transferDone": "{code} was transferred to {name}.",
+    "transferFields": {
+      "person": "New recipient",
+      "placeholder": "Choose who is receiving it",
+      "personHint": "People who have left are not listed — they cannot be given new assets. The roster is managed under Asset Settings.",
+      "notes": "Note for the new handover",
+      "notesPlaceholder": "Why is this moving?",
+      "notesHint": "Recorded on the new document only. The original handover keeps the note it was issued with."
+    }
   },
   "handoverPrint": {
     "title": "Handover document",

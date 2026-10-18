@@ -89,6 +89,26 @@ export class HandoverUserInUseError extends Error {
 }
 
 /**
+ * Raised by `setHandoverUserDeparted` when the person still holds something.
+ *
+ * The database refuses this too — `handover_users_guard_departure` (`03800`) counts
+ * the open loans and raises `23514` — so this class exists for the same reason
+ * `HandoverUserInUseError` does: the trigger holds for any caller, and this is what
+ * lets the screen *name* what is in the way. A flag claiming somebody has left while
+ * the register still says they are holding a laptop is the disagreement the trigger
+ * exists to prevent, so the count is the actionable part of the refusal.
+ */
+export class HandoverUserHoldsAssetsError extends Error {
+  readonly openCount: number;
+
+  constructor(openCount: number) {
+    super(`Handover user still holds ${openCount} open asset(s)`);
+    this.name = "HandoverUserHoldsAssetsError";
+    this.openCount = openCount;
+  }
+}
+
+/**
  * A place an asset physically is *now*. Same shape as `LocationRow` and a
  * different question: `locations` is where the asset is registered, this is
  * where it actually sits. The two are independent by design, so both tables
@@ -195,6 +215,35 @@ export type HandoverUserRow = {
   created_at: string;
   /** How many handover records name this person. Zero makes a delete safe. */
   handoverCount: number;
+  /**
+   * When this person left, or null while they are still here (`03800`).
+   *
+   * **Null is the normal case and a departed row is not a deleted one.** The roster
+   * is the register of who assets *can* go to, so somebody who has left has to stay
+   * on it — their closed loans still name them and `assignments.user_id` is
+   * `on delete restrict`. Removing the row would take the history with it.
+   *
+   * What the flag changes is eligibility: `assignments_guard_recipient_active`
+   * refuses a new handover addressed to a departed row, and
+   * `getHandoverUserOptions()` drops them from the Issue form's picker so it never
+   * offers one.
+   */
+  departedAt: string | null;
+  /**
+   * How many of `handoverCount` are still **out**.
+   *
+   * A separate column rather than derived from the count above, because the two ask
+   * different questions: the delete button is blocked by any history at all, while
+   * marking somebody departed is blocked only by something they are *still holding*.
+   * A person who returned everything and then left is exactly the row that must be
+   * able to be marked departed.
+   *
+   * Read in one request for the whole roster rather than counted per row — see
+   * `getOpenHandoverCounts`. Trustworthy as a number only because this screen is
+   * admin-only; `assignments` is filtered per caller, so a staff caller's count would
+   * under-report.
+   */
+  openHandoverCount: number;
 };
 
 /** Create/update payload for one roster entry. */
@@ -253,7 +302,7 @@ const CURRENT_LOCATION_COLUMNS =
  * `tsc` then fails on every `.select()` in the file.
  */
 const HANDOVER_USER_COLUMNS =
-  "id, name, position_id, department_id, company_id, nik_eid, profile_id, notes, created_at, position:positions(name), department:departments(name), company:companies(name), profile:profiles(full_name), assignments!assignments_user_id_fkey(count)";
+  "id, name, position_id, department_id, company_id, nik_eid, profile_id, notes, created_at, departed_at, position:positions(name), department:departments(name), company:companies(name), profile:profiles(full_name), assignments!assignments_user_id_fkey(count)";
 
 /**
  * The units pinned into the category filter, whatever the `departments` table
@@ -697,18 +746,58 @@ function embeddedFullName(value: unknown): string | null {
   return trimmed((value as { full_name?: string }).full_name);
 }
 
+/**
+ * How many **open** handovers each roster entry is named on, in one request.
+ *
+ * **A second request rather than a filtered embed**, because PostgREST cannot filter
+ * an embedded aggregate: `assignments!assignments_user_id_fkey(count)` on the row's own
+ * select counts every loan the entry has ever been named on, returned ones included.
+ * That is the right number for the delete button — any history blocks a delete, because
+ * `assignments.user_id` is `restrict` — and the wrong number for marking somebody
+ * departed, which is only blocked by what they are *still holding*.
+ *
+ * One read of the open rows' `user_id`s, counted in memory, rather than a count query
+ * per roster entry: a roster of forty would otherwise be forty requests on a screen
+ * that already loads nine.
+ *
+ * **`assignments` is filtered per caller**, so this is only a true count for an admin —
+ * a staff member would see their own department's loans and under-report everyone
+ * else's. `getHandoverUsers` is called from `AssetSettingsPage`, which refuses to render
+ * for a non-admin, and the database guard `handover_users_guard_departure` is
+ * `security definer` and therefore unaffected either way. The count is for the button
+ * state and the message; the trigger is the boundary.
+ */
+async function getOpenHandoverCounts(): Promise<Map<string, number>> {
+  const { data, error } = await supabase
+    .from("assignments")
+    .select("user_id")
+    .is("returned_at", null);
+
+  if (error) throw error;
+
+  const counts = new Map<string, number>();
+  for (const row of (data ?? []) as Record<string, unknown>[]) {
+    const id = String(row.user_id);
+    counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  return counts;
+}
+
 /** The whole roster, by name then position. */
 export async function getHandoverUsers(): Promise<HandoverUserRow[]> {
-  const { data, error } = await supabase
-    .from("handover_users")
-    .select(HANDOVER_USER_COLUMNS)
-    // `position(name)` — **parentheses, not a dot or a colon.** `position` became an
-    // aliased embed in `02200`, and PostgREST orders an embedded resource with
-    // `alias(column)`. Both other spellings are hard errors; leaving the old
-    // `.order("position")` in place would instead have returned rows and quietly
-    // stopped sorting, which is the version that survives review.
-    .order("name", { ascending: true })
-    .order("position(name)", { ascending: true });
+  const [{ data, error }, openCounts] = await Promise.all([
+    supabase
+      .from("handover_users")
+      .select(HANDOVER_USER_COLUMNS)
+      // `position(name)` — **parentheses, not a dot or a colon.** `position` became an
+      // aliased embed in `02200`, and PostgREST orders an embedded resource with
+      // `alias(column)`. Both other spellings are hard errors; leaving the old
+      // `.order("position")` in place would instead have returned rows and quietly
+      // stopped sorting, which is the version that survives review.
+      .order("name", { ascending: true })
+      .order("position(name)", { ascending: true }),
+    getOpenHandoverCounts(),
+  ]);
 
   if (error) throw error;
 
@@ -732,6 +821,8 @@ export async function getHandoverUsers(): Promise<HandoverUserRow[]> {
     notes: str(row.notes),
     created_at: String(row.created_at ?? ""),
     handoverCount: embeddedCount(row.assignments),
+    departedAt: str(row.departed_at),
+    openHandoverCount: openCounts.get(String(row.id)) ?? 0,
   }));
 }
 
@@ -843,4 +934,75 @@ export async function deleteHandoverUser(
 
   if (error) throw error;
   if (!data) throw new NoRowsWrittenError("deleted");
+}
+
+/**
+ * Mark a roster entry as having left, or put them back (`03800`).
+ *
+ * **A flag and not a delete, and the difference is the loan history.**
+ * `assignments.user_id` is `on delete restrict` pointing at *this* row, so removing a
+ * departed person would either be refused outright or take every loan they were ever
+ * named on with it. Somebody who handed back a laptop in March and left in June is
+ * still named on that March row, and the register has to keep saying so.
+ *
+ * What the flag buys is eligibility rather than presence:
+ * `assignments_guard_recipient_active` refuses a new handover addressed to a departed
+ * row, and `getHandoverUserOptions()` drops them from the Issue form's picker so the
+ * screen never offers one.
+ *
+ * ## Why only the transition is guarded
+ *
+ * `guard_handover_user_departure` is `before update of departed_at` and returns early
+ * unless the value actually moved from null to a timestamp. So editing the name or the
+ * notes of somebody already departed is not refused for holding something — and a
+ * departed entry *can* legitimately still be the holder of a **closed** loan, which is
+ * exactly what `is("returned_at", null)` counts.
+ *
+ * ## Why the timestamp is the browser's
+ *
+ * The same trade `returnHandover` makes: PostgREST cannot call a function inside an
+ * UPDATE, so there is no route to the server's `now()` here. "When the admin marked
+ * this" is a fact about the click, and the browser's clock is where that happened. What
+ * matters — *that* they are gone rather than when — is the null/non-null transition
+ * every guard and every query keys on.
+ */
+export async function setHandoverUserDeparted(
+  handoverUserId: string,
+  departed: boolean,
+): Promise<void> {
+  // The application's own check, for the same reason `deleteHandoverUser` has one:
+  // `HandoverUserHoldsAssetsError` can name what is in the way, and a bare `23514`
+  // cannot. The trigger is still the boundary — this count is only trustworthy
+  // because the screen is admin-only, since `assignments` is filtered per caller.
+  //
+  // Only on the way *out*. Reinstating is never refused: the flag is not a claim about
+  // what somebody is holding, and clearing it is precisely what an admin does when that
+  // claim no longer applies.
+  if (departed) {
+    const { count, error: countError } = await supabase
+      .from("assignments")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", handoverUserId)
+      .is("returned_at", null);
+
+    if (countError) throw countError;
+
+    if ((count ?? 0) > 0) {
+      throw new HandoverUserHoldsAssetsError(count ?? 0);
+    }
+  }
+
+  const { data, error } = await supabase
+    .from("handover_users")
+    .update({ departed_at: departed ? new Date().toISOString() : null })
+    .eq("id", handoverUserId)
+    .select("id")
+    .maybeSingle();
+
+  if (error) throw error;
+
+  // Reachable for a caller who may not touch this row: `handover_users_update_admin`
+  // is a row filter, so a non-admin's statement matches nothing and PostgREST still
+  // reports success. Same reason every other write in this file has it.
+  if (!data) throw new NoRowsWrittenError("updated");
 }

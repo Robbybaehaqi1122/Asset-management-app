@@ -565,6 +565,18 @@ export type HandoverUserOption = {
  * `profiles` is readable only by an admin and by the caller themselves, so the old
  * picker returned one row for a staff member and the Issue button was never
  * reachable for them anyway. `handover_users` is plain reference data.
+ *
+ * ## Departed people are filtered out, not marked
+ *
+ * `assignments_guard_recipient_active` (`03800`) refuses a handover addressed to a
+ * roster row with `departed_at` set, so offering one would be a picker that hands the
+ * admin a `23514` instead of a refusal. This is exactly the rule `getHandoverTargets`
+ * already follows by reading `status = 'available'` rather than every asset: **a
+ * control must not offer what the database will reject.**
+ *
+ * They are still *in* the register — `getHandoverUsers()` in `settingService` shows the
+ * whole roster with a "departed" badge, and their closed loans still name them. What is
+ * gone is eligibility, not history.
  */
 export async function getHandoverUserOptions(): Promise<HandoverUserOption[]> {
   const { data, error } = await supabase
@@ -581,6 +593,7 @@ export async function getHandoverUserOptions(): Promise<HandoverUserOption[]> {
     //
     // That third one is the trap: leaving the old `.order("position")` in place
     // would have compiled, returned rows, and quietly stopped sorting.
+    .is("departed_at", null)
     .order("name", { ascending: true })
     .order("position(name)", { ascending: true });
 
@@ -1278,6 +1291,109 @@ export async function deleteHandover(handoverId: string): Promise<void> {
 
   if (error) throw error;
   if (!data) throw new NoRowsWrittenError("deleted");
+}
+
+/**
+ * Raised when a transfer was asked for on a loan that is already closed.
+ *
+ * The RPC raises `no_data_found` (P0002) rather than a check violation, deliberately:
+ * `assignments_guard_recipient_active` raises `23514` for a departed recipient, and
+ * reusing it would have given two different refusals one code with no way to tell them
+ * apart. See the comment in `03900`.
+ */
+export class TransferSourceClosedError extends Error {
+  constructor() {
+    super(
+      "That handover is already closed, so there is nothing left to transfer",
+    );
+    this.name = "TransferSourceClosedError";
+  }
+}
+
+/** Raised when a transfer names something that is not a roster entry. */
+export class TransferRecipientUnknownError extends Error {
+  constructor() {
+    super("The person chosen is not on the handover roster");
+    this.name = "TransferRecipientUnknownError";
+  }
+}
+
+/** One loan that moved, as the RPC reports it. Exactly one row per call. */
+export type TransferPair = { oldLoanId: string; newLoanId: string };
+
+/**
+ * Move **one device** to a different recipient (`03900`, narrowed to one device by `04000`).
+ *
+ * ## Why one device and not the whole batch
+ *
+ * `03900` moved every loan sharing the batch key, on the reasoning that a batch is one
+ * printed document. That is right about **issuing** and wrong about **transferring**,
+ * because the two acts are not the same act: issuing writes one document and one holder,
+ * so the group is the unit — whereas transferring is somebody giving one thing they are
+ * holding to another person. Budi takes a laptop and a charger on Monday, goes on leave
+ * Tuesday, and hands the **laptop** to Sari while the charger stays on his desk.
+ *
+ * That is also why the control sits on the device's own row in the Detail modal, beside
+ * Return, rather than in the batch's row menu: **a control that acts on a device belongs
+ * beside that device**, and both actions sit on the same axis.
+ *
+ * ## What it leaves behind
+ *
+ * The device becomes **its own batch** — `assigned_at = now()` and the new `user_id` put
+ * it under a key nothing else shares — so the transferred device gets a one-device
+ * document of its own and the original batch is closed and untouched. Its accessories and
+ * its signed paper stay on the old loan, which is why the copy below is an *insert*
+ * rather than a move.
+ *
+ * ## Refusals, and why each has its own code
+ *
+ * | code | meaning |
+ * |---|---|
+ * | `P0002` `no_data_found` | the loan is already returned, or another admin transferred it first |
+ * | `23503` foreign key | the target is not a roster row |
+ * | `23514` check violation | the target has departed (`assignments_guard_recipient_active`) |
+ * | `42501` insufficient privilege | the caller may not close the old loan or open the new one |
+ *
+ * The last one is worth knowing: the function is `security invoker`, and copying
+ * accessories runs `assignments_accessories_insert_admin`, so **a staff caller
+ * transferring a device that has accessories is refused on the copy** — inside the same
+ * transaction, so the old loan is not left closed. The Detail modal offers Transfer to
+ * admins only for that reason; see the header in `03900`.
+ *
+ * ## `p_loan` must be an open row
+ *
+ * The RPC refuses anything else with `P0002`, which is the right answer for a device that
+ * has already come back — but it does mean a caller cannot pass `batch.seed.id` blindly,
+ * because a half-returned batch can have a returned row in the seed position. The Detail
+ * modal lists one row per device, so the id comes from the row the button was on.
+ *
+ * Returns exactly one row. The `table` return shape is kept from `03900` rather than
+ * narrowed to a bare `uuid`, so the response parses the same way it already did.
+ */
+export async function transferHandover(
+  handoverId: string,
+  newUserId: string,
+  notes?: string | null,
+): Promise<TransferPair[]> {
+  const { data, error } = await supabase.rpc("transfer_handover", {
+    p_loan: handoverId,
+    p_new_user: newUserId,
+    // Blank is null rather than "": `p_notes` is written onto the new row, and an
+    // empty string would print as a blank Notes column on a document somebody signs.
+    p_notes: notes?.trim() || null,
+  });
+
+  if (error) {
+    const code = codeOf(error);
+    if (code === "P0002") throw new TransferSourceClosedError();
+    if (code === "23503") throw new TransferRecipientUnknownError();
+    throw error;
+  }
+
+  return ((data ?? []) as Record<string, unknown>[]).map((row) => ({
+    oldLoanId: String(row.old_loan_id),
+    newLoanId: String(row.new_loan_id),
+  }));
 }
 
 /**

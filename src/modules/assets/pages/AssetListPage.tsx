@@ -27,15 +27,18 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import AssetLabelModal from "../components/AssetLabelModal";
+import AssetDetailsModal from "../components/AssetDetailsModal";
 import { useClickOutside } from "@/hooks/useClickOutside";
 import { useIsAdmin } from "@/hooks/useIsAdmin";
 import { useModal } from "@/hooks/useModal";
 import { assetMenuKeyForUnit } from "@/modules/permissions/menuAccess";
 import { useMenuAccess } from "@/modules/permissions/useMenuAccess";
 import {
+  ChevronLeftIcon,
+  ChevronRightIcon,
   CloseIcon,
+  EyeIcon,
   MoreDotIcon,
-  PencilIcon,
   PlusIcon,
   QrCodeIcon,
   SliderHorizontalIcon,
@@ -653,7 +656,7 @@ function RowActions({
   isOpen,
   onToggle,
   onClose,
-  onEdit,
+  onDetails,
   onChangeStatus,
   onPrintLabel,
   onDelete,
@@ -664,7 +667,7 @@ function RowActions({
   isOpen: boolean;
   onToggle: () => void;
   onClose: () => void;
-  onEdit: () => void;
+  onDetails: () => void;
   onChangeStatus: () => void;
   onPrintLabel: () => void;
   onDelete: () => void;
@@ -672,9 +675,8 @@ function RowActions({
    * Create and update, which `03100` already opened to a staff member in their own
    * department — and which the per-person menu permission can narrow further.
    *
-   * Gates **two** items, not one. "Change status" is an `update` on `assets`, so it is
-   * an edit; leaving it visible to a read-only reader would offer a form whose save the
-   * permission says they may not make.
+   * Gates **"Change status" only.** The edit form used to sit beside it here and moved
+   * into the Details dialog, so this is no longer a pair — see the note at the menu.
    */
   canEdit: boolean;
   /**
@@ -800,22 +802,34 @@ function RowActions({
           className="fixed z-50 w-48 rounded-xl border border-gray-200 bg-white shadow-theme-lg dark:border-gray-800 dark:bg-gray-dark"
           style={{ top: 0, left: 0 }}
         >
-          {canEdit && (
-            <>
-              <DropdownItem
-                onClick={onEdit}
-                baseClassName={itemClass}
-                className={dangerClass}
-              >
-                <PencilIcon className="size-4 shrink-0" />
-                {t("edit")}
-              </DropdownItem>
+          {/* Details is FIRST and ungated. It is the one item every reader can use, so
+              the row's most useful action is the one thing a staff member can always
+              reach — and it is read-only, which is why it sits above everything that
+              writes.
 
-              <DropdownItem onClick={onChangeStatus} baseClassName={itemClass}>
-                <SliderHorizontalIcon className="size-4 shrink-0" />
-                {t("changeStatus")}
-              </DropdownItem>
-            </>
+              It is also the row's single entry point now: **Edit asset lives inside this
+              dialog rather than beside it.** Two labels for one asset — "Details" and
+              "Edit details" — both opened something a reader had to guess the purpose
+              of, and the edit form is a five-tab, thirty-field screen that deserves to
+              be entered deliberately rather than from a menu that also holds Delete.
+
+              An eye rather than a page icon, for the same reason the label is the thing
+              that matters here: it is the read-only option, and it is the one every
+              reader can reach. */}
+          <DropdownItem onClick={onDetails} baseClassName={itemClass}>
+            <EyeIcon className="size-4 shrink-0" />
+            {t("details")}
+          </DropdownItem>
+
+          {/* "Change status" is an `update` on `assets`, so it is gated on the same
+              permission as the edit form used to be — leaving it visible to a read-only
+              reader would offer a control whose save the permission says they may not
+              make. */}
+          {canEdit && (
+            <DropdownItem onClick={onChangeStatus} baseClassName={itemClass}>
+              <SliderHorizontalIcon className="size-4 shrink-0" />
+              {t("changeStatus")}
+            </DropdownItem>
           )}
 
           {/* One label action. It opens a dialog that renders the label and carries
@@ -847,6 +861,58 @@ function RowActions({
 const MENU_WIDTH_PX = 192;
 /** Fallback height before the panel has been laid out once. */
 const MENU_ESTIMATED_HEIGHT = 128;
+
+/**
+ * Rows-per-page choices.
+ *
+ * **Ten, fifty and a hundred.** Below ten this table stops being readable — the name
+ * column truncates and the row actions fall off the side — so a smaller page would buy
+ * scrolling, not reading. Above a hundred the rows stop being a table a person scans
+ * for one line, which is the job this list is doing.
+ */
+const PAGE_SIZES = [10, 50, 100] as const;
+
+/**
+ * One button in the pager.
+ *
+ * **`aria-current="page"` rather than a colour alone.** A filled current button is a
+ * visual convention a screen reader does not get, and the reader needs to be told which
+ * page they are on as much as a sighted user does — the same reason `aria-selected` is
+ * on the form's tab strip.
+ *
+ * A `<button>` rather than a link: these do not change the URL, and a link that goes
+ * nowhere is worse than a button that does something.
+ */
+function PagerButton({
+  children,
+  label,
+  onClick,
+  disabled,
+  current,
+}: {
+  children: React.ReactNode;
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  current?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      aria-current={current ? "page" : undefined}
+      className={`flex size-9 items-center justify-center rounded-lg text-sm transition disabled:cursor-not-allowed disabled:opacity-40 ${
+        current
+          ? "bg-brand-50 font-medium text-brand-600 dark:bg-brand-500/15 dark:text-brand-400"
+          : "text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/5"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
 
 export default function AssetListPage({ unit }: { unit: AssetUnit }) {
   const { t } = useTranslation("common", { keyPrefix: "assets" });
@@ -913,6 +979,20 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
   const [nextStatus, setNextStatus] =
     useState<SelectableAssetStatus>("maintenance");
   const [pendingDelete, setPendingDelete] = useState<Asset | null>(null);
+
+  /**
+   * The asset whose **history** dialog is open, or null.
+   *
+   * Separate from `editingId` on purpose. They were the same field once — the old
+   * "Edit details" item opened the edit form — and sharing it meant the row currently
+   * being edited and the row whose history is on screen could not be told apart, which
+   * is exactly the confusion that label caused.
+   *
+   * Only the id is held; the dialog fetches its own history and reads the asset's name
+   * back out of `assets` by id. Holding the asset instead would let the header show a
+   * name a `reload()` has since replaced.
+   */
+  const [detailsAssetId, setDetailsAssetId] = useState<string | null>(null);
 
   /**
    * Id of the row whose action menu is open, or `null` for none.
@@ -1121,6 +1201,16 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
   );
 
   /**
+   * The asset the history dialog is about, for the same reason as `labelAsset` above:
+   * read out of the current list by id, so the header cannot name a different asset
+   * from the one whose history is loaded if a `reload()` lands while the dialog is open.
+   */
+  const detailsAsset = useMemo(
+    () => assets.find((row) => row.id === detailsAssetId) ?? null,
+    [assets, detailsAssetId],
+  );
+
+  /**
    * Filtering in the browser, on purpose. `getAssets` is a plain ordered read
    * and the inventory is a few hundred rows; a query per keystroke would be
    * slower and would need the filter state to survive a reload. This is the same
@@ -1156,6 +1246,126 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
         .some((v) => v.toLowerCase().includes(needle));
     });
   }, [assets, search, filterCategory, filterLocation, filterStatus]);
+
+  /**
+   * How many rows a page holds.
+   *
+   * **State, not a constant**, because the whole point of the control is that an admin
+   * reading a register of 300 laptops does not want to click through thirty pages to
+   * find one, and an admin checking a shelf of ten does not want a scrollbar at all.
+   *
+   * The choices are 10 / 50 / 100 rather than 25 / 50 / 100: below ten this table is
+   * unreadable — the name column truncates and the actions move off screen — so a
+   * smaller page buys nothing but scrolling.
+   */
+  const [pageSize, setPageSize] = useState<number>(PAGE_SIZES[0]);
+  /** 1-based, matching what the control shows. */
+  const [page, setPage] = useState(1);
+
+  /**
+   * The filter state as one comparable string.
+   *
+   * Four separate `useEffect` dependencies would be four chances to forget one of them,
+   * and forgetting one is invisible: the pager silently keeps the old position while
+   * the results underneath it change.
+   */
+  const filterKey = `${search} ${filterCategory} ${filterLocation} ${filterStatus}`;
+
+  /**
+   * Back to page 1 whenever the result set changes shape — **done during render, not in
+   * an effect.**
+   *
+   * This is the same pattern `AccessoryEditor` uses a few hundred lines down for its
+   * per-device draft, and for the same reason. An effect that resets the page runs
+   * *after* the render that used the old page, so the table paints a slice of the
+   * previous result set first — the reader sees rows change, then sees the page number
+   * jump. React supports setting state during its own render precisely for this: the
+   * second render happens before anything is committed, so only the corrected result is
+   * ever on screen.
+   *
+   * `filterKey` rather than the four values is what keeps this honest — one comparison
+   * covering everything `visible` depends on, so it cannot drift from the query.
+   */
+  const [lastFilterKey, setLastFilterKey] = useState(filterKey);
+  if (lastFilterKey !== filterKey) {
+    setLastFilterKey(filterKey);
+    setPage(1);
+  }
+
+  const pageCount = Math.max(1, Math.ceil(visible.length / pageSize));
+
+  /**
+   * The page actually rendered, which is not always `page`.
+   *
+   * **Clamping rather than resetting on an effect.** Narrowing a filter while sitting on
+   * page 5 of a 300-row list can leave fewer rows than page 5 can hold, and the two
+   * obvious fixes are both wrong: an effect that resets the page fires a render *after*
+   * the empty one, so the admin sees "no results" flash before it snaps back; and
+   * trusting `page` shows an empty table with a control claiming page 5.
+   *
+   * So the number is derived at render and the effect below only ever writes the
+   * clamped value back, which is a correction rather than a reset. Clamping rather than
+   * clamping-to-1 means deleting one row does not throw the reader back to the start.
+   */
+  const currentPage = Math.min(page, pageCount);
+
+  const pageRows = useMemo(
+    () =>
+      visible.slice(
+        (currentPage - 1) * pageSize,
+        (currentPage - 1) * pageSize + pageSize,
+      ),
+    [visible, currentPage, pageSize],
+  );
+
+  /**
+   * The widest the pager is ever allowed to get, in slots.
+   *
+   * **Derived from the button size rather than picked.** Seven slots at `size-9` (36 px)
+   * with `gap-1` (4 px) is about 228 px including the two ellipses, which fits the ~290 px
+   * left inside the card on a 360 px screen. Eight would not. This is the same number the
+   * `WINDOW` comment works backwards from, so the two cannot disagree.
+   */
+  const MAX_PAGER_SLOTS = 7;
+
+  /**
+   * The page-number buttons, with `null` standing in for an ellipsis.
+   *
+   * **Two rules, and which one applies first matters.**
+   *
+   * 1. **If every page fits, list them all.** A five-page list drawn as `[1 2 3 … 5]` hides
+   *    page 4 behind a gap that costs as much room as the button it replaces — a gap is
+   *    only worth drawing when there is genuinely something behind it. This is the same
+   *    reasoning as not drawing a gap before page 2.
+   * 2. **Otherwise window around the current page**, keeping the first and last reachable
+   *    so an admin on page 40 of 40 can still get to page 40 and to page 1 without
+   *    scrolling a strip of numbers.
+   *
+   * `WINDOW = 1` rather than 2, because two gives `[1 … 13 14 15 16 17 … 40]` — nine slots,
+   * roughly 308 px, which does not fit a 360 px screen.
+   */
+  const pageNumbers = useMemo(() => {
+    if (pageCount <= MAX_PAGER_SLOTS) {
+      return Array.from({ length: pageCount }, (_, i) => i + 1);
+    }
+
+    const out: (number | null)[] = [];
+    const WINDOW = 1;
+    const first = Math.max(1, currentPage - WINDOW);
+    const last = Math.min(pageCount, currentPage + WINDOW);
+
+    if (first > 1) {
+      out.push(1);
+      // Only one gap marker: the window is contiguous, so there can only ever be one.
+      if (first > 2) out.push(null);
+    }
+    for (let n = first; n <= last; n += 1) out.push(n);
+    if (last < pageCount) {
+      if (last < pageCount - 1) out.push(null);
+      out.push(pageCount);
+    }
+    return out;
+  }, [currentPage, pageCount]);
 
   /**
    * Open one row's action menu, or close it if that same row is already open.
@@ -1194,8 +1404,43 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
     setLabelAssetId(row.id);
   };
 
-  const handleOpenEdit = (row: Asset) => {
+  /**
+   * Open the history dialog for one row.
+   *
+   * **The id is stored, not the history.** Nothing is fetched here: the dialog fetches
+   * on mount, so opening it for a second asset cannot leave the first one's handovers
+   * on screen for a frame — the same reasoning `handleOpenLabel` and `editingId` give,
+   * and the reason `AssetDetailsModal` is mounted only once an id exists.
+   *
+   * The asset's own fields are **not** fetched here. The edit form answers "what is this
+   * thing", and a dialog that showed both would have two places to read a name from and
+   * one of them would be stale the moment somebody saved an edit.
+   *
+   * This is the row's **only** entry point now. There is no separate "Edit asset" menu
+   * item — the dialog carries that button, so `handleEditFromDetails` below is the only
+   * way into the form from a row.
+   */
+  const handleOpenDetails = (row: Asset) => {
     setOpenMenuId(null);
+    setDetailsAssetId(row.id);
+  };
+
+  /**
+   * Open the edit form from inside the Details dialog.
+   *
+   * **The dialog is closed first, and that ordering is load-bearing rather than tidy.**
+   * `Modal` registers its Escape handler on `document`, so two open dialogs would both
+   * close on one Escape — and the edit form would sit behind the history's backdrop,
+   * so the first Escape would appear to do nothing while only closing the top one.
+   * Closing first also unmounts the details dialog, which is what stops its fetch from
+   * resolving into a component nobody can see.
+   *
+   * It opens the **same** form the old menu item did: `formFromAsset` rebuilds the
+   * thirty-odd fields from the live row, and `editingId` / `editingStatus` are set
+   * exactly as they were there, so the form's own title and save path are unchanged.
+   */
+  const handleEditFromDetails = (row: Asset) => {
+    setDetailsAssetId(null);
     setForm(formFromAsset(row, categories));
     setSection("identity");
     setEditingId(row.id);
@@ -1621,7 +1866,7 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
               </TableHeader>
 
               <TableBody>
-                {visible.map((row) => (
+                {pageRows.map((row) => (
                   <TableRow
                     key={row.id}
                     className="border-b border-gray-100 last:border-0 hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-white/3"
@@ -1669,7 +1914,7 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
                         isOpen={openMenuId === row.id}
                         onToggle={() => handleToggleMenu(row.id)}
                         onClose={() => setOpenMenuId(null)}
-                        onEdit={() => handleOpenEdit(row)}
+                        onDetails={() => handleOpenDetails(row)}
                         onChangeStatus={() => handleOpenStatus(row)}
                         onPrintLabel={() => handleOpenLabel(row)}
                         onDelete={() => handleOpenDelete(row)}
@@ -1685,9 +1930,92 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
         )}
 
         {!isLoading && !loadFailed && assets.length > 0 && (
-          <p className="border-t border-gray-200 px-6 py-3 text-sm text-gray-500 dark:border-gray-800 dark:text-gray-400">
-            {t("showing", { count: visible.length, total: assets.length })}
-          </p>
+          /* The count is kept AND the pager is added, because they answer different
+             questions: "how many matched" is a fact about the filter, and "which slice
+             am I looking at" is a fact about where I am. Dropping the count for the
+             pager loses the former — a reader who filtered to 3 rows and is on a page
+             of 50 has no way to tell that the table is showing everything.
+
+             `flex-wrap` because this row carries three groups: the count, the size
+             picker and the pager. On a phone the pager drops to its own line rather
+             than compressing all three into an unreadable strip. */
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-gray-200 px-6 py-3 dark:border-gray-800">
+            <p className="text-sm text-gray-500 dark:text-gray-400">
+              {t("showing", { count: visible.length, total: assets.length })}
+            </p>
+
+            <div className="flex flex-wrap items-center gap-4">
+              {/* Page size. `label` rather than a placeholder, so the control says what
+                  it is — a bare number next to the row count reads as a page number. */}
+              <label className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+                {t("perPage")}
+                <select
+                  value={pageSize}
+                  onChange={(event) => {
+                    setPageSize(Number(event.target.value));
+                    // Back to the first page on a size change: page 7 of 50 is not
+                    // page 7 of 10, and leaving the number alone would silently show a
+                    // different slice of the list than the button claims.
+                    setPage(1);
+                  }}
+                  className="h-9 rounded-lg border border-gray-300 bg-transparent px-2 text-sm text-gray-800 focus:border-brand-300 focus:ring-3 focus:ring-brand-500/10 focus:outline-hidden dark:border-gray-700 dark:bg-gray-900 dark:text-white/90"
+                >
+                  {PAGE_SIZES.map((size) => (
+                    <option key={size} value={size}>
+                      {size}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              {/* The pager. Hidden entirely on a single page rather than disabled —
+                  a control that cannot do anything should not be on screen, which is
+                  the same rule the category collapse toggle follows. */}
+              {pageCount > 1 && (
+                <nav
+                  className="flex items-center gap-1"
+                  aria-label={t("paginationLabel")}
+                >
+                  <PagerButton
+                    label={t("previousPage")}
+                    disabled={currentPage <= 1}
+                    onClick={() => setPage(currentPage - 1)}
+                  >
+                    <ChevronLeftIcon className="size-4" />
+                  </PagerButton>
+
+                  {pageNumbers.map((n, i) =>
+                    n === null ? (
+                      <span
+                        key={`gap-${i}`}
+                        aria-hidden="true"
+                        className="px-1 text-sm text-gray-400 dark:text-gray-500"
+                      >
+                        …
+                      </span>
+                    ) : (
+                      <PagerButton
+                        key={n}
+                        label={t("goToPage", { page: n })}
+                        current={n === currentPage}
+                        onClick={() => setPage(n)}
+                      >
+                        {n}
+                      </PagerButton>
+                    ),
+                  )}
+
+                  <PagerButton
+                    label={t("nextPage")}
+                    disabled={currentPage >= pageCount}
+                    onClick={() => setPage(currentPage + 1)}
+                  >
+                    <ChevronRightIcon className="size-4 rtl:rotate-180" />
+                  </PagerButton>
+                </nav>
+              )}
+            </div>
+          </div>
         )}
       </div>
 
@@ -1699,6 +2027,19 @@ export default function AssetListPage({ unit }: { unit: AssetUnit }) {
           asset={labelAsset}
           isOpen
           onClose={() => setLabelAssetId(null)}
+        />
+      )}
+
+      {/* The history dialog. Mounted only once an id exists, so its fetch cannot fire
+          for a null asset on a page that never opened it — the same mount condition
+          `AssetLabelModal` uses. */}
+      {detailsAsset !== null && (
+        <AssetDetailsModal
+          asset={detailsAsset}
+          isOpen
+          onClose={() => setDetailsAssetId(null)}
+          onEdit={() => handleEditFromDetails(detailsAsset)}
+          canEdit={canEditAssets}
         />
       )}
 

@@ -1060,3 +1060,199 @@ export async function deleteAsset(assetId: string): Promise<void> {
   if (error) throw error;
   if (!data) throw new NoRowsWrittenError("deleted");
 }
+
+/**
+ * One time an asset went out, and who had it.
+ *
+ * A different shape from `Handover` on purpose: that type is keyed by a **loan** and
+ * carries the asset, because the handover page asks "what happened in this batch". This
+ * one is keyed by an **asset** and carries the holder, because the Details dialog asks
+ * "what has happened to this thing". The two would otherwise be one type that grows a
+ * field per consumer.
+ *
+ * `transferredTo` is the loan this one was created from, and it is what makes a
+ * transfer legible in a history: without it a device that moved from Budi to Sari looks
+ * like two unrelated events, which is the gap `04000`'s column exists to close.
+ */
+export type AssetHistoryEntry = {
+  /** The `assignments` id, so a reader can tell two rows of the same asset apart. */
+  id: string;
+  issuedAt: string;
+  returnedAt: string | null;
+  /** The condition recorded at the moment it went out, not the asset's current one. */
+  conditionAtHandover: AssetCondition | null;
+  notes: string | null;
+  /** Who received it, from the roster. Null only if the row was privileged away. */
+  holderName: string | null;
+  holderPosition: string | null;
+  holderDepartmentName: string | null;
+  /**
+   * The account that recorded the handover.
+   *
+   * **Null for a staff reader, and that is RLS rather than a bug.**
+   * `profiles_select_own_or_admin` shows a staff member their own row and nothing else,
+   * so a handover issued by a *different* admin arrives with no embed at all. An admin
+   * sees every issuer. The dialog renders the fallback rather than an empty cell,
+   * because a blank where an issuer belongs reads as "nobody recorded this".
+   */
+  issuerName: string | null;
+  /** What went out with it on this loan — the bag, the charger. */
+  accessories: { id: string; name: string; serialNumber: string | null }[];
+  /** The loan this one replaced, or null when it was issued rather than transferred. */
+  transferredTo: string | null;
+};
+
+/** One service or inspection recorded against an asset. */
+export type AssetMaintenanceEntry = {
+  id: string;
+  type: "repair" | "upgrade" | "inspection" | "calibration";
+  status: "scheduled" | "in_progress" | "completed" | "cancelled";
+  description: string | null;
+  scheduledDate: string | null;
+  completedAt: string | null;
+  vendor: string | null;
+  /**
+   * `maintenance.cost`, as a **number** — measured, not assumed.
+   *
+   * `numeric (14, 2)` serialises to a JSON number over PostgREST, not to a string, so
+   * `historyStr` here would have rendered `1500.00` as `1500` and lost the minor units
+   * on anything like `1500.50`. The column's `numeric (14, 2)` ceiling is ~1e12, well
+   * inside `Number.MAX_SAFE_INTEGER`, so the precision this trades away is not
+   * reachable for this column — but it is a real trade and the dialog formats to two
+   * decimals rather than printing the number as it arrived.
+   */
+  cost: number | null;
+};
+
+/**
+ * Everything known about one asset's past, newest first.
+ *
+ * ## Why handovers and maintenance are read together
+ *
+ * They are the two tables that reference `assets` and mean "this happened to it", and
+ * splitting them across two screens would be two dialogs to open to answer one question.
+ * They are read in **parallel** rather than sequentially: two round trips is the floor
+ * here and a serial pair doubles it for no benefit.
+ *
+ * ## Maintenance is structurally empty today, and that is shown rather than hidden
+ *
+ * Nothing in `src/` schedules a repair — `maintenance` is written by nothing but test
+ * fixtures — so this section will read as empty on every asset in the system. It is
+ * still part of the answer, because a history that silently omits a table is a history
+ * that will look complete and be wrong the day maintenance is built, and the delete
+ * guard `deleteAsset` refuses on already counts both tables.
+ *
+ * ## What the reader may see is RLS's decision, not this function's
+ *
+ * `assignments_select_own_department_or_admin` filters the handover rows and
+ * `profiles_select_own_or_admin` filters the issuer embed, so a staff member sees the
+ * handovers for an asset in their own department (complete, because that policy's
+ * department arm covers every loan on those assets) but not an issuer who is not them.
+ * This is why `issuerName` is nullable above rather than a string.
+ */
+export async function getAssetHistory(assetId: string): Promise<{
+  handovers: AssetHistoryEntry[];
+  maintenance: AssetMaintenanceEntry[];
+}> {
+  const [handoverResult, maintenanceResult] = await Promise.all([
+    supabase
+      .from("assignments")
+      // One line, and the same rule as `HANDOVER_COLUMNS`: a newline inside the
+      // literal is `PGRST100` naming a *field*, which reads like a misspelled column.
+      // No comment may go inside it — supabase-js parses this string at the type level
+      // and a `--` line turns the whole constant into a `ParserError`.
+      .select(ASSET_HANDOVER_HISTORY_COLUMNS)
+      .eq("asset_id", assetId)
+      .order("assigned_at", { ascending: false }),
+    supabase
+      .from("maintenance")
+      .select(
+        "id, type, status, description, scheduled_date, completed_at, vendor, cost",
+      )
+      .eq("asset_id", assetId)
+      .order("scheduled_date", { ascending: false, nullsFirst: false }),
+  ]);
+
+  if (handoverResult.error) throw handoverResult.error;
+  if (maintenanceResult.error) throw maintenanceResult.error;
+
+  const handovers = ((handoverResult.data ?? []) as RawAsset[]).map((row) => {
+    const holder = row.holder as Record<string, unknown> | null | undefined;
+    const issuer = row.issuedBy as Record<string, unknown> | null | undefined;
+    const position = holder?.position as
+      Record<string, unknown> | null | undefined;
+    const department = holder?.department as
+      Record<string, unknown> | null | undefined;
+
+    return {
+      id: String(row.id),
+      issuedAt: String(row.assigned_at ?? ""),
+      returnedAt: historyStr(row.returned_at),
+      conditionAtHandover: (historyStr(row.condition_at_handover) ??
+        null) as AssetCondition | null,
+      notes: historyStr(row.notes),
+      // Every embed is read through a shape check: an aliased many-to-one arrives as an
+      // **object**, so `String(row.holder)` would put `[object Object]` on screen.
+      holderName: holder ? historyStr(holder.name) : null,
+      holderPosition: position ? historyStr(position.name) : null,
+      holderDepartmentName: department ? historyStr(department.name) : null,
+      issuerName: issuer
+        ? (historyStr(issuer.full_name) ?? historyStr(issuer.email))
+        : null,
+      accessories: historyAccessories(row.accessories),
+      transferredTo: historyStr(row.transferred_to),
+    };
+  });
+
+  const maintenance = ((maintenanceResult.data ?? []) as RawAsset[]).map(
+    (row) => ({
+      id: String(row.id),
+      // The two are `text` with `check` constraints rather than enums, so the cast is
+      // the database's promise rather than the type system's — the same trade `role`
+      // makes on `profiles`.
+      type: String(row.type) as AssetMaintenanceEntry["type"],
+      status: String(row.status) as AssetMaintenanceEntry["status"],
+      description: historyStr(row.description),
+      scheduledDate: historyStr(row.scheduled_date),
+      completedAt: historyStr(row.completed_at),
+      vendor: historyStr(row.vendor),
+      // A number, not a string — see `AssetMaintenanceEntry.cost`.
+      cost:
+        row.cost === null || row.cost === undefined ? null : Number(row.cost),
+    }),
+  );
+
+  return { handovers, maintenance };
+}
+
+/** One line, for the same reason as `HANDOVER_COLUMNS`. See the call site above. */
+const ASSET_HANDOVER_HISTORY_COLUMNS =
+  "id, assigned_at, returned_at, condition_at_handover, notes, transferred_to, accessories:assignments_accessories(id, name, serial_number), holder:handover_users!assignments_user_id_fkey(name, position:positions(name), department:departments(name)), issuedBy:profiles!assignments_assigned_by_fkey(full_name, email)" as const;
+
+/** Stringify a nullable column, keeping `null` rather than the text `"null"`. */
+function historyStr(value: unknown): string | null {
+  return value === null || value === undefined ? null : String(value);
+}
+
+/**
+ * An embedded to-many, always an array.
+ *
+ * `[]` and "the embed is wrong" must not mean the same thing, which is the same
+ * distinction `mapAccessories` makes in the handover module — so this returns `[]`
+ * rather than throwing, and the dialog renders "no accessories" rather than an error.
+ */
+function historyAccessories(
+  value: unknown,
+): { id: string; name: string; serialNumber: string | null }[] {
+  if (!Array.isArray(value)) return [];
+  return (value as Record<string, unknown>[])
+    .filter(
+      (row): row is Record<string, unknown> =>
+        typeof row === "object" && row !== null,
+    )
+    .map((row) => ({
+      id: String(row.id),
+      name: String(row.name ?? ""),
+      serialNumber: historyStr(row.serial_number),
+    }));
+}

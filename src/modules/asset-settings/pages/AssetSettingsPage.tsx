@@ -24,6 +24,8 @@ import { useModal } from "@/hooks/useModal";
 import {
   ChevronDownIcon,
   CloseIcon,
+  EyeCloseIcon,
+  EyeIcon,
   PencilIcon,
   PlusIcon,
   TrashBinIcon,
@@ -49,12 +51,14 @@ import {
   getCurrentLocations,
   getHandoverUsers,
   getLocations,
+  setHandoverUserDeparted,
   updateCategory,
   updateCurrentLocation,
   updateHandoverUser,
   updateLocation,
   CategoryInUseError,
   CurrentLocationInUseError,
+  HandoverUserHoldsAssetsError,
   HandoverUserInUseError,
   LocationInUseError,
   DEFAULT_DEPARTMENT,
@@ -301,6 +305,17 @@ export default function AssetSettingsPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  /**
+   * A refusal from a **row action**, rather than from a dialog.
+   *
+   * `saveError` and `deleteError` both live inside their modal, which is right for
+   * them: the dialog is where the admin is looking when the write fails. Marking a
+   * roster entry departed is a one-click row action with no dialog, so its refusal has
+   * nowhere to appear in either of those — and an error that renders nowhere is the
+   * same as no error at all. It sits beside `notice` instead, which is the same slot
+   * for the same reason: both are outcomes of something that already closed.
+   */
+  const [rowError, setRowError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   const reload = useCallback(() => setReloadToken((prev) => prev + 1), []);
@@ -498,6 +513,32 @@ export default function AssetSettingsPage() {
   const allCollapsed =
     collapsibleIds.length > 0 &&
     collapsibleIds.every((id) => collapsedIds.has(id));
+
+  /**
+   * The roster with the departed rows moved to the bottom, order otherwise untouched.
+   *
+   * **In the browser rather than in SQL**, the same trade every list on this screen
+   * makes: the rows are already fetched, and a second ordered query is a second answer
+   * to maintain for something that is one partition.
+   *
+   * A stable partition rather than a sort: `filter` twice preserves the order
+   * `getHandoverUsers` returned (name, then position), so "departed at the bottom" cannot
+   * quietly become "alphabetical within the departed group" if the query's ordering ever
+   * changes. It also means a person who is reinstated moves back to their real place
+   * without anything to recompute.
+   *
+   * The roster keeps departed rows rather than hiding them, and that is the point: their
+   * closed handovers still name them, so removing them from the register would take the
+   * history's subject with it. They are last in the list because they are the people a
+   * handover can no longer be issued to.
+   */
+  const rosterForDisplay = useMemo(
+    () => [
+      ...handoverUsers.filter((row) => row.departedAt === null),
+      ...handoverUsers.filter((row) => row.departedAt !== null),
+    ],
+    [handoverUsers],
+  );
 
   const toggleAll = useCallback(() => {
     setCollapsedIds(allCollapsed ? new Set() : new Set(collapsibleIds));
@@ -792,6 +833,49 @@ export default function AssetSettingsPage() {
     }
   };
 
+  /**
+   * Mark a roster entry as departed, or put them back.
+   *
+   * **No confirmation modal, and that is a deliberate asymmetry with Delete.** A
+   * delete is refused outright by a `restrict` foreign key if anything points at the
+   * row, and if nothing does it is gone — so it is worth a dialog. Departure is the
+   * opposite: it changes who the Issue form may offer the row to, it never destroys
+   * anything, and the database refuses it while the person is still holding something.
+   * A dialog in front of an action the database will refuse anyway only teaches people
+   * to click through dialogs.
+   *
+   * The notice says which way it went, because the row does not obviously move: the
+   * action is reversible and the badge below the name is the only visible difference.
+   */
+  const handleToggleDeparted = async (row: HandoverUserRow) => {
+    const departing = row.departedAt === null;
+
+    setIsSaving(true);
+    setNotice(null);
+    setRowError(null);
+    try {
+      await setHandoverUserDeparted(row.id, departing);
+      setNotice(
+        departing
+          ? t("handoverUserMarkedDeparted", { name: row.name })
+          : t("handoverUserReinstated", { name: row.name }),
+      );
+      reload();
+    } catch (error) {
+      // The refusal names the count, which is the actionable part: these assets have
+      // to be transferred or returned before the person can be marked as gone.
+      if (error instanceof HandoverUserHoldsAssetsError) {
+        setRowError(
+          t("errors.handoverUserHoldsAssets", { count: error.openCount }),
+        );
+      } else {
+        setRowError(t("errors.save"));
+      }
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   if (isProfileLoading) {
     return (
       <Frame>
@@ -844,6 +928,27 @@ export default function AssetSettingsPage() {
             onClick={() => setNotice(null)}
             aria-label={t("dismiss")}
             className="shrink-0 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+          >
+            <CloseIcon className="size-4" />
+          </button>
+        </div>
+      )}
+
+      {/* `role="alert"` rather than `status`: a refusal is the outcome of something the
+          admin just pressed, and it should interrupt rather than be announced politely
+          into the background. Same slot and same dismissal as `notice`, because both
+          are outcomes of an action that has already closed. */}
+      {rowError && (
+        <div
+          role="alert"
+          className="mt-4 flex items-start justify-between gap-4 rounded-2xl border border-error-200 bg-error-50 p-4 text-sm text-error-700 dark:border-error-500/30 dark:bg-error-500/10 dark:text-error-400"
+        >
+          <p>{rowError}</p>
+          <button
+            type="button"
+            onClick={() => setRowError(null)}
+            aria-label={t("dismiss")}
+            className="shrink-0 text-error-500 hover:text-error-700 dark:hover:text-error-300"
           >
             <CloseIcon className="size-4" />
           </button>
@@ -1277,13 +1382,16 @@ export default function AssetSettingsPage() {
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {handoverUsers.map((row) => (
+                        {rosterForDisplay.map((row) => (
                           <HandoverUserRowView
                             key={row.id}
                             row={row}
                             onEdit={() => handleOpenEditHandoverUser(row)}
                             onDelete={() =>
                               handleOpenDelete("handoverUser", row)
+                            }
+                            onToggleDeparted={() =>
+                              void handleToggleDeparted(row)
                             }
                           />
                         ))}
@@ -2068,17 +2176,44 @@ function HandoverUserRowView({
   row,
   onEdit,
   onDelete,
+  onToggleDeparted,
 }: {
   row: HandoverUserRow;
   onEdit: () => void;
   onDelete: () => void;
+  onToggleDeparted: () => void;
 }) {
   const { t } = useTranslation("common", { keyPrefix: "assetSettings" });
+
+  const isDeparted = row.departedAt !== null;
+  /**
+   * Departure is refused while anything is still out, so the control is disabled then
+   * — and the count is the title, for the same reason the delete button carries
+   * `deleteHandoverUserInUse`: a disabled control with no explanation is a control
+   * that looks broken.
+   *
+   * **Reinstate is never disabled.** The flag is not a claim about what somebody is
+   * holding, so clearing it cannot conflict with an open loan, and blocking the way
+   * back out of a mistake the database already refuses would be the wrong lesson.
+   */
+  const cannotDepart = !isDeparted && row.openHandoverCount > 0;
 
   return (
     <TableRow className="border-b border-gray-100 last:border-0 hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-white/3">
       <TableCell className="px-6 py-3 text-sm font-medium text-gray-800 dark:text-white/90">
-        {row.name}
+        <span className={isDeparted ? "text-gray-400 dark:text-gray-500" : ""}>
+          {row.name}
+        </span>
+        {/* The badge is the state, and it is beside the name rather than in a column
+            of its own: it is one of two things that can be true of a name and adding
+            a sixth column for it would push the actions off a laptop screen. */}
+        {isDeparted && (
+          <span className="ms-2 inline-flex">
+            <Badge size="sm" color="warning">
+              {t("departedBadge")}
+            </Badge>
+          </span>
+        )}
       </TableCell>
       <TableCell className="px-4 py-3 text-sm text-gray-600 dark:text-gray-300">
         {row.position}
@@ -2099,18 +2234,63 @@ function HandoverUserRowView({
       </TableCell>
       <TableCell className="px-4 py-3 text-sm text-gray-600 dark:text-gray-300">
         {t("handoverCount", { count: row.handoverCount })}
+        {/* The open count is shown only when there is one. "0 of 4 still out" on every
+            row is noise, and the number that matters is the one somebody has to act
+            on — which is the same reason the badge above is conditional. */}
+        {row.openHandoverCount > 0 && (
+          <span className="ms-1 text-xs text-warning-600 dark:text-warning-500">
+            {t("handoverCountOpen", { count: row.openHandoverCount })}
+          </span>
+        )}
       </TableCell>
       <TableCell className="px-6 py-3 text-end">
-        <RowActions
-          editLabel={t("editLabel", { name: row.name })}
-          deleteLabel={t("deleteLabel", { name: row.name })}
-          deleteDisabled={row.handoverCount > 0}
-          deleteTitle={
-            row.handoverCount > 0 ? t("deleteHandoverUserInUse") : undefined
-          }
-          onEdit={onEdit}
-          onDelete={onDelete}
-        />
+        <div className="flex items-center justify-end gap-2">
+          {/* An eye pair rather than a "person leaving" glyph: this icon set has no
+              user-off mark, and the state being toggled is **eligibility** — the row
+              is hidden from the Issue form's recipient picker — which is what a
+              crossed-out eye already means. The tooltip says which way it goes, and
+              the badge beside the name says where it currently is. */}
+          <span
+            title={
+              cannotDepart
+                ? t("departBlockedTitle", {
+                    name: row.name,
+                    count: row.openHandoverCount,
+                  })
+                : isDeparted
+                  ? t("reinstateLabel", { name: row.name })
+                  : t("markDepartedLabel", { name: row.name })
+            }
+          >
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={cannotDepart}
+              onClick={onToggleDeparted}
+              aria-label={
+                isDeparted
+                  ? t("reinstateLabel", { name: row.name })
+                  : t("markDepartedLabel", { name: row.name })
+              }
+            >
+              {isDeparted ? (
+                <EyeIcon className="size-4" />
+              ) : (
+                <EyeCloseIcon className="size-4" />
+              )}
+            </Button>
+          </span>
+          <RowActions
+            editLabel={t("editLabel", { name: row.name })}
+            deleteLabel={t("deleteLabel", { name: row.name })}
+            deleteDisabled={row.handoverCount > 0}
+            deleteTitle={
+              row.handoverCount > 0 ? t("deleteHandoverUserInUse") : undefined
+            }
+            onEdit={onEdit}
+            onDelete={onDelete}
+          />
+        </div>
       </TableCell>
     </TableRow>
   );

@@ -38,11 +38,14 @@ import {
   isUnavailableAssetError,
   issueHandover,
   returnHandover,
+  transferHandover,
   updateHandoverAccessory,
   AccessoryNameRequiredError,
   HandoverOpenError,
   NoAssetsSelectedError,
   NoRowsWrittenError,
+  TransferRecipientUnknownError,
+  TransferSourceClosedError,
 } from "../services/handoverService";
 import type {
   Handover,
@@ -82,6 +85,27 @@ const EMPTY_ISSUE: IssueForm = {
   userId: "",
   dueDate: "",
   conditionAtHandover: "",
+  notes: "",
+};
+
+/**
+ * The transfer form: a new recipient and an optional note.
+ *
+ * **Nothing else is editable, and that is the shape the RPC forces.** A transfer is
+ * not a new handover — the assets, the condition snapshot and the accessories all come
+ * from the loan being moved — so there is no field here that could mean anything
+ * else. The one free-text box is the note the *new* document will carry, because the
+ * reason for the move ("Budi is on leave", "moved to Finance") is the fact the
+ * recipient's copy needs and the old document does not have.
+ */
+type TransferForm = {
+  /** A `handover_users` id, exactly like `IssueForm.userId`. */
+  userId: string;
+  notes: string;
+};
+
+const EMPTY_TRANSFER: TransferForm = {
+  userId: "",
   notes: "",
 };
 
@@ -198,6 +222,7 @@ export default function HandoverListPage() {
   const issueModal = useModal();
   const deleteModal = useModal();
   const detailModal = useModal();
+  const transferModal = useModal();
   /**
    * The handover whose document is open, or null.
    *
@@ -216,6 +241,24 @@ export default function HandoverListPage() {
    * a stale copy of a device listed as still out.
    */
   const [detailBatchKey, setDetailBatchKey] = useState<string | null>(null);
+
+  /**
+   * The device a transfer is being set up for — an **`assignments.id`**, or null.
+   *
+   * One loan rather than a batch key, and that is the whole change: a transfer moves
+   * **one device**, so the thing being acted on is a loan, not a group. Holding the batch
+   * key and picking a member out of it at submit time is how a half-returned batch ends
+   * up transferring the wrong row.
+   *
+   * Only the **id** is held, never the row — `transferRow` looks the device up on render,
+   * so returning it while the dialog is open cannot leave a stale card describing it as
+   * still out.
+   */
+  const [transferHandoverId, setTransferHandoverId] = useState<string | null>(
+    null,
+  );
+  const [transferForm, setTransferForm] =
+    useState<TransferForm>(EMPTY_TRANSFER);
 
   const [issueForm, setIssueForm] = useState<IssueForm>(EMPTY_ISSUE);
   const [targets, setTargets] = useState<HandoverTarget[]>([]);
@@ -615,6 +658,21 @@ export default function HandoverListPage() {
   );
 
   /**
+   * The device the transfer dialog is about, looked up from the id above.
+   *
+   * Null once the dialog is open only if that loan has left the list entirely; a device
+   * that came back is still listed, and the dialog says so rather than offering a
+   * transfer the database would refuse with `P0002`.
+   */
+  const transferRow = useMemo(
+    () =>
+      transferHandoverId === null
+        ? null
+        : (handovers.find((row) => row.id === transferHandoverId) ?? null),
+    [handovers, transferHandoverId],
+  );
+
+  /**
    * Whether the signed-in caller may return a device in the **open** batch.
    *
    * Resolved here rather than passed into the modal, because the modal is rendered
@@ -769,6 +827,84 @@ export default function HandoverListPage() {
         setDeleteError(t("errors.open"));
       } else {
         setDeleteError(t("errors.delete"));
+      }
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  /**
+   * Open the transfer dialog for **one device**.
+   *
+   * The roster is re-read here rather than reusing `people` from the Issue form. That
+   * list is loaded when *that* modal opens, so it can be empty — and it is also filtered
+   * on `departed_at is null`, which is exactly the filter this needs too. It is still
+   * the wrong source: a Detail dialog opened with no Issue in the session would offer
+   * an empty picker and look broken.
+   *
+   * A dialog rather than a menu item because it is a form with a recipient and a note,
+   * and a dropdown is the wrong shape for either.
+   */
+  const handleOpenTransfer = async (row: Handover) => {
+    setSaveError(null);
+    setTransferForm(EMPTY_TRANSFER);
+    setFormToken((prev) => prev + 1);
+    setTransferHandoverId(row.id);
+    transferModal.openModal();
+    setIsSaving(true);
+    try {
+      setPeople(await getHandoverUserOptions());
+    } catch {
+      setPeople([]);
+      setSaveError(t("errors.pickers"));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  /**
+   * Run the transfer for the one device the dialog is open on.
+   *
+   * `p_loan` is exactly the id the button was on, and that is the whole simplification
+   * from the batch version: there is no member to choose and no way to choose the wrong
+   * one. The row is re-checked here rather than trusted from the dialog's opening state,
+   * so a device returned in another tab while this was open is refused with the closed
+   * message instead of surfacing a raw `P0002`.
+   */
+  const handleConfirmTransfer = async () => {
+    const row = transferRow;
+    if (!row) return;
+    if (row.returnedAt !== null) {
+      setSaveError(t("errors.transferClosed"));
+      return;
+    }
+
+    setIsSaving(true);
+    setSaveError(null);
+    try {
+      await transferHandover(row.id, transferForm.userId, transferForm.notes);
+      transferModal.closeModal();
+      setNotice(
+        t("transferDone", {
+          code: assetLabel(row, t("fields.unknown")),
+          name:
+            people.find((person) => person.id === transferForm.userId)?.name ??
+            "",
+        }),
+      );
+      reload();
+    } catch (error) {
+      // The two the RPC can raise that mean "you asked for something that is not
+      // possible" get their own sentences; everything else — including the departed
+      // recipient's 23514 and a permission refusal — is a generic failure, because a
+      // bare code is all the client has and naming a cause it cannot verify would be a
+      // worse answer than an honest one.
+      if (error instanceof TransferSourceClosedError) {
+        setSaveError(t("errors.transferClosed"));
+      } else if (error instanceof TransferRecipientUnknownError) {
+        setSaveError(t("errors.transferRecipient"));
+      } else {
+        setSaveError(t("errors.transfer"));
       }
     } finally {
       setIsSaving(false);
@@ -1457,129 +1593,192 @@ export default function HandoverListPage() {
                 {detailBatch.items.map((row, index) => {
                   const isReturned = row.returnedAt !== null;
                   return (
+                    /* One column, stacked in bands — identity, then facts, then
+                       actions. It was two columns with the controls stacked vertically
+                       on the right, and that produced three separate defects at once:
+                       the badge and two buttons of different widths made a ragged right
+                       edge; the accessory editor was confined to whatever width the
+                       right column left it, so its inputs clipped; and the condition
+                       ended up sharing a line with the serial, orphaned below.
+
+                       **The controls are on their own row now**, which is what frees the
+                       full width for the editor. That is the whole trade: the device's
+                       identity and state sit together at the top, where the eye lands
+                       first, and nothing competes with them for the row they are in. */
                     <div
                       key={row.id}
-                      className="flex items-start justify-between gap-3 border-b border-gray-100 px-3 py-2.5 last:border-b-0 dark:border-gray-800"
+                      className="border-b border-gray-100 px-4 py-3.5 last:border-b-0 dark:border-gray-800"
                     >
-                      <div className="min-w-0 flex-1">
-                        <p className="text-sm font-medium text-gray-800 dark:text-white/90">
-                          <span className="text-gray-400 dark:text-gray-500">
-                            {index + 1}.
-                          </span>{" "}
-                          {row.asset?.assetCode ?? t("fields.unknown")}
-                        </p>
-                        <p className="truncate text-xs text-gray-500 dark:text-gray-400">
-                          {row.asset?.name ?? ""}
-                        </p>
-                        {/* The bag and the charger, under the device they went out
-                            with.
+                      {/* Band 1 — identity and state. */}
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-gray-800 dark:text-white/90">
+                            <span className="text-gray-400 dark:text-gray-500">
+                              {index + 1}.
+                            </span>{" "}
+                            {row.asset?.assetCode ?? t("fields.unknown")}
+                          </p>
+                          {/* Name and serial on ONE line. They are the two facts an
+                              admin checks against the device in their hand, and
+                              splitting them across lines is what made the condition look
+                              orphaned underneath. */}
+                          <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                            {row.asset?.name ?? ""}
+                            {row.asset?.serialNumber != null &&
+                              row.asset.serialNumber !== "" && (
+                                <>
+                                  {" · "}
+                                  {t("table.serial")} {row.asset.serialNumber}
+                                </>
+                              )}
+                          </p>
+                        </div>
 
-                            This modal answers "what exactly went out in *this*
-                            handover", and a laptop without its charger is the
-                            ordinary case — so listing only the device would
-                            under-answer the question the modal exists for. The same
-                            list prints on the document, and reading it from the same
-                            `row.accessories` rather than a second source is what
-                            keeps the screen and the paper agreeing. */}
-                        {/* The bag and the charger, with an editor underneath.
-                            Admin-only **and** edit-gated, which are two different
-                            restrictions answering two different questions:
-                            `isAdmin` mirrors
-                            `assignments_accessories_insert_admin` / `_update_admin` /
-                            `_delete_admin`, which never opened to staff at all; and
-                            `canEditHandover` mirrors what the admin asked for on this
-                            menu — a handover whose accessories can still be rewritten is
-                            not a read-only handover.
+                        {/* State sits beside the identity rather than below the
+                            controls, so "which one is still out" is answered by the
+                            same glance that reads what the device is.
 
-                            `isAdmin` first, because it is the one the database
-                            enforces. Reading it the other way round would let a
-                            permission appear to grant the editor to a staff member,
-                            which three separate admin-only policies refuse. */}
-                        {isAdmin && canEditHandover && (
-                          <AccessoryEditor
-                            assetCode={row.asset?.assetCode ?? row.id}
-                            names={row.accessories}
-                            onAdd={(name, serial) =>
-                              void handleAddAccessory(row.id, name, serial)
-                            }
-                            onRemove={(accessoryId) =>
-                              void handleRemoveAccessory(accessoryId)
-                            }
-                            onEdit={(accessoryId, name, serial) =>
-                              void handleUpdateAccessory(
-                                accessoryId,
-                                name,
-                                serial,
-                              )
-                            }
-                            isSaving={isSaving}
-                          />
-                        )}
-                        {/*
-                            Read-only accessory list, shown exactly when the editor
-                            above is not. The condition is the **negation of the
-                            editor's**, not `!isAdmin` — otherwise an admin who turned
-                            editing off would be left with no indication of what is on
-                            the list, which is the "rule that hides UI fails silently and
-                            completely" failure this codebase keeps recording.
-                          */}
-                        {!isAdmin || !canEditHandover
-                          ? row.accessories.length > 0 && (
-                              <p className="text-xs text-gray-500 dark:text-gray-400">
-                                {t("detail.accessories")}:{" "}
-                                {row.accessories.map((a) => a.name).join(", ")}
-                              </p>
+                            Wrapped rather than given a className: `Badge` takes no
+                            `className`, and the wrapper is what carries `shrink-0` so a
+                            long asset code cannot squash the state out of the row. */}
+                        <span className="shrink-0">
+                          <Badge
+                            size="sm"
+                            color={isReturned ? "success" : "warning"}
+                          >
+                            {isReturned
+                              ? t("status.returned")
+                              : t("status.open")}
+                          </Badge>
+                        </span>
+                      </div>
+
+                      {/* Band 2 — accessories, at the full width of the card. */}
+                      {/* The bag and the charger, with an editor underneath.
+
+                          This modal answers "what exactly went out in *this* handover",
+                          and a laptop without its charger is the ordinary case — so
+                          listing only the device would under-answer the question the
+                          modal exists for. The same list prints on the document, and
+                          reading it from the same `row.accessories` rather than a second
+                          source is what keeps the screen and the paper agreeing.
+
+                          The bag and the charger, with an editor underneath.
+                          Admin-only **and** edit-gated, which are two different
+                          restrictions answering two different questions:
+                          `isAdmin` mirrors
+                          `assignments_accessories_insert_admin` / `_update_admin` /
+                          `_delete_admin`, which never opened to staff at all; and
+                          `canEditHandover` mirrors what the admin asked for on this
+                          menu — a handover whose accessories can still be rewritten is
+                          not a read-only handover.
+
+                          `isAdmin` first, because it is the one the database
+                          enforces. Reading it the other way round would let a
+                          permission appear to grant the editor to a staff member,
+                          which three separate admin-only policies refuse. */}
+                      {isAdmin && canEditHandover && (
+                        <AccessoryEditor
+                          assetCode={row.asset?.assetCode ?? row.id}
+                          names={row.accessories}
+                          onAdd={(name, serial) =>
+                            void handleAddAccessory(row.id, name, serial)
+                          }
+                          onRemove={(accessoryId) =>
+                            void handleRemoveAccessory(accessoryId)
+                          }
+                          onEdit={(accessoryId, name, serial) =>
+                            void handleUpdateAccessory(
+                              accessoryId,
+                              name,
+                              serial,
                             )
-                          : null}
-                        {/* Serial and condition are the two facts an admin checks
-                            against a physical device in the hand. The asset's
-                            registered location is **not** here: it is a different fact
-                            from what was handed over, and this is a list of what went
-                            out. */}
-                        <p className="text-xs text-gray-500 dark:text-gray-400">
-                          {row.asset?.serialNumber != null &&
-                            row.asset.serialNumber !== "" && (
-                              <>
-                                {t("table.serial")}: {row.asset.serialNumber}{" "}
-                                ·{" "}
-                              </>
-                            )}
+                          }
+                          isSaving={isSaving}
+                        />
+                      )}
+                      {/*
+                          Read-only accessory list, shown exactly when the editor
+                          above is not. The condition is the **negation of the
+                          editor's**, not `!isAdmin` — otherwise an admin who turned
+                          editing off would be left with no indication of what is on
+                          the list, which is the "rule that hides UI fails silently and
+                          completely" failure this codebase keeps recording.
+                        */}
+                      {!isAdmin || !canEditHandover
+                        ? row.accessories.length > 0 && (
+                            <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                              {t("detail.accessories")}:{" "}
+                              {row.accessories.map((a) => a.name).join(", ")}
+                            </p>
+                          )
+                        : null}
+
+                      {/* Band 3 — condition, on its own line with a label rather than
+                          trailing the serial. It is the fact a return is judged
+                          against, and it deserves to be findable rather than appended
+                          to whatever happened to share the line. */}
+                      <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                        {t("detail.conditionLabel")}:{" "}
+                        <span className="text-gray-700 dark:text-gray-200">
                           {row.conditionAtHandover !== null
                             ? t(`condition.${row.conditionAtHandover}`)
                             : t("fields.conditionPlaceholder")}
-                        </p>
-                      </div>
-                      {/* Return sits **beside the device**, not in the row's dropdown.
+                        </span>
+                      </p>
 
+                      {/* Band 4 — the controls, side by side and right-aligned.
+
+                          Return sits **beside the device**, not in the row's dropdown.
                           It was one dropdown item per open device, and at ten devices
                           that was ten entries repeating the names this list already
                           shows — the menu grew past the bottom of the viewport and said
-                          nothing the asset list did not. A control that acts on a
-                          device belongs next to that device.
+                          nothing the asset list did not. A control that acts on a device
+                          belongs next to that device.
 
-                          Still one `handoverId` per press, so returning the laptop while
-                          leaving the mouse stays expressible: only where the control
-                          lives changed, not its granularity. */}
-                      <div className="flex shrink-0 flex-col items-end gap-1.5">
-                        <Badge
-                          size="sm"
-                          color={isReturned ? "success" : "warning"}
-                        >
-                          {isReturned ? t("status.returned") : t("status.open")}
-                        </Badge>
-                        {!isReturned && detailCanReturn && (
-                          <Button
-                            variant="outline"
-                            disabled={isSaving}
-                            onClick={() => void handleReturn(row)}
-                            aria-label={t("returnDevice", {
-                              name: assetLabel(row, t("fields.unknown")),
-                            })}
-                          >
-                            {t("return")}
-                          </Button>
-                        )}
-                      </div>
+                          Still one `handoverId` per press, so returning the laptop
+                          while leaving the mouse stays expressible: only where the
+                          control lives changed, not its granularity.
+
+                          `size="sm"` on both, so the two are the same width and the
+                          row has a straight edge instead of the staggered outline the
+                          vertical stack produced. */}
+                      {/* The row is only worth the vertical space when it has something to say: a
+                          returned device has no control. `isAdmin` is in there because
+                          Transfer is admin-only (the RPC copies accessories under
+                          `assignments_accessories_insert_admin`), so an admin who
+                          cannot return can still transfer. */}
+                      {!isReturned && (detailCanReturn || isAdmin) && (
+                        <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+                          {/* Transfer first, outline. It is the less frequent of the
+                              two and it moves an asset rather than closing a loan. */}
+                          {isAdmin && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={isSaving}
+                              onClick={() => void handleOpenTransfer(row)}
+                              aria-label={t("transferDevice", {
+                                name: assetLabel(row, t("fields.unknown")),
+                              })}
+                            >
+                              {t("transferShort")}
+                            </Button>
+                          )}
+                          {detailCanReturn && (
+                            <Button
+                              size="sm"
+                              disabled={isSaving}
+                              onClick={() => void handleReturn(row)}
+                              aria-label={t("returnDevice", {
+                                name: assetLabel(row, t("fields.unknown")),
+                              })}
+                            >
+                              {t("return")}
+                            </Button>
+                          )}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -1627,6 +1826,130 @@ export default function HandoverListPage() {
               {isSaving ? t("deleting") : t("confirm")}
             </Button>
           </div>
+        </div>
+      </Modal>
+
+      {/* Move **one device** to somebody else. The dialog names the device and who
+          holds it now, because a transfer is a statement about a specific thing going
+          from one person to another, and both halves of that should be readable before
+          the button is pressed. */}
+      <Modal
+        isOpen={transferModal.isOpen}
+        onClose={transferModal.closeModal}
+        className="max-w-lg"
+      >
+        <div className="p-6">
+          <h3 className="text-lg font-semibold text-gray-800 dark:text-white/90">
+            {t("transferTitle", {
+              code: transferRow
+                ? assetLabel(transferRow, t("fields.unknown"))
+                : "",
+            })}
+          </h3>
+
+          {transferRow === null ? (
+            <p className="mt-3 text-sm text-gray-500 dark:text-gray-400">
+              {t("transferGone")}
+            </p>
+          ) : transferRow.returnedAt !== null ? (
+            /* The device came back while this was open. Said here rather than left to
+               the RPC's P0002, because "it already came back" is something the admin
+               can act on and a bare refusal is not. */
+            <p className="mt-3 text-sm text-gray-500 dark:text-gray-400">
+              {t("transferAlreadyReturned")}
+            </p>
+          ) : (
+            <>
+              {/* The device and its current holder, read-only. Both come from the row
+                  itself rather than from a prop, so the card cannot describe a device
+                  or a holder other than the one the button was on. */}
+              <div className="mt-4 rounded-lg bg-gray-50 p-3 text-sm dark:bg-white/5">
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  {t("transferDeviceLabel")}
+                </p>
+                <p className="mt-0.5 font-medium text-gray-800 dark:text-white/90">
+                  {assetLabel(transferRow, t("fields.unknown"))}
+                  {transferRow.asset?.serialNumber && (
+                    <span className="ms-2 font-normal text-gray-500 dark:text-gray-400">
+                      {transferRow.asset.serialNumber}
+                    </span>
+                  )}
+                </p>
+                <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                  {t("transferFrom")}
+                </p>
+                <p className="mt-0.5 font-medium text-gray-800 dark:text-white/90">
+                  {personLabel(transferRow.holder, t("fields.unknown"))}
+                </p>
+              </div>
+
+              <p className="mt-3 text-xs text-gray-500 dark:text-gray-400">
+                {t("transferDeviceHint")}
+              </p>
+
+              <div className="mt-4">
+                <Label htmlFor="transfer-person">
+                  {t("transferFields.person")}{" "}
+                  <span className="text-error-500">*</span>
+                </Label>
+                <Select
+                  key={`transfer-person-${formToken}`}
+                  id="transfer-person"
+                  className="mt-1"
+                  options={[
+                    { value: "", label: t("transferFields.placeholder") },
+                    ...people.map((row) => ({
+                      value: row.id,
+                      label: row.label,
+                    })),
+                  ]}
+                  onChange={(value) =>
+                    setTransferForm((prev) => ({ ...prev, userId: value }))
+                  }
+                />
+                <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                  {t("transferFields.personHint")}
+                </p>
+              </div>
+
+              <div className="mt-4">
+                <Label htmlFor="transfer-notes">
+                  {t("transferFields.notes")}
+                </Label>
+                <TextArea
+                  id="transfer-notes"
+                  rows={3}
+                  value={transferForm.notes}
+                  onChange={(value) =>
+                    setTransferForm((prev) => ({ ...prev, notes: value }))
+                  }
+                  placeholder={t("transferFields.notesPlaceholder")}
+                  className="mt-1"
+                />
+                <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                  {t("transferFields.notesHint")}
+                </p>
+              </div>
+
+              {saveError && (
+                <p className="mt-4 text-sm text-error-600 dark:text-error-500">
+                  {saveError}
+                </p>
+              )}
+
+              <div className="mt-6 flex justify-end gap-3">
+                <Button variant="outline" onClick={transferModal.closeModal}>
+                  {t("cancel")}
+                </Button>
+                <Button
+                  onClick={() => void handleConfirmTransfer()}
+                  disabled={isSaving || transferForm.userId === ""}
+                >
+                  {isSaving ? t("saving") : t("transferConfirm")}
+                </Button>
+              </div>
+            </>
+          )}
         </div>
       </Modal>
     </div>
@@ -1722,39 +2045,58 @@ function AccessoryEditor({
   const serialId = `handover-accessory-serial-${assetCode}`;
 
   return (
-    <div className="mt-2 border-t border-dashed border-gray-200 ps-11 pt-2 dark:border-gray-700">
+    /* **A hairline across the full card width, not a dashed rule indented under the
+         device name.** That rule existed only because the editor used to sit in the
+         narrow left column beside a stack of controls on the right, so it was inset to
+         line up under the title — and being inset, it stopped mid-way across the card
+         and read as a stray line rather than a division. With the controls on their own
+         row the editor has the full width, so the divider spans it.
+
+         A solid hairline rather than dashed: dashed reads as "optional" or "todo", and
+         this is a boundary between the facts about the device and the things that went
+         with it. */
+    <div className="mt-3 border-t border-gray-100 pt-3 dark:border-gray-800">
       <Label htmlFor={nameId} className="text-xs">
         {t("detail.accessoriesLabel")}
       </Label>
-      <div className="mt-1 flex items-center gap-2">
-        <Input
-          id={nameId}
-          value={draft}
-          placeholder={t("detail.accessoryPlaceholder")}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={submitOnEnter}
-          className="h-9 py-1 text-sm"
-        />
-        {/* The serial is a second box rather than part of the name, because the two
-            are different facts: "Adaptor HP" is what the item is and "0VFHDX" is
-            what is engraved on it. One box holding both would put a string like
-            "Adaptor HP (0VFHDX)" into a name column that the document prints
-            verbatim. */}
-        <Input
-          id={serialId}
-          name="serial_number"
-          value={draftSerial}
-          placeholder={t("detail.accessorySerialPlaceholder")}
-          onChange={(e) => setDraftSerial(e.target.value)}
-          onKeyDown={submitOnEnter}
-          className="h-9 w-32 py-1 text-sm"
-        />
+      {/* The Add button moves up beside the label rather than sitting on the input
+          row. That gives the two boxes the full width of the card, which is what they
+          needed — at ten characters of placeholder the name box was clipping — and the
+          button is the least width-hungry thing here. */}
+      <div className="mt-1.5 flex items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <Input
+            id={nameId}
+            value={draft}
+            placeholder={t("detail.accessoryPlaceholder")}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={submitOnEnter}
+            className="h-9 min-w-0 flex-1 py-1 text-sm"
+          />
+          {/* The serial is a second box rather than part of the name, because the two
+              are different facts: "Adaptor HP" is what the item is and "0VFHDX" is
+              what is engraved on it. One box holding both would put a string like
+              "Adaptor HP (0VFHDX)" into a name column that the document prints
+              verbatim.
+
+              A fixed width, not flex: a serial is a short fixed-width code, and letting
+              it flex meant the two boxes swapped proportions as the card resized. */}
+          <Input
+            id={serialId}
+            name="serial_number"
+            value={draftSerial}
+            placeholder={t("detail.accessorySerialPlaceholder")}
+            onChange={(e) => setDraftSerial(e.target.value)}
+            onKeyDown={submitOnEnter}
+            className="h-9 w-32 shrink-0 py-1 text-sm"
+          />
+        </div>
         <Button
           variant="outline"
           size="sm"
           onClick={submit}
           disabled={isSaving || draft.trim() === ""}
-          className="shrink-0 px-2 py-1.5"
+          className="shrink-0"
         >
           <PlusIcon className="size-4" />
           {t("detail.accessoryAdd")}
